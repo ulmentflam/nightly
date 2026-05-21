@@ -83,6 +83,31 @@ normal interactive use of this repo is unaffected.
    briefing and exit. The human might be asleep — your contract is
    monotonic forward progress until interrupted, not "stop the moment
    the obvious work runs out."
+8. **Arm the host-level keep-alive at session start.** Run
+   `nightly session start` as the first thing the /nightly skill does.
+   This writes a `SESSION_ACTIVE` marker that Claude Code's Stop hook
+   checks every turn boundary; without it, the hook lets the session
+   end naturally. With it, the hook re-injects a "continue on X"
+   prompt so the session keeps moving even when the model's own
+   intent would have been to stop. The marker has a 4-hour TTL —
+   re-running `nightly session start` between long-lived work
+   refreshes it.
+
+### Human shutdown intervention
+
+The keep-alive must never trap the operator. Three independent
+off-ramps stop a running Nightly session at any time:
+
+- **`nightly conclude`** — graceful drain. The current task finishes,
+  the briefing renders, the session ends naturally at the next turn
+  boundary. Use this in the morning when you want to inspect the work.
+- **`nightly stop`** — hard stop. Writes a `STOP` sentinel; the next
+  Stop hook firing allows the model to end its turn cleanly without
+  starting new work. Use when you want Nightly off **now** but are
+  OK letting the current response print.
+- **Ctrl-C / `/quit`** — interrupt. Bypasses the Stop hook entirely
+  and kills the session immediately. Always available as the
+  emergency stop.
 
 If you find yourself about to ask the user something: stop, pick the
 better default, document the choice, and continue. The morning briefing

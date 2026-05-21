@@ -207,3 +207,127 @@ async def test_run_headless_handles_timeout(project: Path, monkeypatch: pytest.M
     result = await integration.run_headless("hi", timeout_s=0.01)
     assert result.ok is False
     assert "timeout" in (result.error or "").lower()
+
+
+# ── Phase 9h: Stop-hook merge into settings.local.json ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_project_writes_stop_hook(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    await integration.install("project")
+    settings = _json.loads(integration.settings_local_path().read_text(encoding="utf-8"))
+    assert "hooks" in settings
+    assert "Stop" in settings["hooks"]
+    block = settings["hooks"]["Stop"][0]
+    cmd_entries = [h for h in block["hooks"] if h.get("command") == "nightly hook stop"]
+    assert len(cmd_entries) == 1
+    assert integration.is_stop_hook_installed()
+
+
+@pytest.mark.asyncio
+async def test_install_user_scope_skips_stop_hook(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    # User-scope install shouldn't drop a per-repo hook in the project tree.
+    await integration.install("user")
+    assert not integration.settings_local_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_install_stop_hook_is_idempotent(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    await integration.install("project")
+    await integration.install("project")
+    settings = _json.loads(integration.settings_local_path().read_text(encoding="utf-8"))
+    cmds = [
+        h
+        for block in settings["hooks"]["Stop"]
+        for h in block.get("hooks", [])
+        if h.get("command") == "nightly hook stop"
+    ]
+    assert len(cmds) == 1  # not duplicated on re-install
+
+
+@pytest.mark.asyncio
+async def test_install_stop_hook_preserves_existing_settings(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    # Pre-existing settings.local.json with unrelated entries
+    settings_path = integration.settings_local_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        _json.dumps(
+            {
+                "permissions": {"allow": ["Bash(git status:*)"]},
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{"type": "command", "command": "other-hook"}],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    await integration.install("project")
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    assert settings["permissions"] == {"allow": ["Bash(git status:*)"]}
+    assert settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "other-hook"
+    assert integration.is_stop_hook_installed()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_removes_stop_hook_only(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    settings_path = integration.settings_local_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        _json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}}),
+        encoding="utf-8",
+    )
+    await integration.install("project")
+    assert integration.is_stop_hook_installed()
+    await integration.uninstall("project")
+    # settings.local.json should still exist with permissions intact
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    assert settings == {"permissions": {"allow": ["Bash(ls:*)"]}}
+
+
+@pytest.mark.asyncio
+async def test_uninstall_removes_settings_file_when_empty(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    assert integration.settings_local_path().is_file()
+    await integration.uninstall("project")
+    # Nothing else in the file → it's cleaned up.
+    assert not integration.settings_local_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_install_does_not_clobber_malformed_settings(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    settings_path = integration.settings_local_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    malformed = "{this is not valid JSON"
+    settings_path.write_text(malformed, encoding="utf-8")
+    await integration.install("project")
+    # SKILL.md installed, but malformed settings file left alone.
+    assert integration.is_installed("project")
+    assert settings_path.read_text(encoding="utf-8") == malformed
+    assert not integration.is_stop_hook_installed()

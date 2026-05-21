@@ -11,11 +11,13 @@ Phase 2 and raise `NotImplementedError` until then.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Any
 
 from nightly_core import (
     AuthStatus,
@@ -35,6 +37,12 @@ __all__ = ["ClaudeHostIntegration"]
 
 _SESSION_ID_ENV_VARS = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID")
 """Env vars Claude Code is known to expose for the active session id."""
+
+_STOP_HOOK_COMMAND = "nightly hook stop"
+"""Stable command used to identify Nightly's Stop hook in settings.local.json."""
+
+_SETTINGS_LOCAL_RELATIVE = Path(".claude/settings.local.json")
+"""Per-user (gitignored) Claude Code settings file the Stop hook is merged into."""
 
 
 class ClaudeHostIntegration(NightlyHostIntegration):
@@ -69,9 +77,16 @@ class ClaudeHostIntegration(NightlyHostIntegration):
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
+        if scope == "project":
+            # The Stop hook is per-repo because it references the local
+            # `.nightly/` state. User-scope installs share `~/.claude/skills/`
+            # across repos and shouldn't drop a per-repo hook there.
+            self._install_stop_hook()
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
+        if scope == "project":
+            self._uninstall_stop_hook()
         if not target.exists():
             return
         target.unlink()
@@ -84,6 +99,135 @@ class ClaudeHostIntegration(NightlyHostIntegration):
             removed.rmdir()
             if removed.name == stop_at:
                 break
+
+    # ── Stop hook wiring (Phase 9h) ──────────────────────────────────────
+    def settings_local_path(self) -> Path:
+        """Where Nightly merges its Stop hook entry."""
+        return self._root / _SETTINGS_LOCAL_RELATIVE
+
+    def is_stop_hook_installed(self) -> bool:
+        """True iff `.claude/settings.local.json` contains Nightly's Stop hook.
+
+        A malformed settings file is treated as "not installed" rather
+        than raising — callers (tests, status output) shouldn't have to
+        defensively catch JSONDecodeError just to introspect the install
+        state.
+        """
+        try:
+            settings = self._read_settings_local()
+        except json.JSONDecodeError:
+            return False
+        return self._find_nightly_stop_hook_index(settings) is not None
+
+    def _install_stop_hook(self) -> None:
+        """Merge Nightly's Stop hook entry into `.claude/settings.local.json`.
+
+        Idempotent: if the entry is already present, this is a no-op. Any
+        unrelated keys / matchers / hook commands in the file are
+        preserved verbatim. If the file is malformed JSON, we leave it
+        alone and emit no hook — the SKILL.md install still proceeds, so
+        the user gets a working /nightly without keep-alive until they
+        either fix the JSON or run `nightly init` again with a clean file.
+        """
+        try:
+            settings = self._read_settings_local()
+        except json.JSONDecodeError:
+            # Refuse to clobber user-authored JSON. The Stop hook is a
+            # quality-of-life add-on; SKILL.md install already happened.
+            return
+        if self._find_nightly_stop_hook_index(settings) is not None:
+            return
+        hooks_root = settings.setdefault("hooks", {})
+        stop_block = hooks_root.setdefault("Stop", [])
+        stop_block.append(
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": _STOP_HOOK_COMMAND,
+                    }
+                ],
+            }
+        )
+        self._write_settings_local(settings)
+
+    def _uninstall_stop_hook(self) -> None:
+        """Remove Nightly's Stop hook entry; trim now-empty parent containers.
+
+        If `settings.local.json` becomes an empty `{}` after the removal,
+        we delete the file so `nightly uninstall` leaves the directory
+        clean. Other unrelated entries are preserved.
+        """
+        path = self.settings_local_path()
+        if not path.is_file():
+            return
+        try:
+            settings = self._read_settings_local()
+        except json.JSONDecodeError:
+            return
+        idx = self._find_nightly_stop_hook_index(settings)
+        if idx is None:
+            return
+        block_idx, entry_idx = idx
+        stop_block = settings["hooks"]["Stop"]
+        del stop_block[block_idx]["hooks"][entry_idx]
+        if not stop_block[block_idx]["hooks"]:
+            del stop_block[block_idx]
+        if not settings["hooks"]["Stop"]:
+            del settings["hooks"]["Stop"]
+        if not settings["hooks"]:
+            del settings["hooks"]
+        if not settings:
+            path.unlink()
+            return
+        self._write_settings_local(settings)
+
+    def _read_settings_local(self) -> dict[str, Any]:
+        path = self.settings_local_path()
+        if not path.is_file():
+            return {}
+        text = path.read_text(encoding="utf-8")
+        if not text.strip():
+            return {}
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _write_settings_local(self, settings: dict[str, Any]) -> None:
+        path = self.settings_local_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _find_nightly_stop_hook_index(
+        settings: dict[str, Any],
+    ) -> tuple[int, int] | None:
+        """Locate Nightly's Stop hook entry. Returns (block_idx, entry_idx) or None.
+
+        We identify our entry by its `command` field (`nightly hook stop`),
+        which is stable across versions. Unknown hook entries from other
+        sources are ignored.
+        """
+        hooks = settings.get("hooks")
+        if not isinstance(hooks, dict):
+            return None
+        stop_block = hooks.get("Stop")
+        if not isinstance(stop_block, list):
+            return None
+        for block_idx, block in enumerate(stop_block):
+            if not isinstance(block, dict):
+                continue
+            entries = block.get("hooks")
+            if not isinstance(entries, list):
+                continue
+            for entry_idx, entry in enumerate(entries):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("type") == "command"
+                    and entry.get("command") == _STOP_HOOK_COMMAND
+                ):
+                    return (block_idx, entry_idx)
+        return None
 
     def is_installed(self, scope: InstallScope) -> bool:
         return self.skill_path(scope).is_file()

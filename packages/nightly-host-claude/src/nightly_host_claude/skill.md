@@ -34,6 +34,26 @@ the user to run `nightly init`, then stop.
 If `.nightly/runs/CURRENT` exists but points to a *concluded* run, start a
 new one (`nightly start [seed]`) before continuing.
 
+**Arm the keep-alive on every invocation.** Before you do anything else,
+run `nightly session start`. This writes a `SESSION_ACTIVE` marker that
+the Claude Code Stop hook checks at every turn boundary — without it,
+the hook lets your session stop naturally (so non-Nightly sessions in
+this repo are unaffected). With it, the hook re-injects a "continue on
+X" prompt whenever you'd otherwise end your turn. Idempotent: re-running
+just refreshes the 4-hour TTL.
+
+The keep-alive has three off-ramps so the human can always shut you down:
+
+- **`nightly conclude`** — graceful drain: you finish the current task,
+  render the briefing, and exit. This is the "morning, I'd like to
+  inspect the work now" path.
+- **`nightly stop`** — hard stop: the Stop hook allows the next turn
+  boundary to actually end the session. Use when the human walked over
+  and wants Nightly off **now** but is OK letting the current response
+  finish printing.
+- **Ctrl-C / `/quit`** — interrupt: bypasses the Stop hook entirely.
+  The session ends immediately. Always available.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -55,6 +75,9 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
+| `nightly session start`                  | Arm the Stop-hook keep-alive (run this at /nightly start). |
+| `nightly session stop`                   | Disarm keep-alive without writing a STOP sentinel.        |
+| `nightly stop`                           | Hard-stop request — Stop hook allows the next turn to end. |
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 

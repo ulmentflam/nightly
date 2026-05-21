@@ -891,3 +891,91 @@ def test_keepalive_command_name_flag_unknown_slug_errors(repo: Path) -> None:
     result = runner.invoke(app, ["keepalive", "--name", "bogus"])
     assert result.exit_code == 1
     assert "unknown strategy" in result.output
+
+
+# ── Phase 9h: session / stop / hook commands ──────────────────────────────
+
+
+def test_session_start_arms_marker(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start", "first task"])
+    result = runner.invoke(app, ["session", "start"])
+    assert result.exit_code == 0
+    assert "✓ armed keep-alive" in result.output
+    runs_root = repo / ".nightly" / "runs"
+    run_dir = next(p for p in runs_root.iterdir() if p.is_dir())
+    assert (run_dir / "SESSION_ACTIVE").is_file()
+
+
+def test_session_start_without_run_fails_cleanly(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["session", "start"])
+    assert result.exit_code == 1
+    assert "no active run" in result.output
+
+
+def test_session_stop_disarms_marker(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start", "first task"])
+    runner.invoke(app, ["session", "start"])
+    result = runner.invoke(app, ["session", "stop"])
+    assert result.exit_code == 0
+    runs_root = repo / ".nightly" / "runs"
+    run_dir = next(p for p in runs_root.iterdir() if p.is_dir())
+    assert not (run_dir / "SESSION_ACTIVE").is_file()
+
+
+def test_stop_command_writes_sentinel(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start", "first task"])
+    result = runner.invoke(app, ["stop"])
+    assert result.exit_code == 0
+    assert "STOP sentinel" in result.output
+    runs_root = repo / ".nightly" / "runs"
+    run_dir = next(p for p in runs_root.iterdir() if p.is_dir())
+    assert (run_dir / "STOP").is_file()
+
+
+def test_stop_command_without_run_fails(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["stop"])
+    assert result.exit_code == 1
+    assert "no active run" in result.output
+
+
+def test_hook_stop_returns_empty_json_when_inactive(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start", "first task"])
+    # SESSION_ACTIVE not armed → hook allows stop
+    result = runner.invoke(app, ["hook", "stop"], input="")
+    assert result.exit_code == 0
+    import json as _json
+
+    payload = _json.loads(result.stdout.strip())
+    assert payload == {}
+
+
+def test_hook_stop_returns_block_when_armed(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start", "first task"])
+    runner.invoke(app, ["session", "start"])
+    result = runner.invoke(app, ["hook", "stop"], input='{"session_id":"abc"}')
+    assert result.exit_code == 0
+    import json as _json
+
+    payload = _json.loads(result.stdout.strip())
+    assert payload.get("decision") == "block"
+    assert "reason" in payload
+
+
+def test_hook_stop_honors_stop_sentinel(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start", "first task"])
+    runner.invoke(app, ["session", "start"])
+    runner.invoke(app, ["stop"])
+    result = runner.invoke(app, ["hook", "stop"], input="")
+    assert result.exit_code == 0
+    import json as _json
+
+    payload = _json.loads(result.stdout.strip())
+    assert payload == {}

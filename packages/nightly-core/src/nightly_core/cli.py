@@ -21,6 +21,9 @@ Commands as of Phase 8:
 - `nightly feedback`    — show PR feedback for a branch (default: HEAD)
 - `nightly rescue`      — preview the next pr_rescue candidate without dispatching
 - `nightly keepalive`   — print think-harder strategies when the cascade is empty
+- `nightly session …`   — arm/disarm the SESSION_ACTIVE marker for the Stop hook
+- `nightly hook stop`   — Claude Code Stop hook glue (called by .claude/settings)
+- `nightly stop`        — request immediate hard stop (next turn boundary)
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -28,7 +31,9 @@ This is the planned-phase CLI surface complete (Phases 0-8).
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -49,6 +54,14 @@ from nightly_core.contract import (
 from nightly_core.driver import DriverConfig, run_loop
 from nightly_core.ideation import run_proposers, write_drafts
 from nightly_core.keepalive import KEEPALIVE_STRATEGIES, pick_keepalive
+from nightly_core.keepalive_hook import (
+    arm_session,
+    compute_stop_hook_decision,
+    disarm_session,
+    log_heartbeat,
+    parse_hook_input,
+    request_stop,
+)
 from nightly_core.paths import nightly_dir, planning_dir, repo_root, run_dir
 from nightly_core.plans import append_pr_feedback, list_plans
 from nightly_core.pr_feedback import fetch_feedback
@@ -870,6 +883,103 @@ def keepalive(
         typer.echo("")
         typer.echo(strategy.prompt)
         typer.echo("")
+
+
+# ── Phase 9h commands: keep-alive hook + session + stop ──────────────────
+
+
+session_app = typer.Typer(
+    name="session",
+    help="Arm / disarm Nightly's Stop-hook keep-alive for this run.",
+    no_args_is_help=True,
+)
+hook_app = typer.Typer(
+    name="hook",
+    help="Internal — Claude Code hook handlers (invoked by .claude/settings).",
+    no_args_is_help=True,
+)
+app.add_typer(session_app)
+app.add_typer(hook_app)
+
+
+@session_app.command(name="start")
+def session_start() -> None:
+    """Arm the SESSION_ACTIVE marker so the Stop hook force-continues.
+
+    The /nightly skill calls this at session start. Without it, the Stop
+    hook treats the session as non-Nightly and lets it stop naturally —
+    so this is the "opt in to keep-alive" switch. Idempotent.
+    """
+    root = repo_root()
+    marker = arm_session(root)
+    if marker is None:
+        typer.echo(
+            "no active run — `nightly start` first, then `nightly session start`.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ armed keep-alive — {_format_path_for_display(marker, root)}")
+    typer.echo("  The Stop hook will force-continue until CONCLUDE, STOP, or 4h idle.")
+
+
+@session_app.command(name="stop")
+def session_stop() -> None:
+    """Disarm the SESSION_ACTIVE marker — the Stop hook stops force-continuing.
+
+    Less abrupt than `nightly stop` (which writes a STOP sentinel) and
+    less graceful than `nightly conclude` (which waits for the current
+    task to drain). Use when you want the session to end as soon as the
+    model naturally stops, without writing any extra control file.
+    """
+    root = repo_root()
+    marker = disarm_session(root)
+    if marker is None:
+        typer.echo("· no active run; nothing to disarm.", err=True)
+        return
+    typer.echo(f"✓ disarmed keep-alive ({_format_path_for_display(marker, root)})")
+
+
+@app.command(name="stop")
+def stop_cmd() -> None:
+    """Request an immediate hard stop — the next turn boundary lets the model end.
+
+    Writes a `STOP` sentinel under the current run dir. The Stop hook
+    sees the sentinel on its next invocation and allows the model to
+    finish its current response cleanly. Unlike `nightly conclude`, this
+    does *not* wait for the current task to drain — use it when you
+    walked over to the computer and want Nightly off **now**.
+    """
+    root = repo_root()
+    marker = request_stop(root)
+    if marker is None:
+        typer.echo("no active run.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ wrote STOP sentinel — {_format_path_for_display(marker, root)}")
+    typer.echo("  The model will end its turn at the next Stop hook firing.")
+
+
+@hook_app.command(name="stop")
+def hook_stop() -> None:
+    """Stop hook handler — called by Claude Code on every turn boundary.
+
+    Reads the Claude Code hook payload from stdin (JSON), decides
+    whether to force-continue, and writes the decision JSON to stdout.
+    Always logs to `.nightly/runs/<id>/keepalive.log`. Never raises —
+    if anything goes wrong, allow the stop.
+    """
+    root = repo_root()
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    hook_input = parse_hook_input(raw)
+    try:
+        decision = compute_stop_hook_decision(root)
+    except Exception as exc:  # hook must never crash the session
+        # Bubble up to stderr so the user sees it in --hooks-debug, but
+        # don't return a blocking decision — that would trap the user.
+        typer.echo(f"nightly hook error: {exc!r}", err=True)
+        typer.echo(json.dumps({}))
+        return
+    log_heartbeat(decision, root, hook_input=hook_input)
+    typer.echo(json.dumps(decision.payload))
 
 
 if __name__ == "__main__":
