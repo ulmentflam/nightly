@@ -29,6 +29,23 @@ the first task. If not, walk the cascade.
 If `.nightly/runs/CURRENT` is missing, the repo isn't initialized — tell
 the user to run `nightly init`, then stop.
 
+**Keep-alive level for opencode: `soft`.** opencode's plugin system has
+reactive lifecycle events (`session.idle`, `session.updated`, tool
+hooks) but **no force-continue mechanism** — there is no equivalent of
+Claude Code's `Stop` hook that can re-inject a continuation prompt.
+That means the keep-alive contract is honored purely through the
+AGENTS.md / CLAUDE.md NEVER STOP rule text (you are told to never stop).
+Still run `nightly session start` to record the marker for audit;
+`keepalive.log` will reflect what the hook *would* have done, even
+though no hook actually fires.
+
+Three off-ramps stop the session at any time:
+
+- **`nightly conclude`** (or `/nightly-conclude` agent) — graceful drain.
+- **`nightly stop`** — writes a `STOP` sentinel; honor it by ending
+  your turn cleanly without picking new work.
+- **Ctrl-C / `/exit`** — interrupt.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -50,6 +67,9 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
+| `nightly session start`                  | Record SESSION_ACTIVE marker (soft keep-alive on opencode).|
+| `nightly session stop`                   | Disarm the marker; no STOP sentinel written.              |
+| `nightly stop`                           | Hard-stop request — honor it by ending the turn cleanly.   |
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 

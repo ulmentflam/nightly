@@ -21,10 +21,12 @@ import uuid
 from pathlib import Path
 
 from nightly_core import (
+    CONCLUDE_SKILL_MD,
     AuthStatus,
     HeadlessResult,
     HostId,
     InstallScope,
+    KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
     SubAgentResult,
@@ -32,9 +34,24 @@ from nightly_core import (
     repo_root,
     run_subprocess,
 )
+from nightly_core.hook_install import (
+    HookFile,
+    find_nested_hook_index,
+    merge_nested_hook,
+    read_settings,
+    remove_nested_hook,
+)
 from nightly_host_codex.skill import SKILL_MD
 
 __all__ = ["CodexHostIntegration"]
+
+_STOP_HOOK_COMMAND = "nightly hook stop"
+"""Codex shares the Claude Code Stop-hook JSON shape, so the default
+`claude_code` wire format is correct — no `--format` flag needed."""
+
+_HOOKS_RELATIVE = Path(".codex/hooks.json")
+"""Per-repo Codex hook config (also supported: .codex/config.toml).
+We use the JSON form for consistency with Claude's settings.local.json."""
 
 _SESSION_ID_ENV_VARS = ("CODEX_SESSION_ID",)
 """Env vars Codex exposes for the active session id. Best-effort — Codex's
@@ -45,9 +62,12 @@ class CodexHostIntegration(NightlyHostIntegration):
     """Nightly host integration for the Codex CLI (primary host)."""
 
     host_id: HostId = "codex"
+    keepalive_support: KeepaliveSupport = "forced"
 
     PROJECT_SKILL_RELATIVE = Path(".codex/skills/nightly/SKILL.md")
     USER_SKILL_ABSOLUTE = Path.home() / ".codex/skills/nightly/SKILL.md"
+    PROJECT_CONCLUDE_RELATIVE = Path(".codex/skills/nightly-conclude/SKILL.md")
+    USER_CONCLUDE_ABSOLUTE = Path.home() / ".codex/skills/nightly-conclude/SKILL.md"
 
     def __init__(
         self,
@@ -69,20 +89,37 @@ class CodexHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_SKILL_RELATIVE
         return self.USER_SKILL_ABSOLUTE
 
+    def conclude_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_CONCLUDE_RELATIVE
+        return self.USER_CONCLUDE_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
+        conclude = self.conclude_skill_path(scope)
+        conclude.parent.mkdir(parents=True, exist_ok=True)
+        conclude.write_text(CONCLUDE_SKILL_MD, encoding="utf-8")
+        self.install_keepalive_hook(scope)
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
+        conclude = self.conclude_skill_path(scope)
+        self.uninstall_keepalive_hook(scope)
+        if conclude.exists():
+            conclude.unlink()
+            self._trim_skill_parents(conclude)
         if not target.exists():
             return
         target.unlink()
-        # Trim empty parents up to .codex/skills/, but never go above.
-        parent = target.parent
+        self._trim_skill_parents(target)
+
+    @staticmethod
+    def _trim_skill_parents(skill_file: Path) -> None:
+        parent = skill_file.parent
         stop_at = "skills"
-        while parent.name in {"nightly", stop_at} and not any(parent.iterdir()):
+        while parent.name and not any(parent.iterdir()):
             removed = parent
             parent = parent.parent
             removed.rmdir()
@@ -91,6 +128,42 @@ class CodexHostIntegration(NightlyHostIntegration):
 
     def is_installed(self, scope: InstallScope) -> bool:
         return self.skill_path(scope).is_file()
+
+    # ── Stop hook wiring (Phase 9i) ──────────────────────────────────────
+    def hooks_path(self) -> Path:
+        """Where Nightly merges its Stop hook entry."""
+        return self._root / _HOOKS_RELATIVE
+
+    def _hook_file(self) -> HookFile:
+        return HookFile(
+            path=self.hooks_path(),
+            event_name="Stop",
+            command=_STOP_HOOK_COMMAND,
+        )
+
+    def install_keepalive_hook(self, scope: InstallScope) -> None:
+        if scope != "project":
+            return
+        merge_nested_hook(self._hook_file())
+
+    def uninstall_keepalive_hook(self, scope: InstallScope) -> None:
+        if scope != "project":
+            return
+        remove_nested_hook(self._hook_file())
+
+    def is_keepalive_hook_installed(self, scope: InstallScope = "project") -> bool:
+        if scope != "project":
+            return False
+        import json as _json  # noqa: PLC0415 — narrow scope for the JSON error catch
+
+        try:
+            settings = read_settings(self.hooks_path())
+        except _json.JSONDecodeError:
+            return False
+        return (
+            find_nested_hook_index(settings, event_name="Stop", command=_STOP_HOOK_COMMAND)
+            is not None
+        )
 
     # ── session identity ──────────────────────────────────────────────────
     def session_id(self) -> str:

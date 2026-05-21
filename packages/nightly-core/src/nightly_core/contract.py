@@ -29,6 +29,20 @@ InstallScope = Literal["project", "user"]
 """Where to install the host launcher — repo-local or user-global."""
 
 
+KeepaliveSupport = Literal["forced", "soft", "none"]
+"""How a host enforces Nightly's never-stop contract.
+
+- `forced`: the host exposes a Stop-style hook that can force the model
+  to continue with a new prompt at every turn boundary. Claude Code,
+  Codex CLI, and Cursor 1.7+ are in this tier.
+- `soft`: no hook surface, but the host honors AGENTS.md / CLAUDE.md
+  rules text. The keep-alive is best-effort: the model is *told* to
+  never stop. opencode and Antigravity sit here today.
+- `none`: neither hook nor rules are honored. No host is in this tier
+  today; reserved for hypothetical hostile hosts.
+"""
+
+
 class SubAgentResult(BaseModel):
     """Normalized result of a sub-agent dispatch through the host's primitive."""
 
@@ -56,6 +70,11 @@ class NightlyHostIntegration(ABC):
     """
 
     host_id: HostId
+
+    keepalive_support: KeepaliveSupport = "soft"
+    """Default to `soft` (rules-only). Hosts with a real Stop-hook
+    surface override this to `forced` and implement the hook-install
+    methods below."""
 
     # ── launcher lifecycle ────────────────────────────────────────────────
     @abstractmethod
@@ -128,3 +147,39 @@ class NightlyHostIntegration(ABC):
             "with a different lifecycle shape."
         )
         raise NotImplementedError(msg)
+
+    # ── conclude skill (Phase 9i) ────────────────────────────────────────
+    def conclude_skill_path(self, scope: InstallScope) -> Path | None:
+        """Per-host path to the `/nightly-conclude` skill file.
+
+        Default returns None — opt-in. Hosts that override return the
+        absolute path where the conclude skill should be written. Each
+        host is responsible for whether its conclude skill is a flat
+        `.md` file (Cursor) or a `<name>/SKILL.md` folder (the others).
+        """
+        return None
+
+    def is_conclude_installed(self, scope: InstallScope) -> bool:
+        path = self.conclude_skill_path(scope)
+        return path is not None and path.is_file()
+
+    # ── keep-alive hook (Phase 9h+) ──────────────────────────────────────
+    def install_keepalive_hook(self, scope: InstallScope) -> None:
+        """Idempotent: write the Stop-hook entry into the host's config.
+
+        Default is a no-op for hosts whose `keepalive_support == "soft"`.
+        Hosts in the `forced` tier override to merge into their respective
+        settings file (.claude/settings.local.json, .codex/hooks.json,
+        .cursor/hooks.json). Only the `project` scope writes a hook —
+        `user` scope shares hooks across repos and shouldn't pin one
+        repo's `.nightly/` state into the user-global config.
+        """
+        return
+
+    def uninstall_keepalive_hook(self, scope: InstallScope) -> None:
+        """Idempotent: remove the Stop-hook entry. Default no-op."""
+        return
+
+    def is_keepalive_hook_installed(self, scope: InstallScope) -> bool:
+        """True iff this host has a hook entry pointing at `nightly hook stop`."""
+        return False

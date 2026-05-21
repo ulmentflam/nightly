@@ -31,6 +31,21 @@ If they give a seed, use it as the first task. If not, walk the cascade.
 If `.nightly/runs/CURRENT` is missing, the repo isn't initialized — tell
 the user to run `nightly init`, then stop.
 
+**Arm the keep-alive on every invocation.** Run `nightly session start`
+as your first action. Cursor 1.7+'s `stop` hook (registered in
+`.cursor/hooks.json` by `nightly init`) checks the `SESSION_ACTIVE`
+marker on every turn boundary and emits `{"followup_message":"..."}` to
+auto-continue. Cursor's `loop_limit` caps automatic continuations per
+config entry — Nightly sets it to 500 so the in-process `MAX_TURNS=500`
+safety check fires first.
+
+Three off-ramps stop the session at any time:
+
+- **`nightly conclude`** (or `/nightly-conclude` slash command) —
+  graceful drain.
+- **`nightly stop`** — hard stop.
+- **Esc / `/quit`** — interrupt; bypasses the hook.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -52,6 +67,9 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
+| `nightly session start`                  | Arm the Cursor stop-hook keep-alive.                      |
+| `nightly session stop`                   | Disarm keep-alive without writing a STOP sentinel.        |
+| `nightly stop`                           | Hard-stop request — stop hook allows the next turn to end. |
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 

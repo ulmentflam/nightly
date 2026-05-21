@@ -331,3 +331,32 @@ async def test_install_does_not_clobber_malformed_settings(
     assert integration.is_installed("project")
     assert settings_path.read_text(encoding="utf-8") == malformed
     assert not integration.is_stop_hook_installed()
+
+
+# ── Phase 9i: conclude skill ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_claude_writes_conclude_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    conclude = integration.conclude_skill_path("project")
+    assert conclude is not None
+    assert conclude.is_file()
+    assert "name: nightly-conclude" in conclude.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_uninstall_claude_removes_conclude_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    await integration.uninstall("project")
+    conclude = integration.conclude_skill_path("project")
+    assert conclude is not None
+    assert not conclude.exists()
+
+
+def test_claude_keepalive_support_is_forced(integration: ClaudeHostIntegration) -> None:
+    assert integration.keepalive_support == "forced"

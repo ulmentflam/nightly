@@ -177,3 +177,25 @@ async def test_run_headless_propagates_nonzero_exit(
     result = await integration.run_headless("hi")
     assert result.ok is False
     assert result.exit_code == 4
+
+
+# ── Phase 9i: conclude skill (no hook — soft keep-alive) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_writes_conclude_agent_for_opencode(tmp_path: Path) -> None:
+    from nightly_host_opencode import OpencodeHostIntegration
+
+    integration = OpencodeHostIntegration(root=tmp_path)
+    await integration.install("project")
+    conclude = integration.conclude_skill_path("project")
+    assert conclude.is_file()
+
+
+def test_opencode_keepalive_support_is_soft() -> None:
+    from nightly_host_opencode import OpencodeHostIntegration
+
+    integration = OpencodeHostIntegration(root=Path("/tmp"))
+    assert integration.keepalive_support == "soft"
+    # No hook should be installed
+    assert not integration.is_keepalive_hook_installed("project")

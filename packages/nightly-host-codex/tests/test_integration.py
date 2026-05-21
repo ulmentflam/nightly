@@ -182,3 +182,52 @@ async def test_run_headless_propagates_nonzero_exit(
     assert result.ok is False
     assert result.exit_code == 3
     assert "sandbox violation" in result.stderr
+
+
+# ── Phase 9i: Stop-hook install + conclude skill ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_writes_stop_hook_to_codex_hooks_json(tmp_path: Path) -> None:
+    import json as _json
+
+    from nightly_host_codex import CodexHostIntegration
+
+    integration = CodexHostIntegration(root=tmp_path)
+    await integration.install("project")
+    hooks_path = integration.hooks_path()
+    assert hooks_path.is_file()
+    settings = _json.loads(hooks_path.read_text(encoding="utf-8"))
+    cmds = [
+        h
+        for block in settings["hooks"]["Stop"]
+        for h in block.get("hooks", [])
+        if h.get("command") == "nightly hook stop"
+    ]
+    assert len(cmds) == 1
+    assert integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_install_writes_conclude_skill(tmp_path: Path) -> None:
+    from nightly_host_codex import CodexHostIntegration
+
+    integration = CodexHostIntegration(root=tmp_path)
+    await integration.install("project")
+    conclude = integration.conclude_skill_path("project")
+    assert conclude.is_file()
+    content = conclude.read_text(encoding="utf-8")
+    assert "name: nightly-conclude" in content
+    assert "nightly conclude" in content
+
+
+@pytest.mark.asyncio
+async def test_uninstall_removes_conclude_skill_and_hook(tmp_path: Path) -> None:
+    from nightly_host_codex import CodexHostIntegration
+
+    integration = CodexHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.skill_path("project").exists()
+    assert not integration.conclude_skill_path("project").exists()
+    assert not integration.is_keepalive_hook_installed("project")

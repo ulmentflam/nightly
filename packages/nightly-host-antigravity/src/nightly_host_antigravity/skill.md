@@ -33,6 +33,20 @@ first task. If not, walk the cascade.
 If `.nightly/runs/CURRENT` is missing, the repo isn't initialized — tell
 the user to run `nightly init`, then stop.
 
+**Arm the keep-alive on every invocation.** Run `nightly session start`
+as your first action. Antigravity is built on Gemini CLI, which
+registers an `AfterAgent` hook (Stop-equivalent) in `.gemini/settings.json`
+via `nightly init`. The hook returns `{"decision":"deny","reason":"..."}`
+to force the agent to continue with the reason as a new prompt —
+semantically identical to Claude Code's `{"decision":"block",...}` shape.
+
+Three off-ramps stop the session at any time:
+
+- **`nightly conclude`** (or `/nightly-conclude` agent) — graceful drain.
+- **`nightly stop`** — hard stop.
+- **Agent Manager → Stop** (or Ctrl-C in CLI mode) — interrupt;
+  bypasses the hook.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -54,6 +68,9 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
+| `nightly session start`                  | Arm the AfterAgent hook keep-alive.                       |
+| `nightly session stop`                   | Disarm keep-alive without writing a STOP sentinel.        |
+| `nightly stop`                           | Hard-stop request — AfterAgent allows the next turn to end. |
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 

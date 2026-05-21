@@ -174,3 +174,54 @@ def test_decision_payload_is_valid_json() -> None:
     decision_unblocked = compute_stop_hook_decision(None)
     # Must serialize cleanly
     json.dumps(decision_unblocked.payload)
+
+
+# ── Phase 9i: cross-host wire formats ─────────────────────────────────────
+
+
+def test_format_decision_allow_stop_is_universal(initialized_repo: Path) -> None:
+    """Empty payload (`{}`) is identical across all hosts when allowing stop."""
+    from nightly_core.keepalive_hook import format_decision
+
+    decision = compute_stop_hook_decision(initialized_repo)  # inactive → allow
+    assert format_decision(decision, fmt="claude_code") == {}
+    assert format_decision(decision, fmt="cursor") == {}
+    assert format_decision(decision, fmt="gemini_cli") == {}
+
+
+def test_format_decision_claude_code_emits_block(initialized_repo: Path) -> None:
+    from nightly_core.keepalive_hook import format_decision
+
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo)
+    payload = format_decision(decision, fmt="claude_code")
+    assert payload["decision"] == "block"
+    assert "reason" in payload
+
+
+def test_format_decision_cursor_emits_followup_message(initialized_repo: Path) -> None:
+    from nightly_core.keepalive_hook import format_decision
+
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo)
+    payload = format_decision(decision, fmt="cursor")
+    assert "followup_message" in payload
+    assert payload["followup_message"]  # non-empty
+    assert "decision" not in payload  # not Claude's shape
+
+
+def test_format_decision_gemini_cli_emits_deny(initialized_repo: Path) -> None:
+    from nightly_core.keepalive_hook import format_decision
+
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo)
+    payload = format_decision(decision, fmt="gemini_cli")
+    assert payload["decision"] == "deny"  # not "block"
+    assert "reason" in payload
+
+
+def test_hook_formats_exhaustive() -> None:
+    """Lock the set of known formats so adding a new one is a deliberate change."""
+    from nightly_core.keepalive_hook import HOOK_FORMATS
+
+    assert set(HOOK_FORMATS) == {"claude_code", "cursor", "gemini_cli"}

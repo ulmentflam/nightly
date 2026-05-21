@@ -173,3 +173,50 @@ async def test_auth_status_with_antigravity_home(
     status = await integration.auth_status()
     assert status.ok is True
     assert status.plan == "unknown"
+
+
+# ── Phase 9i: Stop-hook install + conclude skill ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_writes_aftergent_hook_to_gemini_settings(tmp_path: Path) -> None:
+    import json as _json
+
+    from nightly_host_antigravity import AntigravityHostIntegration
+
+    integration = AntigravityHostIntegration(root=tmp_path)
+    await integration.install("project")
+    settings_path = integration.settings_path()
+    assert settings_path.is_file()
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    cmds = [
+        h
+        for block in settings["hooks"]["AfterAgent"]
+        for h in block.get("hooks", [])
+        if h.get("command") == "nightly hook stop --format gemini_cli"
+    ]
+    assert len(cmds) == 1
+    assert integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_install_writes_conclude_agent(tmp_path: Path) -> None:
+    from nightly_host_antigravity import AntigravityHostIntegration
+
+    integration = AntigravityHostIntegration(root=tmp_path)
+    await integration.install("project")
+    conclude = integration.conclude_skill_path("project")
+    assert conclude.is_file()
+    assert conclude.parent.name == "nightly-conclude"
+
+
+@pytest.mark.asyncio
+async def test_uninstall_antigravity_cleans_hook_and_conclude(tmp_path: Path) -> None:
+    from nightly_host_antigravity import AntigravityHostIntegration
+
+    integration = AntigravityHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.skill_path("project").exists()
+    assert not integration.conclude_skill_path("project").exists()
+    assert not integration.is_keepalive_hook_installed("project")

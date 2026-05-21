@@ -31,10 +31,12 @@ from nightly_core.cascade import (
 from nightly_core.cascade import (
     next_task as cascade_next,
 )
+from nightly_core.conclude_skill import CONCLUDE_SKILL_MD
 from nightly_core.contract import (
     AuthStatus,
     HostId,
     InstallScope,
+    KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
     SubAgentResult,
@@ -104,6 +106,7 @@ __all__ = [
     "AUTO_PR_CATEGORIES",
     "AUTO_PR_LOC_CEILING",
     "CASCADE_SOURCES",
+    "CONCLUDE_SKILL_MD",
     "PLAN_STATUSES",
     "AuthStatus",
     "BriefingContext",
@@ -116,6 +119,7 @@ __all__ = [
     "IssueFetcher",
     "IssueRanking",
     "IssueRecord",
+    "KeepaliveSupport",
     "LintDebtProposer",
     "NightlyHostIntegration",
     "PlanRecord",

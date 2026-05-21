@@ -133,3 +133,55 @@ async def test_auth_status_without_cursor_agent_binary(
     assert isinstance(status, AuthStatus)
     assert status.ok is False
     assert status.plan is None
+
+
+# ── Phase 9i: Stop-hook install + conclude skill ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_writes_cursor_stop_hook(tmp_path: Path) -> None:
+    import json as _json
+
+    from nightly_host_cursor import CursorHostIntegration
+
+    integration = CursorHostIntegration(root=tmp_path)
+    await integration.install("project")
+    hooks_path = integration.hooks_path()
+    assert hooks_path.is_file()
+    settings = _json.loads(hooks_path.read_text(encoding="utf-8"))
+    assert settings.get("version") == 1
+    entries = settings["hooks"]["stop"]
+    assert any(
+        e.get("command") == "nightly hook stop --format cursor" for e in entries
+    )
+    # loop_limit should be set high enough that Nightly's own MAX_TURNS cap fires first.
+    nightly_entry = next(
+        e for e in entries if e.get("command") == "nightly hook stop --format cursor"
+    )
+    assert nightly_entry["loop_limit"] >= 100
+    assert integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_install_writes_cursor_conclude_command(tmp_path: Path) -> None:
+    from nightly_host_cursor import CursorHostIntegration
+
+    integration = CursorHostIntegration(root=tmp_path)
+    await integration.install("project")
+    conclude = integration.conclude_skill_path("project")
+    assert conclude.is_file()
+    # Cursor commands are flat .md files.
+    assert conclude.suffix == ".md"
+    assert conclude.parent.name == "commands"
+
+
+@pytest.mark.asyncio
+async def test_uninstall_cursor_removes_conclude_and_hook(tmp_path: Path) -> None:
+    from nightly_host_cursor import CursorHostIntegration
+
+    integration = CursorHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.skill_path("project").exists()
+    assert not integration.conclude_skill_path("project").exists()
+    assert not integration.is_keepalive_hook_installed("project")

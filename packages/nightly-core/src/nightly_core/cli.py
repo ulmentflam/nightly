@@ -55,9 +55,11 @@ from nightly_core.driver import DriverConfig, run_loop
 from nightly_core.ideation import run_proposers, write_drafts
 from nightly_core.keepalive import KEEPALIVE_STRATEGIES, pick_keepalive
 from nightly_core.keepalive_hook import (
+    HOOK_FORMATS,
     arm_session,
     compute_stop_hook_decision,
     disarm_session,
+    format_decision,
     log_heartbeat,
     parse_hook_input,
     request_stop,
@@ -959,27 +961,45 @@ def stop_cmd() -> None:
 
 
 @hook_app.command(name="stop")
-def hook_stop() -> None:
-    """Stop hook handler — called by Claude Code on every turn boundary.
+def hook_stop(
+    fmt: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            "-f",
+            help=(
+                "Wire format. `claude_code` (default, also used by Codex), "
+                "`cursor` (Cursor 1.7+ followup_message shape), "
+                "`gemini_cli` (Antigravity / Gemini CLI AfterAgent deny shape)."
+            ),
+        ),
+    ] = "claude_code",
+) -> None:
+    """Stop-hook handler — called by the host on every turn boundary.
 
-    Reads the Claude Code hook payload from stdin (JSON), decides
-    whether to force-continue, and writes the decision JSON to stdout.
-    Always logs to `.nightly/runs/<id>/keepalive.log`. Never raises —
-    if anything goes wrong, allow the stop.
+    Reads the host's hook payload from stdin (JSON), decides whether to
+    force-continue, and writes the decision JSON to stdout in the wire
+    shape `fmt` expects. Always logs to `.nightly/runs/<id>/keepalive.log`.
+    Never raises — if anything goes wrong, emit `{}` so the host lets
+    the session stop rather than trapping the user.
     """
+    if fmt not in HOOK_FORMATS:
+        typer.echo(
+            f"unknown --format '{fmt}'. Valid: {', '.join(HOOK_FORMATS)}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     root = repo_root()
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     hook_input = parse_hook_input(raw)
     try:
         decision = compute_stop_hook_decision(root)
     except Exception as exc:  # hook must never crash the session
-        # Bubble up to stderr so the user sees it in --hooks-debug, but
-        # don't return a blocking decision — that would trap the user.
         typer.echo(f"nightly hook error: {exc!r}", err=True)
         typer.echo(json.dumps({}))
         return
     log_heartbeat(decision, root, hook_input=hook_input)
-    typer.echo(json.dumps(decision.payload))
+    typer.echo(json.dumps(format_decision(decision, fmt=fmt)))
 
 
 if __name__ == "__main__":

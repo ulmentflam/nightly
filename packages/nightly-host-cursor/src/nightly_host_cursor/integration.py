@@ -24,13 +24,22 @@ import uuid
 from pathlib import Path
 
 from nightly_core import (
+    CONCLUDE_SKILL_MD,
     AuthStatus,
     HostId,
     InstallScope,
+    KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
     SubAgentResult,
     repo_root,
+)
+from nightly_core.hook_install import (
+    CursorHookFile,
+    find_cursor_hook_index,
+    merge_cursor_hook,
+    read_settings,
+    remove_cursor_hook,
 )
 from nightly_host_cursor.skill import SKILL_MD
 
@@ -39,16 +48,25 @@ __all__ = ["CursorHostIntegration"]
 _SESSION_ID_ENV_VARS = ("CURSOR_SESSION_ID",)
 """Env vars Cursor exposes for the active session id. Best-effort."""
 
+_STOP_HOOK_COMMAND = "nightly hook stop --format cursor"
+"""Cursor's `followup_message` shape requires the `--format cursor` flag."""
+
+_HOOKS_RELATIVE = Path(".cursor/hooks.json")
+"""Per-repo Cursor hook config. https://cursor.com/docs/hooks"""
+
 
 class CursorHostIntegration(NightlyHostIntegration):
     """Nightly host integration for Cursor (secondary host)."""
 
     host_id: HostId = "cursor"
+    keepalive_support: KeepaliveSupport = "forced"
 
     # Cursor commands are a single markdown file per command — no folder
     # named after the command — so the path ends in `.md`, not `/SKILL.md`.
     PROJECT_SKILL_RELATIVE = Path(".cursor/commands/nightly.md")
     USER_SKILL_ABSOLUTE = Path.home() / ".cursor/commands/nightly.md"
+    PROJECT_CONCLUDE_RELATIVE = Path(".cursor/commands/nightly-conclude.md")
+    USER_CONCLUDE_ABSOLUTE = Path.home() / ".cursor/commands/nightly-conclude.md"
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or repo_root()).resolve()
@@ -64,13 +82,26 @@ class CursorHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_SKILL_RELATIVE
         return self.USER_SKILL_ABSOLUTE
 
+    def conclude_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_CONCLUDE_RELATIVE
+        return self.USER_CONCLUDE_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
+        conclude = self.conclude_skill_path(scope)
+        conclude.parent.mkdir(parents=True, exist_ok=True)
+        conclude.write_text(CONCLUDE_SKILL_MD, encoding="utf-8")
+        self.install_keepalive_hook(scope)
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
+        conclude = self.conclude_skill_path(scope)
+        self.uninstall_keepalive_hook(scope)
+        if conclude.exists():
+            conclude.unlink()
         if not target.exists():
             return
         target.unlink()
@@ -79,6 +110,42 @@ class CursorHostIntegration(NightlyHostIntegration):
 
     def is_installed(self, scope: InstallScope) -> bool:
         return self.skill_path(scope).is_file()
+
+    # ── Stop hook wiring (Phase 9i — Cursor 1.7+ flat shape) ─────────────
+    def hooks_path(self) -> Path:
+        """Where Nightly merges its Cursor stop-hook entry."""
+        return self._root / _HOOKS_RELATIVE
+
+    def _hook_file(self) -> CursorHookFile:
+        return CursorHookFile(
+            path=self.hooks_path(),
+            event_name="stop",
+            command=_STOP_HOOK_COMMAND,
+        )
+
+    def install_keepalive_hook(self, scope: InstallScope) -> None:
+        if scope != "project":
+            return
+        merge_cursor_hook(self._hook_file())
+
+    def uninstall_keepalive_hook(self, scope: InstallScope) -> None:
+        if scope != "project":
+            return
+        remove_cursor_hook(self._hook_file())
+
+    def is_keepalive_hook_installed(self, scope: InstallScope = "project") -> bool:
+        if scope != "project":
+            return False
+        import json as _json  # noqa: PLC0415 — narrow scope for the JSON error catch
+
+        try:
+            settings = read_settings(self.hooks_path())
+        except _json.JSONDecodeError:
+            return False
+        return (
+            find_cursor_hook_index(settings, event_name="stop", command=_STOP_HOOK_COMMAND)
+            is not None
+        )
 
     # ── session identity ──────────────────────────────────────────────────
     def session_id(self) -> str:

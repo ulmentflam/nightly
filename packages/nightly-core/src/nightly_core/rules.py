@@ -85,13 +85,18 @@ normal interactive use of this repo is unaffected.
    the obvious work runs out."
 8. **Arm the host-level keep-alive at session start.** Run
    `nightly session start` as the first thing the /nightly skill does.
-   This writes a `SESSION_ACTIVE` marker that Claude Code's Stop hook
-   checks every turn boundary; without it, the hook lets the session
-   end naturally. With it, the hook re-injects a "continue on X"
-   prompt so the session keeps moving even when the model's own
+   This writes a `SESSION_ACTIVE` marker that the host's Stop-equivalent
+   hook checks every turn boundary; without it, the hook lets the
+   session end naturally. With it, the hook re-injects a "continue on
+   X" prompt so the session keeps moving even when the model's own
    intent would have been to stop. The marker has a 4-hour TTL —
-   re-running `nightly session start` between long-lived work
-   refreshes it.
+   re-running `nightly session start` between long-lived work refreshes
+   it. Four of the five Nightly hosts have a real force-continue hook
+   (Claude Code's `Stop`, Codex CLI's `Stop`, Cursor 1.7+'s `stop`,
+   Antigravity / Gemini CLI's `AfterAgent`). opencode has no
+   equivalent — for that host the keep-alive is `soft` and relies on
+   the rule text above (the model is told to never stop). The
+   disk-based off-ramps below work everywhere regardless.
 
 ### Human shutdown intervention
 

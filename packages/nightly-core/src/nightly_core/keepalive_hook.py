@@ -45,17 +45,40 @@ from nightly_core.cascade import next_task
 from nightly_core.runs import current_run
 
 __all__ = [
+    "HOOK_FORMATS",
     "MAX_TURNS",
     "SESSION_ACTIVE_FILENAME",
     "SESSION_TTL_SECONDS",
     "STOP_FILENAME",
+    "HookFormat",
     "StopHookDecision",
     "arm_session",
     "compute_stop_hook_decision",
     "disarm_session",
+    "format_decision",
     "log_heartbeat",
     "request_stop",
 ]
+
+
+# ── wire formats ──────────────────────────────────────────────────────────
+
+
+# Four wire shapes for the same conceptual "force-continue" decision, one
+# per host family that exposes a Stop-equivalent hook:
+#
+# - claude_code: `{"decision":"block","reason":"..."}` — Claude Code & Codex.
+#   Same JSON shape across both; only the host's settings file location
+#   differs (.claude/settings.local.json vs .codex/hooks.json).
+# - cursor: `{"followup_message":"..."}` — Cursor 1.7+. Auto-continues
+#   if the field is set; capped by `loop_limit` (default 5).
+# - gemini_cli: `{"decision":"deny","reason":"..."}` — Gemini CLI &
+#   Antigravity. The `AfterAgent` hook fires per turn; `deny` triggers a
+#   retry with the reason text fed back as the next user prompt.
+# - empty: `{}` — any host that doesn't honor `{}` as allow-stop just
+#   needs to not have a hook installed; this is the default for opencode.
+HookFormat = str  # Literal narrowing avoided to keep typer happy
+HOOK_FORMATS: tuple[str, ...] = ("claude_code", "cursor", "gemini_cli")
 
 
 SESSION_ACTIVE_FILENAME = "SESSION_ACTIVE"
@@ -231,6 +254,32 @@ def _build_continue_reason(root: Path | None, *, run_id: str, turn: int) -> str:
         "confirmation, do not end the turn waiting for input. Read the plan, "
         "advance it, commit, move on. The user is asleep."
     ).strip()
+
+
+def format_decision(
+    decision: StopHookDecision,
+    *,
+    fmt: HookFormat = "claude_code",
+) -> dict[str, Any]:
+    """Convert a `StopHookDecision` to the JSON shape `fmt` expects.
+
+    `claude_code` (default) is the Claude Code / Codex CLI shape — these
+    two share the same Stop-hook JSON exactly. `cursor` and `gemini_cli`
+    each have their own quirks; see HOOK_FORMATS for the full taxonomy.
+
+    The `{}` payload (allow stop) is universal — every host treats an
+    empty JSON object as "no decision, let it stop." So that branch is
+    a single line at the top.
+    """
+    if not decision.should_block:
+        return {}
+    reason = decision.payload.get("reason", "")
+    if fmt == "cursor":
+        return {"followup_message": reason}
+    if fmt == "gemini_cli":
+        return {"decision": "deny", "reason": reason}
+    # claude_code default — same payload Claude Code and Codex emit.
+    return {"decision": "block", "reason": reason}
 
 
 # ── session lifecycle helpers ─────────────────────────────────────────────

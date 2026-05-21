@@ -23,13 +23,22 @@ import uuid
 from pathlib import Path
 
 from nightly_core import (
+    CONCLUDE_SKILL_MD,
     AuthStatus,
     HostId,
     InstallScope,
+    KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
     SubAgentResult,
     repo_root,
+)
+from nightly_core.hook_install import (
+    HookFile,
+    find_nested_hook_index,
+    merge_nested_hook,
+    read_settings,
+    remove_nested_hook,
 )
 from nightly_host_antigravity.skill import SKILL_MD
 
@@ -42,14 +51,27 @@ _SESSION_ID_ENV_VARS = ("ANTIGRAVITY_SESSION_ID", "GEMINI_SESSION_ID")
 # parent AND as the auth-status presence probe.
 _ANTIGRAVITY_HOME = Path.home() / ".gemini" / "antigravity"
 
+# Antigravity is built on Gemini CLI, which exposes an `AfterAgent`
+# lifecycle hook (Stop-hook equivalent) configured in `.gemini/settings.json`.
+# `decision: "deny"` with a `reason` triggers a retry with the reason text
+# fed back as the next user prompt — the same semantics as Claude Code's
+# `{"decision":"block","reason":"..."}` shape, just renamed.
+# https://geminicli.com/docs/hooks/ and the official docs at
+# github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md
+_STOP_HOOK_COMMAND = "nightly hook stop --format gemini_cli"
+_GEMINI_SETTINGS_RELATIVE = Path(".gemini/settings.json")
+
 
 class AntigravityHostIntegration(NightlyHostIntegration):
     """Nightly host integration for Google Antigravity (secondary host)."""
 
     host_id: HostId = "antigravity"
+    keepalive_support: KeepaliveSupport = "forced"
 
     PROJECT_SKILL_RELATIVE = Path(".gemini/antigravity/agents/nightly/SKILL.md")
     USER_SKILL_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly" / "SKILL.md"
+    PROJECT_CONCLUDE_RELATIVE = Path(".gemini/antigravity/agents/nightly-conclude/SKILL.md")
+    USER_CONCLUDE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-conclude" / "SKILL.md"
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or repo_root()).resolve()
@@ -64,22 +86,39 @@ class AntigravityHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_SKILL_RELATIVE
         return self.USER_SKILL_ABSOLUTE
 
+    def conclude_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_CONCLUDE_RELATIVE
+        return self.USER_CONCLUDE_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
+        conclude = self.conclude_skill_path(scope)
+        conclude.parent.mkdir(parents=True, exist_ok=True)
+        conclude.write_text(CONCLUDE_SKILL_MD, encoding="utf-8")
+        self.install_keepalive_hook(scope)
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
+        conclude = self.conclude_skill_path(scope)
+        self.uninstall_keepalive_hook(scope)
+        if conclude.exists():
+            conclude.unlink()
+            self._trim_agents_parents(conclude)
         if not target.exists():
             return
         target.unlink()
-        # Trim empty parents up to .gemini/antigravity/agents/, but never
-        # go above. We never touch antigravity/ itself — that's the
-        # user's home and may contain unrelated state (brain/, settings).
-        parent = target.parent
+        self._trim_agents_parents(target)
+
+    @staticmethod
+    def _trim_agents_parents(skill_file: Path) -> None:
+        """Trim empty parents up to `agents/`. Never touch antigravity/ —
+        that's user home and may contain unrelated state (brain/, settings)."""
+        parent = skill_file.parent
         stop_at = "agents"
-        while parent.name in {"nightly", stop_at} and not any(parent.iterdir()):
+        while parent.name and not any(parent.iterdir()):
             removed = parent
             parent = parent.parent
             removed.rmdir()
@@ -88,6 +127,42 @@ class AntigravityHostIntegration(NightlyHostIntegration):
 
     def is_installed(self, scope: InstallScope) -> bool:
         return self.skill_path(scope).is_file()
+
+    # ── Stop hook wiring (Phase 9i — Gemini CLI AfterAgent) ──────────────
+    def settings_path(self) -> Path:
+        """Where Nightly merges its AfterAgent hook entry."""
+        return self._root / _GEMINI_SETTINGS_RELATIVE
+
+    def _hook_file(self) -> HookFile:
+        return HookFile(
+            path=self.settings_path(),
+            event_name="AfterAgent",
+            command=_STOP_HOOK_COMMAND,
+        )
+
+    def install_keepalive_hook(self, scope: InstallScope) -> None:
+        if scope != "project":
+            return
+        merge_nested_hook(self._hook_file())
+
+    def uninstall_keepalive_hook(self, scope: InstallScope) -> None:
+        if scope != "project":
+            return
+        remove_nested_hook(self._hook_file())
+
+    def is_keepalive_hook_installed(self, scope: InstallScope = "project") -> bool:
+        if scope != "project":
+            return False
+        import json as _json  # noqa: PLC0415 — narrow scope for the JSON error catch
+
+        try:
+            settings = read_settings(self.settings_path())
+        except _json.JSONDecodeError:
+            return False
+        return (
+            find_nested_hook_index(settings, event_name="AfterAgent", command=_STOP_HOOK_COMMAND)
+            is not None
+        )
 
     # ── session identity ──────────────────────────────────────────────────
     def session_id(self) -> str:

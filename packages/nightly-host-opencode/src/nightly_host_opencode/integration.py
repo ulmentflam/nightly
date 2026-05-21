@@ -17,10 +17,12 @@ import uuid
 from pathlib import Path
 
 from nightly_core import (
+    CONCLUDE_SKILL_MD,
     AuthStatus,
     HeadlessResult,
     HostId,
     InstallScope,
+    KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
     SubAgentResult,
@@ -36,12 +38,24 @@ _SESSION_ID_ENV_VARS = ("OPENCODE_SESSION_ID",)
 
 
 class OpencodeHostIntegration(NightlyHostIntegration):
-    """Nightly host integration for opencode (primary host)."""
+    """Nightly host integration for opencode (primary host).
+
+    Keep-alive level: `soft` — opencode's plugin system has reactive
+    lifecycle events (`session.idle`, `session.updated`, tool hooks) but
+    no force-continue mechanism. The keep-alive contract is honored
+    purely through the AGENTS.md / CLAUDE.md NEVER STOP rule (the model
+    is told to never stop). The disk-based off-ramps (`nightly stop`,
+    `nightly conclude`) still work because they're host-portable.
+    Reference: https://opencode.ai/docs/plugins/
+    """
 
     host_id: HostId = "opencode"
+    keepalive_support: KeepaliveSupport = "soft"
 
     PROJECT_SKILL_RELATIVE = Path(".opencode/agents/nightly/SKILL.md")
     USER_SKILL_ABSOLUTE = Path.home() / ".opencode/agents/nightly/SKILL.md"
+    PROJECT_CONCLUDE_RELATIVE = Path(".opencode/agents/nightly-conclude/SKILL.md")
+    USER_CONCLUDE_ABSOLUTE = Path.home() / ".opencode/agents/nightly-conclude/SKILL.md"
 
     def __init__(
         self,
@@ -62,20 +76,35 @@ class OpencodeHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_SKILL_RELATIVE
         return self.USER_SKILL_ABSOLUTE
 
+    def conclude_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_CONCLUDE_RELATIVE
+        return self.USER_CONCLUDE_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
+        conclude = self.conclude_skill_path(scope)
+        conclude.parent.mkdir(parents=True, exist_ok=True)
+        conclude.write_text(CONCLUDE_SKILL_MD, encoding="utf-8")
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
+        conclude = self.conclude_skill_path(scope)
+        if conclude.exists():
+            conclude.unlink()
+            self._trim_agent_parents(conclude)
         if not target.exists():
             return
         target.unlink()
-        # Trim empty parents up to .opencode/agents/, but never go above.
-        parent = target.parent
+        self._trim_agent_parents(target)
+
+    @staticmethod
+    def _trim_agent_parents(skill_file: Path) -> None:
+        parent = skill_file.parent
         stop_at = "agents"
-        while parent.name in {"nightly", stop_at} and not any(parent.iterdir()):
+        while parent.name and not any(parent.iterdir()):
             removed = parent
             parent = parent.parent
             removed.rmdir()

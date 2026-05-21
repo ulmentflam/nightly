@@ -28,6 +28,20 @@ task. If not, walk the cascade.
 If `.nightly/runs/CURRENT` is missing, the repo isn't initialized — tell
 the user to run `nightly init`, then stop.
 
+**Arm the keep-alive on every invocation.** Run `nightly session start`
+as your first action. This writes a `SESSION_ACTIVE` marker that
+Codex CLI's `Stop` hook (registered by `nightly init`, lives in
+`.codex/hooks.json`) checks every turn boundary. With it, the hook
+re-injects a "continue on X" prompt every time you'd otherwise stop.
+Idempotent — re-running just refreshes the 4-hour TTL.
+
+Three off-ramps stop the session at any time:
+
+- **`nightly conclude`** (or `/nightly-conclude` skill) — graceful drain.
+- **`nightly stop`** — hard stop; next Stop hook firing allows the
+  current turn to end without starting new work.
+- **Ctrl-C / `/quit`** — interrupt; bypasses the hook entirely.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -49,6 +63,9 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
+| `nightly session start`                  | Arm the Stop-hook keep-alive (run this at /nightly start). |
+| `nightly session stop`                   | Disarm keep-alive without writing a STOP sentinel.        |
+| `nightly stop`                           | Hard-stop request — Stop hook allows the next turn to end. |
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 
