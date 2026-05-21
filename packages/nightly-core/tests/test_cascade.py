@@ -14,9 +14,11 @@ from nightly_core.cascade import (
     pick_github_issue,
     pick_ideated,
     pick_in_flight,
+    pick_pr_rescue,
     pick_unblocked,
 )
 from nightly_core.plans import update_plan_status
+from nightly_core.pr_feedback import PRFeedback, PRReference
 from nightly_core.proposers.base import Proposal
 from nightly_core.runs import new_task, start_run
 from nightly_core.triage import IssueRecord
@@ -349,4 +351,195 @@ def test_next_task_github_issue_outranks_ideate(
         lambda _root, **_: [_eligible_proposal(score=4.9)],
     )
     choice = next_task(tmp_path)
+    assert choice.source == "github_issue"
+
+
+# ── Phase 9: pr_rescue ───────────────────────────────────────────────────
+
+
+def _pr_branch(branch: str = "nightly/add-retry-2026-05-21T00-00-00Z", n: int = 42):
+    """Fake one open Nightly PR for `_nightly_open_pr_branches` to return."""
+    return (branch, n, f"https://github.com/x/y/pull/{n}")
+
+
+def _feedback(
+    *,
+    branch: str = "nightly/add-retry-2026-05-21T00-00-00Z",
+    n: int = 42,
+    kind: str = "review_comment",
+    body: str = "consider Decimal here",
+    is_bot: bool = False,
+    is_blocking_state: str | None = None,
+    when: datetime | None = None,
+) -> PRFeedback:
+    from datetime import UTC
+
+    return PRFeedback(
+        pr=PRReference(branch=branch, number=n, url=f"u/{n}", state="OPEN", title="t"),
+        kind=kind,  # type: ignore[arg-type]
+        author_login="bot" if is_bot else "alice",
+        author_is_bot=is_bot,
+        body=body,
+        state=is_blocking_state,
+        created_at=when or datetime(2026, 5, 21, 12, 0, tzinfo=UTC),
+        url=f"u/{n}",
+    )
+
+
+def test_pick_pr_rescue_returns_none_when_no_nightly_prs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Autouse stub already returns [] for branches; just verify the result.
+    assert pick_pr_rescue(tmp_path) is None
+
+
+def test_pick_pr_rescue_returns_candidate_with_new_feedback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _branch, root=None, fetcher=None, since=None: [_feedback()],
+    )
+    candidate = pick_pr_rescue(tmp_path)
+    assert candidate is not None
+    assert candidate.pr_number == 42
+    assert len(candidate.feedback) == 1
+    assert candidate.has_blocking is False
+
+
+def test_pick_pr_rescue_skips_branches_with_no_new_feedback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [],  # no feedback
+    )
+    assert pick_pr_rescue(tmp_path) is None
+
+
+def test_pick_pr_rescue_ranks_blocking_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blocking feedback should win over non-blocking feedback, regardless of count."""
+    b1 = _pr_branch("nightly/alpha-1", 1)
+    b2 = _pr_branch("nightly/beta-2", 2)
+
+    def fake_fetch(branch, root=None, fetcher=None, since=None):
+        if branch == b1[0]:
+            # non-blocking but 5 items
+            return [_feedback(branch=b1[0], n=1, kind="review_comment") for _ in range(5)]
+        return [
+            _feedback(
+                branch=b2[0],
+                n=2,
+                kind="review",
+                body="needs more tests",
+                is_blocking_state="CHANGES_REQUESTED",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [b1, b2],
+    )
+    monkeypatch.setattr("nightly_core.cascade.fetch_feedback", fake_fetch)
+
+    candidate = pick_pr_rescue(tmp_path)
+    assert candidate is not None
+    assert candidate.pr_number == 2  # blocking wins despite lower count
+    assert candidate.has_blocking is True
+
+
+def test_pick_pr_rescue_matches_plan_by_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a plan's slug appears in the branch, link them."""
+    run = start_run(tmp_path)
+    task = new_task(run, slug="add-retry")
+    branch_with_slug = "nightly/add-retry-2026-05-21T00-00-00Z"
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [(branch_with_slug, 7, "u/7")],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [_feedback(branch=branch_with_slug, n=7)],
+    )
+    candidate = pick_pr_rescue(tmp_path)
+    assert candidate is not None
+    assert candidate.plan_path == task.path / "plan.md"
+
+
+def test_pick_pr_rescue_no_plan_match_still_returns_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An orphan PR (no matching plan) still surfaces — agent reads PR fresh."""
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [("nightly/orphan-9999", 9, "u/9")],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [
+            _feedback(branch="nightly/orphan-9999", n=9)
+        ],
+    )
+    candidate = pick_pr_rescue(tmp_path)
+    assert candidate is not None
+    assert candidate.plan_path is None
+
+
+def test_next_task_pr_rescue_fires_between_issue_and_ideate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No issues, but a Nightly PR has new feedback → pr_rescue, not ideate."""
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [_feedback()],
+    )
+    # Force ideate to also have a viable candidate — pr_rescue must outrank.
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal()],
+    )
+
+    choice = next_task(tmp_path)
+    assert choice.source == "pr_rescue"
+    assert "42" in choice.summary
+    assert "feedback" in (choice.rationale or "").lower()
+
+
+def test_next_task_github_issue_still_outranks_pr_rescue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh issues outrank rescue: starting beats finishing only when there's
+    nothing to start with. pr_rescue is below github_issue in the cascade."""
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [_issue(7, labels=["nightly-ready"])],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [
+            _feedback(is_blocking_state="CHANGES_REQUESTED", kind="review"),
+        ],
+    )
+    choice = next_task(tmp_path)
+    # Brainstorm §03 step 4 (github_issue) precedes step 5 (pr_rescue).
     assert choice.source == "github_issue"

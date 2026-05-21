@@ -71,3 +71,20 @@ refuse:
   network_egress_unknown: true
   scope_creep:            true
   bypass_test_or_type:    true
+
+
+# ── PR feedback (Phase 9 — pr_rescue cascade step) ────────────────────────
+# When a Nightly-authored PR collects new feedback (human reviews,
+# CodeRabbit / Cursor / Copilot bot comments, or failed CI checks), the
+# cascade revisits the plan and dispatches the agent again with the new
+# feedback appended to the plan body. Disable here to skip the step.
+pr_feedback:
+  enabled:              true
+  # Project-specific bot logins that should be treated as bots even when
+  # GitHub doesn't flag them. The defaults already cover coderabbitai,
+  # github-copilot, cursor, greptile-apps, amp-app, devin-ai, renovate,
+  # and dependabot.
+  review_bots:          []
+  # Bot logins to treat as humans (rare — useful for internal tooling
+  # that posts via a bot account but reflects human-authored review).
+  treat_bots_as_human:  []

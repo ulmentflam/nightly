@@ -12,14 +12,19 @@ which step fired and why.
 
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from nightly_core.ideation import run_proposers, top_auto_pr
 from nightly_core.paths import planning_dir, repo_root
 from nightly_core.plans import PlanRecord, list_plans
+from nightly_core.pr_feedback import FeedbackFetcher, PRFeedback, fetch_feedback
 from nightly_core.proposers.base import Proposal
 from nightly_core.triage import IssueRanking, rank_issues
 
@@ -27,11 +32,13 @@ __all__ = [
     "CASCADE_SOURCES",
     "CascadeChoice",
     "CascadeSource",
+    "PRRescueCandidate",
     "next_task",
     "pick_accepted_rfc",
     "pick_github_issue",
     "pick_ideated",
     "pick_in_flight",
+    "pick_pr_rescue",
     "pick_unblocked",
 ]
 
@@ -41,6 +48,7 @@ CascadeSource = Literal[
     "unblocked_approval",
     "accepted_rfc",
     "github_issue",
+    "pr_rescue",
     "ideate",
     "nothing",
 ]
@@ -51,6 +59,7 @@ CASCADE_SOURCES: tuple[CascadeSource, ...] = (
     "unblocked_approval",
     "accepted_rfc",
     "github_issue",
+    "pr_rescue",
     "ideate",
     "nothing",
 )
@@ -61,9 +70,13 @@ class CascadeChoice:
     """What to do next, and why.
 
     `target_path` may point at a plan.md, an RFC, or be None when the
-    target is a remote artifact (GitHub issue). `summary` is a single
-    human-readable line; `rationale` is a fuller explanation suitable for
-    the briefing.
+    target is a remote artifact (GitHub issue) or an orphan PR with no
+    matching plan. `summary` is a single human-readable line;
+    `rationale` is a fuller explanation suitable for the briefing.
+
+    `pr_feedback` is populated when `source == "pr_rescue"` — the driver
+    uses it to append a "Feedback round N" section to the plan body
+    before dispatch.
     """
 
     source: CascadeSource
@@ -71,6 +84,7 @@ class CascadeChoice:
     target_path: Path | None = None
     rationale: str | None = None
     score: float | None = None
+    pr_feedback: tuple[PRFeedback, ...] | None = None
 
 
 # ── individual cascade steps ──────────────────────────────────────────────
@@ -139,6 +153,164 @@ def pick_github_issue(root: Path | None = None) -> IssueRanking | None:
     return eligible[0]
 
 
+@dataclass(frozen=True)
+class PRRescueCandidate:
+    """One Nightly-authored PR that has unaddressed feedback to act on."""
+
+    branch: str
+    pr_url: str
+    pr_number: int
+    feedback: tuple[PRFeedback, ...] = field(default_factory=tuple)
+    plan_path: Path | None = None
+    """The matched task plan, if Nightly can identify which task this PR
+    belongs to. `None` means we couldn't tie the branch back to a plan —
+    the agent has to read the PR + feedback fresh."""
+
+    @property
+    def has_blocking(self) -> bool:
+        return any(f.is_blocking for f in self.feedback)
+
+    @property
+    def summary(self) -> str:
+        n = len(self.feedback)
+        blocking = sum(1 for f in self.feedback if f.is_blocking)
+        bot = sum(1 for f in self.feedback if f.author_is_bot)
+        human = n - bot
+        return (
+            f"#{self.pr_number} ({self.branch}): "
+            f"{n} new feedback item(s) — {blocking} blocking · "
+            f"{human} human · {bot} bot"
+        )
+
+
+# Plans record the last time they were reconciled against PR feedback so
+# the cascade can skip them when nothing new has landed since.
+_PR_LAST_RECONCILED_KEY = "pr_last_reconciled_at"
+
+
+def _nightly_open_pr_branches(
+    root: Path | None = None,
+    *,
+    branch_prefix: str = "nightly/",
+) -> list[tuple[str, int, str]]:
+    """List `(branch, pr_number, pr_url)` for open PRs on Nightly branches.
+
+    Uses `gh pr list --json` if `gh` is available; returns `[]` otherwise.
+    """
+    if shutil.which("gh") is None:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "200",
+                "--json",
+                "number,headRefName,url",
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return []
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    out: list[tuple[str, int, str]] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        branch = str(entry.get("headRefName") or "")
+        if not branch.startswith(branch_prefix):
+            continue
+        try:
+            num = int(entry.get("number") or 0)
+        except (TypeError, ValueError):
+            continue
+        if num <= 0:
+            continue
+        out.append((branch, num, str(entry.get("url") or "")))
+    return out
+
+
+def _match_plan_to_branch(branch: str, root: Path | None = None) -> PlanRecord | None:
+    """Best-effort: find a plan whose slug appears in `branch`.
+
+    Nightly branches follow `nightly/<slug>-<ts>`, so the plan's slug
+    (`0001-add-retry`) is usually a substring of the branch name. We
+    match conservatively: longest matching plan slug wins.
+    """
+    candidates: list[tuple[int, PlanRecord]] = []
+    for plan in list_plans(root):
+        slug_core = re.sub(r"^\d+-", "", plan.slug)  # drop NNNN- prefix
+        if slug_core and slug_core in branch:
+            candidates.append((len(slug_core), plan))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: -pair[0])
+    return candidates[0][1]
+
+
+def _last_reconciled(plan: PlanRecord | None) -> datetime | None:
+    if plan is None:
+        return None
+    raw = plan.metadata.get(_PR_LAST_RECONCILED_KEY)
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def pick_pr_rescue(
+    root: Path | None = None,
+    *,
+    fetcher: FeedbackFetcher | None = None,
+) -> PRRescueCandidate | None:
+    """Find a Nightly-authored open PR with feedback newer than the plan's
+    last reconcile stamp. Returns the most urgent candidate (blocking
+    feedback first, then by feedback count), or `None`.
+
+    Best-effort: a missing `gh`, no GitHub remote, or no open Nightly PRs
+    all return `None` without raising.
+    """
+    branches = _nightly_open_pr_branches(root)
+    if not branches:
+        return None
+
+    candidates: list[PRRescueCandidate] = []
+    for branch, number, url in branches:
+        plan = _match_plan_to_branch(branch, root)
+        since = _last_reconciled(plan)
+        new_feedback = fetch_feedback(branch, root=root, fetcher=fetcher, since=since)
+        if not new_feedback:
+            continue
+        candidates.append(
+            PRRescueCandidate(
+                branch=branch,
+                pr_url=url,
+                pr_number=number,
+                feedback=tuple(new_feedback),
+                plan_path=plan.path if plan else None,
+            )
+        )
+
+    if not candidates:
+        return None
+    # Most urgent first: blocking feedback before non-blocking, then by count.
+    candidates.sort(key=lambda c: (-int(c.has_blocking), -len(c.feedback)))
+    return candidates[0]
+
+
 def pick_ideated(root: Path | None = None) -> Proposal | None:
     """Run the proposer suite and return an auto-PR-eligible proposal, if any.
 
@@ -155,7 +327,7 @@ def pick_ideated(root: Path | None = None) -> Proposal | None:
 # ── the cascade itself ────────────────────────────────────────────────────
 
 
-def next_task(root: Path | None = None) -> CascadeChoice:
+def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one return per cascade step is the whole point
     """Walk the cascade and return the first hit.
 
     The order is fixed:
@@ -214,6 +386,22 @@ def next_task(root: Path | None = None) -> CascadeChoice:
                 "No in-flight work, no RFC items, no unblocked tasks."
             ),
             score=issue.score,
+        )
+
+    rescue = pick_pr_rescue(root)
+    if rescue is not None:
+        return CascadeChoice(
+            source="pr_rescue",
+            summary=rescue.summary,
+            target_path=rescue.plan_path,
+            rationale=(
+                f"Nightly-authored PR {rescue.pr_url} has new feedback since "
+                "the last reconcile — finishing beats starting. "
+                f"{'Blocking' if rescue.has_blocking else 'Non-blocking'}: "
+                f"{len(rescue.feedback)} item(s). "
+                "Driver will append the feedback to the plan body before dispatch."
+            ),
+            pr_feedback=rescue.feedback,
         )
 
     ideated = pick_ideated(root)

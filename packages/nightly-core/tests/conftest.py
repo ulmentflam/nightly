@@ -34,3 +34,16 @@ def _stub_cascade_proposers(monkeypatch: pytest.MonkeyPatch) -> None:
         "nightly_core.cascade.run_proposers",
         lambda _root, **_: [],
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_cascade_pr_rescue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default: cascade PR-rescue finds no open Nightly PRs (no `gh` calls).
+
+    Tests that exercise pr_rescue override `_nightly_open_pr_branches`
+    and (separately) the feedback fetcher.
+    """
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [],
+    )

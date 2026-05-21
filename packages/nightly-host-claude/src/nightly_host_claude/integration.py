@@ -144,12 +144,19 @@ class ClaudeHostIntegration(NightlyHostIntegration):
                 elapsed_ms=0,
                 error="claude binary not found on PATH",
             )
+        # `--permission-mode acceptEdits` is the autonomy contract in argv
+        # form: it silences Claude Code's edit-approval prompts so Nightly
+        # never blocks on "may I edit foo.py?" dialogs. Combined with the
+        # AGENTS.md / CLAUDE.md rules block (no `AskUserQuestion`), this
+        # closes both the model-side and host-side prompt surfaces.
         argv = [
             binary,
             "-p",
             prompt,
             "--output-format",
             "json",
+            "--permission-mode",
+            "acceptEdits",
             "--session-id",
             self.session_id(),
         ]

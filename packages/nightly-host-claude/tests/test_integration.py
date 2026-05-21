@@ -175,6 +175,8 @@ async def test_run_headless_builds_claude_argv(
     assert "json" in argv
     assert "--session-id" in argv
     assert "abc-123" in argv  # session id propagated
+    assert "--permission-mode" in argv  # nightly autonomy contract
+    assert "acceptEdits" in argv
     assert captured["cwd"] == project
     assert captured["timeout_s"] == 30
 

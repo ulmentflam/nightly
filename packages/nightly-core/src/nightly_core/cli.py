@@ -18,6 +18,8 @@ Commands as of Phase 8:
 - `nightly ideate`      — run proposers and write draft issues to disk
 - `nightly headless`    — spawn a host CLI non-interactively (cron / CI)
 - `nightly run`         — drive the cascade headless; multi-task parallel
+- `nightly feedback`    — show PR feedback for a branch (default: HEAD)
+- `nightly rescue`      — preview the next pr_rescue candidate without dispatching
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -25,6 +27,7 @@ This is the planned-phase CLI surface complete (Phases 0-8).
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
@@ -35,6 +38,7 @@ from nightly_core._version import __version__
 from nightly_core.autonomy import can_auto_pr
 from nightly_core.briefing import write_briefing
 from nightly_core.cascade import next_task as cascade_next
+from nightly_core.cascade import pick_pr_rescue
 from nightly_core.contract import (
     HostId,
     InstallScope,
@@ -44,7 +48,9 @@ from nightly_core.contract import (
 from nightly_core.driver import DriverConfig, run_loop
 from nightly_core.ideation import run_proposers, write_drafts
 from nightly_core.paths import nightly_dir, planning_dir, repo_root, run_dir
-from nightly_core.plans import list_plans
+from nightly_core.plans import append_pr_feedback, list_plans
+from nightly_core.pr_feedback import fetch_feedback
+from nightly_core.rules import seed_rules
 from nightly_core.runs import (
     conclude_run,
     current_run,
@@ -83,6 +89,17 @@ refuse:
   network_egress_unknown: true
   scope_creep:            true
   bypass_test_or_type:    true
+
+# pr_feedback governs the `pr_rescue` cascade step (Phase 9).
+# - `enabled` flips the whole feature off without removing the block.
+# - `review_bots` extends the default bot allowlist (CodeRabbit, Cursor BugBot,
+#   Copilot reviewer, Greptile, Amp, etc.) with project-specific accounts.
+# - `treat_bots_as_human` flips a bot login into the "human" bucket — useful
+#   for an internally-trusted automation that should outrank ordinary bots.
+pr_feedback:
+  enabled:              true
+  review_bots:          []
+  treat_bots_as_human:  []
 """
 
 
@@ -185,6 +202,23 @@ def _format_path_for_display(path: Path, root: Path) -> str:
         return str(path)
 
 
+def _current_branch(root: Path) -> str | None:
+    """Best-effort `git branch --show-current`. None if git missing or detached HEAD."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    name = result.stdout.strip()
+    return name or None
+
+
 def _require_current_run(root: Path):
     """Get the current run or exit cleanly with a helpful message."""
     run = current_run(root)
@@ -222,6 +256,13 @@ def init(
         InstallScope,
         typer.Option(help="Install at repo-local 'project' scope or user-global 'user' scope."),
     ] = "project",
+    rules: Annotated[
+        bool,
+        typer.Option(
+            "--rules/--no-rules",
+            help="Seed Nightly's autonomy contract into AGENTS.md + CLAUDE.md. Default: on.",
+        ),
+    ] = True,
 ) -> None:
     """Bootstrap .nightly/, write default config, install the host launcher."""
     root = repo_root()
@@ -244,8 +285,24 @@ def init(
     target = integration.skill_path(scope)  # type: ignore[attr-defined]
     typer.echo(f"  ✓ installed {host} skill ({scope}) at {_format_path_for_display(target, root)}")
 
+    if rules:
+        for outcome in seed_rules(root):
+            verb = {
+                "created": "✓ created",
+                "updated": "✓ updated",
+                "unchanged": "·",
+                "skipped": "·",
+            }[outcome.action]
+            rel = _format_path_for_display(outcome.path, root)
+            note = (
+                "(nightly autonomy contract)"
+                if outcome.action in {"created", "updated"}
+                else "already current"
+            )
+            typer.echo(f"  {verb} {rel} {note}")
+
     typer.echo("")
-    typer.echo("→ Open Claude Code in this repo and ask Nightly to run a task on something.")
+    typer.echo("→ Open your host in this repo and ask Nightly to run a task on something.")
 
 
 @app.command()
@@ -644,6 +701,118 @@ def ideate() -> None:
         f"  {auto_eligible} auto-PR-eligible · {len(proposals) - auto_eligible} for human review"
     )
     typer.echo("→ run `nightly next` to pick the top auto-eligible one (if any).")
+
+
+@app.command()
+def feedback(
+    branch: Annotated[
+        str | None,
+        typer.Option("--branch", help="Branch whose PR to inspect. Default: current HEAD."),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply/--dry-run",
+            help=(
+                "When set, append a `## Feedback round N` section to the matching "
+                "plan and stamp pr_last_reconciled_at. Default: dry-run (print only)."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Show PR feedback for `branch` — reviews, inline comments, check failures.
+
+    Best-effort: requires `gh` and a GitHub remote. Prints nothing if the
+    branch has no PR or `gh` is unavailable. With `--apply`, writes the
+    feedback into the plan body so the agent can act on it in the next
+    `nightly run` cycle.
+    """
+    root = repo_root()
+    target = branch or _current_branch(root)
+    if not target:
+        typer.echo(
+            "no branch specified and could not determine current branch "
+            "(detached HEAD or git unavailable)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    items = fetch_feedback(target, root=root)
+    if not items:
+        typer.echo(f"· no feedback for branch '{target}' (or no PR / no gh)")
+        return
+
+    typer.echo(f"branch:  {target}")
+    typer.echo(f"items:   {len(items)}")
+    blocking = sum(1 for f in items if f.is_blocking)
+    bot = sum(1 for f in items if f.author_is_bot)
+    typer.echo(f"breakdown: {blocking} blocking · {len(items) - bot} human · {bot} bot")
+    typer.echo("-" * 60)
+    for f in items:
+        flag = " ! " if f.is_blocking else "   "
+        who = f"{f.author_login}{'  [bot]' if f.author_is_bot else ''}"
+        locator = ""
+        if f.file_ref:
+            locator = f" @ {f.file_ref}"
+            if f.line_ref:
+                locator += f":{f.line_ref}"
+        head = f.body.splitlines()[0] if f.body else ""
+        if len(head) > _TRIAGE_TITLE_MAX:
+            head = head[: _TRIAGE_TITLE_ELIDE_AT] + "..."
+        typer.echo(f"{flag}{f.kind:<15} {who:<28}{locator}")
+        typer.echo(f"   {head}")
+
+    if apply:
+        # Reuse the cascade's branch→plan matcher so `--apply` lands the
+        # feedback on the same plan the cascade would have picked.
+        from nightly_core.cascade import _match_plan_to_branch  # noqa: PLC0415
+
+        plan = _match_plan_to_branch(target, root)
+        if plan is None:
+            typer.echo("", err=True)
+            typer.echo(
+                f"✗ could not match branch '{target}' to a plan — "
+                "feedback not appended.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        record = append_pr_feedback(plan.path, items)
+        typer.echo("")
+        typer.echo(
+            f"✓ appended feedback to {_format_path_for_display(record.path, root)} "
+            f"(stamped pr_last_reconciled_at)"
+        )
+
+
+@app.command()
+def rescue() -> None:
+    """Preview the next pr_rescue candidate without dispatching it.
+
+    Same logic the cascade uses — finds the highest-priority Nightly-authored
+    open PR with feedback newer than its plan's last reconcile stamp.
+    Prints `None` if no PR has unaddressed feedback.
+    """
+    root = repo_root()
+    candidate = pick_pr_rescue(root)
+    if candidate is None:
+        typer.echo("· no PR rescue candidate (no Nightly PRs with new feedback)")
+        return
+    typer.echo(f"branch:    {candidate.branch}")
+    typer.echo(f"pr:        #{candidate.pr_number}  {candidate.pr_url}")
+    typer.echo(f"summary:   {candidate.summary}")
+    typer.echo(f"blocking:  {candidate.has_blocking}")
+    if candidate.plan_path is not None:
+        typer.echo(f"plan:      {_format_path_for_display(candidate.plan_path, root)}")
+    else:
+        typer.echo("plan:      (no match — agent must read PR fresh)")
+    typer.echo("-" * 60)
+    for f in candidate.feedback:
+        flag = " ! " if f.is_blocking else "   "
+        who = f"{f.author_login}{'  [bot]' if f.author_is_bot else ''}"
+        head = f.body.splitlines()[0] if f.body else ""
+        if len(head) > _TRIAGE_TITLE_MAX:
+            head = head[: _TRIAGE_TITLE_ELIDE_AT] + "..."
+        typer.echo(f"{flag}{f.kind:<15} {who:<28}  {head}")
 
 
 if __name__ == "__main__":

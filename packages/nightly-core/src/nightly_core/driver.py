@@ -36,6 +36,7 @@ from nightly_core.paths import repo_root
 from nightly_core.plans import (
     PlanRecord,
     PlanStatus,
+    append_pr_feedback,
     read_plan,
     update_plan_status,
 )
@@ -295,7 +296,13 @@ async def run_loop(
             _log.info("cascade returned nothing; exiting loop")
             break
 
-        async def _dispatch_one(plan: PlanRecord, source: str) -> TaskOutcome:
+        async def _dispatch_one(plan: PlanRecord, choice: CascadeChoice) -> TaskOutcome:
+            # PR rescue: append the new feedback to the plan body and stamp
+            # `pr_last_reconciled_at` BEFORE the dispatch claim. The agent
+            # picks up the amended plan in its SCOPE step.
+            if choice.source == "pr_rescue" and choice.pr_feedback:
+                amended = append_pr_feedback(plan.path, list(choice.pr_feedback))
+                plan = amended  # re-read happens inside run_one_task too
             async with semaphore:
                 outcome = await run_one_task(
                     root=root_path,
@@ -311,13 +318,13 @@ async def run_loop(
                 plan_path=outcome.plan_path,
                 worktree=outcome.worktree,
                 headless=outcome.headless,
-                cascade_source=source,
+                cascade_source=choice.source,
                 final_status=outcome.final_status,
                 error=outcome.error,
             )
 
         batch_outcomes = await asyncio.gather(
-            *(_dispatch_one(plan, choice.source) for plan, choice in batch),
+            *(_dispatch_one(plan, choice) for plan, choice in batch),
             return_exceptions=False,
         )
         results.extend(batch_outcomes)

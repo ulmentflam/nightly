@@ -19,6 +19,7 @@ core lightweight and forgiving — missing fields default sensibly.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,14 +29,22 @@ from nightly_core.paths import runs_dir
 
 __all__ = [
     "PLAN_STATUSES",
+    "PR_LAST_RECONCILED_KEY",
     "PlanRecord",
     "PlanStatus",
+    "append_pr_feedback",
     "list_plans",
     "parse_frontmatter",
     "read_plan",
     "render_frontmatter",
     "update_plan_status",
 ]
+
+
+PR_LAST_RECONCILED_KEY = "pr_last_reconciled_at"
+"""Frontmatter key recording the most recent PR-feedback reconciliation.
+Used by the cascade's `pick_pr_rescue` to skip plans whose PR has had
+no new feedback since the timestamp."""
 
 
 PlanStatus = Literal[
@@ -175,6 +184,79 @@ def update_plan_status(
 
 
 # ── listing across runs ───────────────────────────────────────────────────
+
+
+def append_pr_feedback(
+    path: Path,
+    feedback: list,
+    *,
+    now: datetime | None = None,
+) -> PlanRecord:
+    """Append a `## Feedback round N` section to the plan body and stamp
+    `pr_last_reconciled_at` in the frontmatter.
+
+    Idempotency: each call adds a new section labeled with the next round
+    number (counted by scanning the body for prior `## Feedback round`
+    headings). Body and other frontmatter fields are preserved.
+
+    `feedback` is `list[PRFeedback]` — typed loosely to avoid a circular
+    import; the cascade passes the typed list.
+    """
+    plan = read_plan(path)
+    moment = now or datetime.now(UTC)
+
+    # Count existing feedback rounds in the body.
+    prior_rounds = len(re.findall(r"^## Feedback round \d+", plan.body, re.MULTILINE))
+    round_n = prior_rounds + 1
+
+    lines: list[str] = []
+    lines.append("")
+    lines.append(f"## Feedback round {round_n}")
+    lines.append("")
+    lines.append(f"*Collected {moment.strftime('%Y-%m-%d %H:%M UTC')}.*")
+    lines.append("")
+    if not feedback:
+        lines.append("_(no feedback returned)_")
+    else:
+        # Group: blocking first, then humans, then bots.
+        blocking = [f for f in feedback if getattr(f, "is_blocking", False)]
+        non_blocking_humans = [
+            f for f in feedback if not getattr(f, "is_blocking", False) and not f.author_is_bot
+        ]
+        bots = [f for f in feedback if not getattr(f, "is_blocking", False) and f.author_is_bot]
+        for label, group in (
+            ("Blocking", blocking),
+            ("Human reviewers", non_blocking_humans),
+            ("Bot reviewers", bots),
+        ):
+            if not group:
+                continue
+            lines.append(f"### {label}")
+            lines.append("")
+            for f in group:
+                head_bits = [f"**{f.author_login}**"]
+                if f.kind == "review" and f.state:
+                    head_bits.append(f"({f.state.lower()})")
+                elif f.kind == "check_failure":
+                    head_bits.append(f"(check: {f.state})")
+                if f.file_ref:
+                    locator = f.file_ref
+                    if f.line_ref:
+                        locator = f"{f.file_ref}:{f.line_ref}"
+                    head_bits.append(f"on `{locator}`")
+                lines.append(f"- {' '.join(head_bits)}")
+                # Indent quoted body.
+                for body_line in f.body.splitlines() or [""]:
+                    lines.append(f"  > {body_line}")
+                lines.append(f"  · [link]({f.url})")
+            lines.append("")
+
+    new_body = plan.body.rstrip() + "\n" + "\n".join(lines).rstrip() + "\n"
+    new_metadata = dict(plan.metadata)
+    new_metadata[PR_LAST_RECONCILED_KEY] = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    new_metadata["updated"] = new_metadata[PR_LAST_RECONCILED_KEY]
+    path.write_text(render_frontmatter(new_metadata, new_body), encoding="utf-8")
+    return PlanRecord(path=path, metadata=new_metadata, body=new_body)
 
 
 def list_plans(root: Path | None = None) -> list[PlanRecord]:

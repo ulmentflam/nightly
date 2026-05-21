@@ -729,3 +729,121 @@ def test_run_command_clamps_concurrency_to_minimum_one(
 def test_run_command_typer_rejects_invalid_host(repo: Path) -> None:
     result = runner.invoke(app, ["run", "--host", "bogus"])
     assert result.exit_code != 0
+
+
+# ── Phase 9 commands: feedback + rescue ───────────────────────────────────
+
+
+def _make_feedback_item(**overrides):
+    """Build a PRFeedback with sensible defaults; overrides win.
+
+    Uses pydantic `model_copy(update=...)` rather than `**` so the
+    `kind` Literal type stays narrow for pyrefly.
+    """
+    from datetime import UTC, datetime
+
+    from nightly_core.pr_feedback import PRFeedback, PRReference
+
+    base = PRFeedback(
+        pr=PRReference(branch="nightly/x", number=1, url="https://gh/x/1", state="OPEN", title="t"),
+        kind="review",
+        author_login="alice",
+        author_is_bot=False,
+        body="please fix the off-by-one",
+        state="CHANGES_REQUESTED",
+        created_at=datetime(2026, 5, 20, 12, 0, tzinfo=UTC),
+        url="https://gh/x/1#r1",
+    )
+    if not overrides:
+        return base
+    return base.model_copy(update=overrides)
+
+
+def test_feedback_command_prints_when_no_items(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("nightly_core.cli._current_branch", lambda _root: "nightly/foo")
+    monkeypatch.setattr("nightly_core.cli.fetch_feedback", lambda *_a, **_kw: [])
+    result = runner.invoke(app, ["feedback"])
+    assert result.exit_code == 0
+    assert "no feedback" in result.output
+
+
+def test_feedback_command_lists_items(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [
+        _make_feedback_item(author_login="alice"),
+        _make_feedback_item(
+            kind="review_comment",
+            author_login="coderabbitai[bot]",
+            author_is_bot=True,
+            body="nit: rename `x` to `count`",
+            state=None,
+            file_ref="src/m.py",
+            line_ref=42,
+        ),
+    ]
+    monkeypatch.setattr("nightly_core.cli._current_branch", lambda _root: "nightly/foo")
+    monkeypatch.setattr("nightly_core.cli.fetch_feedback", lambda *_a, **_kw: items)
+    result = runner.invoke(app, ["feedback"])
+    assert result.exit_code == 0
+    assert "alice" in result.output
+    assert "coderabbitai[bot]" in result.output
+    assert "src/m.py:42" in result.output
+    # Blocking marker on the CHANGES_REQUESTED review
+    assert " ! " in result.output
+
+
+def test_feedback_command_explicit_branch_skips_git(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch(branch, *, root, **_kw):
+        captured["branch"] = branch
+        return []
+
+    monkeypatch.setattr("nightly_core.cli.fetch_feedback", fake_fetch)
+    # _current_branch should not be consulted when --branch is given.
+    monkeypatch.setattr(
+        "nightly_core.cli._current_branch",
+        lambda _root: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    result = runner.invoke(app, ["feedback", "--branch", "nightly/explicit"])
+    assert result.exit_code == 0
+    assert captured["branch"] == "nightly/explicit"
+
+
+def test_feedback_command_fails_without_branch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("nightly_core.cli._current_branch", lambda _root: None)
+    result = runner.invoke(app, ["feedback"])
+    assert result.exit_code == 1
+    assert "could not determine current branch" in result.output
+
+
+def test_rescue_command_no_candidate(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("nightly_core.cli.pick_pr_rescue", lambda _root: None)
+    result = runner.invoke(app, ["rescue"])
+    assert result.exit_code == 0
+    assert "no PR rescue candidate" in result.output
+
+
+def test_rescue_command_prints_candidate(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightly_core.cascade import PRRescueCandidate
+
+    candidate = PRRescueCandidate(
+        branch="nightly/fix-thing-2026",
+        pr_url="https://github.com/o/r/pull/77",
+        pr_number=77,
+        feedback=(_make_feedback_item(),),
+        plan_path=None,
+    )
+    monkeypatch.setattr("nightly_core.cli.pick_pr_rescue", lambda _root: candidate)
+    result = runner.invoke(app, ["rescue"])
+    assert result.exit_code == 0
+    assert "nightly/fix-thing-2026" in result.output
+    assert "#77" in result.output
+    assert "no match" in result.output
