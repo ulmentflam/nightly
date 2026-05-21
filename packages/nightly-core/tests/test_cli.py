@@ -847,3 +847,47 @@ def test_rescue_command_prints_candidate(
     assert "nightly/fix-thing-2026" in result.output
     assert "#77" in result.output
     assert "no match" in result.output
+
+
+# ── Phase 9g: keepalive ───────────────────────────────────────────────────
+
+
+def test_keepalive_command_prints_all_strategies(repo: Path) -> None:
+    result = runner.invoke(app, ["keepalive"])
+    assert result.exit_code == 0
+    # Every canonical strategy slug shows up in the default output.
+    for slug in (
+        "reread_planning",
+        "mine_uncertainty",
+        "revive_parked",
+        "merge_near_misses",
+        "closed_pr_inspiration",
+        "radical_reread",
+    ):
+        assert slug in result.output
+    # Karpathy attribution should survive
+    assert "autoresearch" in result.output or "Karpathy" in result.output
+
+
+def test_keepalive_command_marks_recommendation(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Empty repo with a README → recommends radical_reread
+    (repo / "README.md").write_text("# repo", encoding="utf-8")
+    result = runner.invoke(app, ["keepalive"])
+    assert result.exit_code == 0
+    assert "radical_reread ← recommended" in result.output
+
+
+def test_keepalive_command_name_flag_prints_one_prompt(repo: Path) -> None:
+    result = runner.invoke(app, ["keepalive", "--name", "reread_planning"])
+    assert result.exit_code == 0
+    # No header / no other strategies — just the one prompt.
+    assert "Re-read every file under" in result.output
+    assert "## mine_uncertainty" not in result.output
+
+
+def test_keepalive_command_name_flag_unknown_slug_errors(repo: Path) -> None:
+    result = runner.invoke(app, ["keepalive", "--name", "bogus"])
+    assert result.exit_code == 1
+    assert "unknown strategy" in result.output

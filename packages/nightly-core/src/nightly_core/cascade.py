@@ -424,8 +424,13 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
         summary="no work — backlog is empty",
         rationale=(
             "No in-flight plans, no unblocked tasks, no accepted RFC items, "
-            "no nightly-eligible issues, no auto-PR-eligible proposals. "
-            "Run `nightly ideate` to write draft proposals for human review, "
-            "then write narrative + brief + exit."
+            "no nightly-eligible issues, no PR-rescue candidates, no "
+            "auto-PR-eligible proposals. "
+            "Before rendering the briefing and exiting, run `nightly keepalive` "
+            "and walk its think-harder strategies (re-read .planning/, mine "
+            "uncertainty.md, revive parked plans, scan closed PR reviews, "
+            "fresh-eyes re-read of entry docs). Only after every strategy "
+            "comes up empty: run `nightly ideate` to leave draft proposals "
+            "for human review, then write narrative + brief + exit."
         ),
     )

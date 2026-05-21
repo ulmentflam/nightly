@@ -69,6 +69,20 @@ normal interactive use of this repo is unaffected.
    there, the always-advance rule applies. Record the refused operation
    to `.nightly/runs/<run-id>/proposed/approvals/<id>.md`, document the
    gap in `uncertainty.md`, and route around it.
+7. **Never stop just because the cascade returned `nothing` — think
+   harder first.** Inspired by [Karpathy's
+   autoresearch](https://github.com/karpathy/autoresearch): when no
+   in-flight, unblocked, RFC, issue, PR-rescue, or ideated work
+   remains, **do not render the briefing and exit yet**. Run
+   `nightly keepalive` and walk its re-engagement strategies — re-read
+   `.planning/`, mine past `uncertainty.md` for stale defaults, revive
+   parked / blocked plans whose blockers have resolved, look for
+   near-misses among recent proposals, scan closed-PR review threads
+   for in-scope suggestions, do a fresh-eyes re-read of the entry
+   docs. Only when *every* strategy comes up empty do you render the
+   briefing and exit. The human might be asleep — your contract is
+   monotonic forward progress until interrupted, not "stop the moment
+   the obvious work runs out."
 
 If you find yourself about to ask the user something: stop, pick the
 better default, document the choice, and continue. The morning briefing

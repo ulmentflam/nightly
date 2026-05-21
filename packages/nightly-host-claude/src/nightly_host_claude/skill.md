@@ -54,6 +54,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly run [-n N] [-j K]`              | Drive the cascade headless; multi-task parallel.          |
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
+| `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 
@@ -102,13 +103,23 @@ guess the cascade — it's auditable on purpose.
 
 ### When the cascade returns `nothing`
 
-Run `nightly ideate` before drain. The proposer suite scans the repo for
-TODO/FIXME audits, autofixable lint debt, and `Any` at module boundaries,
-writing one draft markdown file per finding to `proposed/issues/`. These
-surface in the morning briefing under "Proposed issues" so the human
-reviewer can promote any to a real issue. Even when no proposal clears
-the autonomy bar, this leaves the human with a starting point for the
-next session.
+**Do not render the briefing yet.** Run `nightly keepalive` first —
+this prints think-harder strategies (re-read `.planning/`, mine past
+`uncertainty.md` for stale defaults, revive parked / blocked plans,
+combine near-miss proposals, scan closed-PR review threads for in-scope
+suggestions, fresh-eyes re-read of `README.md` + `AGENTS.md` / `CLAUDE.md`).
+Pick the recommended strategy (or pipe `nightly keepalive --name <slug>`
+into a sub-agent) and turn its output into a new task with
+`nightly task <slug>`. The pattern is borrowed from Karpathy's
+[autoresearch](https://github.com/karpathy/autoresearch): an
+autonomous loop should think harder, not stop, when obvious work runs out.
+
+Only after **every** keep-alive strategy comes up empty, run
+`nightly ideate` to leave draft proposals for human review (TODO/FIXME
+audits, autofixable lint debt, `Any` at module boundaries) and *then*
+render the briefing and exit. The drafts surface in the morning report
+under "Proposed issues" so the human has a starting point for the next
+session.
 
 ## Status updates as the lifecycle runs
 

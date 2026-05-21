@@ -20,6 +20,7 @@ Commands as of Phase 8:
 - `nightly run`         — drive the cascade headless; multi-task parallel
 - `nightly feedback`    — show PR feedback for a branch (default: HEAD)
 - `nightly rescue`      — preview the next pr_rescue candidate without dispatching
+- `nightly keepalive`   — print think-harder strategies when the cascade is empty
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -47,6 +48,7 @@ from nightly_core.contract import (
 )
 from nightly_core.driver import DriverConfig, run_loop
 from nightly_core.ideation import run_proposers, write_drafts
+from nightly_core.keepalive import KEEPALIVE_STRATEGIES, pick_keepalive
 from nightly_core.paths import nightly_dir, planning_dir, repo_root, run_dir
 from nightly_core.plans import append_pr_feedback, list_plans
 from nightly_core.pr_feedback import fetch_feedback
@@ -813,6 +815,61 @@ def rescue() -> None:
         if len(head) > _TRIAGE_TITLE_MAX:
             head = head[: _TRIAGE_TITLE_ELIDE_AT] + "..."
         typer.echo(f"{flag}{f.kind:<15} {who:<28}  {head}")
+
+
+@app.command()
+def keepalive(
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            help=(
+                "Print just one strategy by name (e.g. revive_parked). "
+                "Default: print every strategy and highlight the recommended one."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Print think-harder strategies for when the cascade returns `nothing`.
+
+    Inspired by Karpathy's autoresearch NEVER STOP doctrine: when no
+    obvious work remains, walk these strategies before rendering the
+    briefing. With no flags, prints every strategy and marks the one
+    `pick_keepalive` would auto-select. With `--name <slug>`, prints
+    just that strategy's prompt (useful for piping into a sub-agent).
+    """
+    root = repo_root()
+    if name is not None:
+        for strategy in KEEPALIVE_STRATEGIES:
+            if strategy.name == name:
+                typer.echo(strategy.prompt)
+                return
+        typer.echo(
+            f"unknown strategy: '{name}'. Available: "
+            f"{', '.join(s.name for s in KEEPALIVE_STRATEGIES)}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    recommended = pick_keepalive(root)
+    rec_name = recommended.name if recommended is not None else None
+    typer.echo("# Keep-alive strategies")
+    typer.echo("")
+    typer.echo(
+        "Walk these in order when `nightly next` returns `nothing` — "
+        "do not render the briefing and exit until every strategy comes up empty. "
+        "Inspired by Karpathy's autoresearch "
+        "(https://github.com/karpathy/autoresearch) NEVER STOP doctrine."
+    )
+    typer.echo("")
+    for strategy in KEEPALIVE_STRATEGIES:
+        marker = " ← recommended" if strategy.name == rec_name else ""
+        typer.echo(f"## {strategy.name}{marker}")
+        typer.echo("")
+        typer.echo(f"*Applies when:* {strategy.applies_when}")
+        typer.echo("")
+        typer.echo(strategy.prompt)
+        typer.echo("")
 
 
 if __name__ == "__main__":

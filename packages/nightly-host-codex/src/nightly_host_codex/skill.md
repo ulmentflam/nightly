@@ -48,6 +48,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly run [-n N] [-j K]`              | Drive the cascade headless; multi-task parallel.          |
 | `nightly feedback [--branch <name>]`     | Show PR feedback (reviews, comments, check failures).     |
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
+| `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
 
 Specialist roles: `implementer`, `tester`, `reviewer`, `researcher`.
 
@@ -82,8 +83,13 @@ iteration:
    runs and the cascade returns the top proposal that clears the
    conservative autonomy bar (single-file, < 80 LOC, lint_debt or
    dep_upgrade category).
-7. **nothing** — empty backlog. Run `nightly ideate` to write drafts
-   for human review, then render the briefing and stop.
+7. **nothing** — empty backlog. **Do not render the briefing yet.** Run
+   `nightly keepalive` and walk its think-harder strategies (re-read
+   `.planning/`, mine `uncertainty.md`, revive parked plans, scan closed
+   PR reviews, fresh-eyes re-read of entry docs) — pattern borrowed from
+   Karpathy's [autoresearch](https://github.com/karpathy/autoresearch).
+   Only after every strategy comes up empty, run `nightly ideate` to
+   leave drafts for human review, then render the briefing and stop.
 
 ## Codex-specific: sub-agent dispatch via MCP
 
