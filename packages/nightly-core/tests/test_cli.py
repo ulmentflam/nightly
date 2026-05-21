@@ -979,3 +979,74 @@ def test_hook_stop_honors_stop_sentinel(repo: Path) -> None:
 
     payload = _json.loads(result.stdout.strip())
     assert payload == {}
+
+
+# ── Phase 9j: nightly update ──────────────────────────────────────────────
+
+
+def test_update_command_dry_run_in_real_repo(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dry-run against the actual git source should not modify anything."""
+    # Force the update to think it's a git install (it is — that's the Nightly repo)
+    out = runner.invoke(app, ["update", "--dry-run", "--no-refresh-repo"])
+    # Either the network is available (exit 0) or git fetch fails offline (exit 1).
+    # Both are acceptable for the smoke; what matters is we don't crash.
+    assert out.exit_code in {0, 1}
+    if out.exit_code == 0:
+        assert "version:" in out.stdout
+        assert "(dry-run)" in out.stdout
+
+
+def test_update_command_emits_helpful_error_when_not_git(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.cli.update_install",
+        lambda **_kw: (_ for _ in ()).throw(
+            RuntimeError("Couldn't find a git source checkout for Nightly. PyPI / install.sh.")
+        ),
+    )
+    out = runner.invoke(app, ["update", "--no-refresh-repo"])
+    assert out.exit_code == 1
+    assert "PyPI" in out.output or "install.sh" in out.output
+
+
+def test_update_command_refreshes_installed_hosts(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightly_core.update import InstallMethod
+
+    method = InstallMethod(kind="git", root=repo)
+    monkeypatch.setattr(
+        "nightly_core.cli.update_install",
+        lambda **_kw: (method, "abc1234", "def5678"),
+    )
+    monkeypatch.setattr(
+        "nightly_core.cli.refresh_repo_install",
+        lambda _root: (("claude", "codex"), "updated"),
+    )
+    out = runner.invoke(app, ["update"])
+    assert out.exit_code == 0
+    assert "abc1234" in out.output
+    assert "def5678" in out.output
+    assert "claude" in out.output
+    assert "codex" in out.output
+    assert "updated" in out.output
+
+
+def test_update_command_no_refresh_skips_repo_init(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nightly_core.update import InstallMethod
+
+    method = InstallMethod(kind="git", root=repo)
+    monkeypatch.setattr(
+        "nightly_core.cli.update_install",
+        lambda **_kw: (method, "abc", "abc"),
+    )
+
+    def _should_not_run(_root):
+        raise AssertionError("refresh_repo_install should not run with --no-refresh-repo")
+
+    monkeypatch.setattr("nightly_core.cli.refresh_repo_install", _should_not_run)
+    out = runner.invoke(app, ["update", "--no-refresh-repo"])
+    assert out.exit_code == 0

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from nightly_core import (
     CONCLUDE_SKILL_MD,
+    UPDATE_SKILL_MD,
     AuthStatus,
     HeadlessResult,
     HostId,
@@ -66,6 +67,8 @@ class ClaudeHostIntegration(NightlyHostIntegration):
     USER_SKILL_ABSOLUTE = Path.home() / ".claude/skills/nightly/SKILL.md"
     PROJECT_CONCLUDE_RELATIVE = Path(".claude/skills/nightly-conclude/SKILL.md")
     USER_CONCLUDE_ABSOLUTE = Path.home() / ".claude/skills/nightly-conclude/SKILL.md"
+    PROJECT_UPDATE_RELATIVE = Path(".claude/skills/nightly-update/SKILL.md")
+    USER_UPDATE_ABSOLUTE = Path.home() / ".claude/skills/nightly-update/SKILL.md"
 
     def __init__(
         self,
@@ -93,15 +96,25 @@ class ClaudeHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_CONCLUDE_RELATIVE
         return self.USER_CONCLUDE_ABSOLUTE
 
+    def update_skill_path(self, scope: InstallScope) -> Path:
+        """Path to the `/nightly-update` SKILL.md for `scope`."""
+        if scope == "project":
+            return self._root / self.PROJECT_UPDATE_RELATIVE
+        return self.USER_UPDATE_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
-        # Companion `/nightly-conclude` skill lives alongside the main one.
-        conclude = self.conclude_skill_path(scope)
-        if conclude is not None:
-            conclude.parent.mkdir(parents=True, exist_ok=True)
-            conclude.write_text(CONCLUDE_SKILL_MD, encoding="utf-8")
+        # Companion skills (`/nightly-conclude`, `/nightly-update`) live
+        # alongside the main one. Each gets its own folder under skills/.
+        for sibling_path, sibling_md in (
+            (self.conclude_skill_path(scope), CONCLUDE_SKILL_MD),
+            (self.update_skill_path(scope), UPDATE_SKILL_MD),
+        ):
+            if sibling_path is not None:
+                sibling_path.parent.mkdir(parents=True, exist_ok=True)
+                sibling_path.write_text(sibling_md, encoding="utf-8")
         # The Stop hook is per-repo because it references the local
         # `.nightly/` state. User-scope installs share `~/.claude/skills/`
         # across repos and shouldn't drop a per-repo hook there — the
@@ -110,12 +123,12 @@ class ClaudeHostIntegration(NightlyHostIntegration):
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
-        conclude = self.conclude_skill_path(scope)
         self.uninstall_keepalive_hook(scope)
-        # Remove the conclude skill first (same parent cleanup applies).
-        if conclude is not None and conclude.exists():
-            conclude.unlink()
-            self._trim_skill_parents(conclude)
+        # Remove every companion skill first (same parent cleanup applies).
+        for sibling in (self.conclude_skill_path(scope), self.update_skill_path(scope)):
+            if sibling is not None and sibling.exists():
+                sibling.unlink()
+                self._trim_skill_parents(sibling)
         if not target.exists():
             return
         target.unlink()

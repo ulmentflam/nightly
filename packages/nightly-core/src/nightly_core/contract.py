@@ -163,6 +163,19 @@ class NightlyHostIntegration(ABC):
         path = self.conclude_skill_path(scope)
         return path is not None and path.is_file()
 
+    # ── update skill (Phase 9j) ──────────────────────────────────────────
+    def update_skill_path(self, scope: InstallScope) -> Path | None:
+        """Per-host path to the `/nightly-update` skill file.
+
+        Same lifecycle as `conclude_skill_path`. Hosts that ship a real
+        update skill override this to return the right per-host path.
+        """
+        return None
+
+    def is_update_installed(self, scope: InstallScope) -> bool:
+        path = self.update_skill_path(scope)
+        return path is not None and path.is_file()
+
     # ── keep-alive hook (Phase 9h+) ──────────────────────────────────────
     def install_keepalive_hook(self, scope: InstallScope) -> None:
         """Idempotent: write the Stop-hook entry into the host's config.

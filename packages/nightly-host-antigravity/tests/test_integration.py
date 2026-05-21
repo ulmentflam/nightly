@@ -220,3 +220,22 @@ async def test_uninstall_antigravity_cleans_hook_and_conclude(tmp_path: Path) ->
     assert not integration.skill_path("project").exists()
     assert not integration.conclude_skill_path("project").exists()
     assert not integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_antigravity_install_writes_update_skill(tmp_path: Path) -> None:
+    from nightly_host_antigravity import AntigravityHostIntegration
+
+    integration = AntigravityHostIntegration(root=tmp_path)
+    await integration.install("project")
+    assert integration.update_skill_path("project").is_file()
+
+
+@pytest.mark.asyncio
+async def test_antigravity_uninstall_removes_update_skill(tmp_path: Path) -> None:
+    from nightly_host_antigravity import AntigravityHostIntegration
+
+    integration = AntigravityHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.update_skill_path("project").exists()

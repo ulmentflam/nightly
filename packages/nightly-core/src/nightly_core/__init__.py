@@ -31,7 +31,7 @@ from nightly_core.cascade import (
 from nightly_core.cascade import (
     next_task as cascade_next,
 )
-from nightly_core.conclude_skill import CONCLUDE_SKILL_MD
+from nightly_core.conclude_skill import CONCLUDE_SKILL_MD, UPDATE_SKILL_MD
 from nightly_core.contract import (
     AuthStatus,
     HostId,
@@ -108,6 +108,7 @@ __all__ = [
     "CASCADE_SOURCES",
     "CONCLUDE_SKILL_MD",
     "PLAN_STATUSES",
+    "UPDATE_SKILL_MD",
     "AuthStatus",
     "BriefingContext",
     "CascadeChoice",

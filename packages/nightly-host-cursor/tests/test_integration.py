@@ -185,3 +185,24 @@ async def test_uninstall_cursor_removes_conclude_and_hook(tmp_path: Path) -> Non
     assert not integration.skill_path("project").exists()
     assert not integration.conclude_skill_path("project").exists()
     assert not integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_cursor_install_writes_update_command(tmp_path: Path) -> None:
+    from nightly_host_cursor import CursorHostIntegration
+
+    integration = CursorHostIntegration(root=tmp_path)
+    await integration.install("project")
+    upd = integration.update_skill_path("project")
+    assert upd.is_file()
+    assert upd.suffix == ".md"  # flat Cursor command
+
+
+@pytest.mark.asyncio
+async def test_cursor_uninstall_removes_update_command(tmp_path: Path) -> None:
+    from nightly_host_cursor import CursorHostIntegration
+
+    integration = CursorHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.update_skill_path("project").exists()

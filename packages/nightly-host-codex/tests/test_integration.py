@@ -231,3 +231,24 @@ async def test_uninstall_removes_conclude_skill_and_hook(tmp_path: Path) -> None
     assert not integration.skill_path("project").exists()
     assert not integration.conclude_skill_path("project").exists()
     assert not integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_codex_install_writes_update_skill(tmp_path: Path) -> None:
+    from nightly_host_codex import CodexHostIntegration
+
+    integration = CodexHostIntegration(root=tmp_path)
+    await integration.install("project")
+    upd = integration.update_skill_path("project")
+    assert upd.is_file()
+    assert "name: nightly-update" in upd.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_codex_uninstall_removes_update_skill(tmp_path: Path) -> None:
+    from nightly_host_codex import CodexHostIntegration
+
+    integration = CodexHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.update_skill_path("project").exists()

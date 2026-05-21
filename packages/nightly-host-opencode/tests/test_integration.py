@@ -199,3 +199,22 @@ def test_opencode_keepalive_support_is_soft() -> None:
     assert integration.keepalive_support == "soft"
     # No hook should be installed
     assert not integration.is_keepalive_hook_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_opencode_install_writes_update_skill(tmp_path: Path) -> None:
+    from nightly_host_opencode import OpencodeHostIntegration
+
+    integration = OpencodeHostIntegration(root=tmp_path)
+    await integration.install("project")
+    assert integration.update_skill_path("project").is_file()
+
+
+@pytest.mark.asyncio
+async def test_opencode_uninstall_removes_update_skill(tmp_path: Path) -> None:
+    from nightly_host_opencode import OpencodeHostIntegration
+
+    integration = OpencodeHostIntegration(root=tmp_path)
+    await integration.install("project")
+    await integration.uninstall("project")
+    assert not integration.update_skill_path("project").exists()

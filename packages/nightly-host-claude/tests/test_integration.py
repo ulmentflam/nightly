@@ -360,3 +360,29 @@ async def test_uninstall_claude_removes_conclude_skill(
 
 def test_claude_keepalive_support_is_forced(integration: ClaudeHostIntegration) -> None:
     assert integration.keepalive_support == "forced"
+
+
+# ── Phase 9j: /nightly-update skill ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_claude_writes_update_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    upd = integration.update_skill_path("project")
+    assert upd is not None
+    assert upd.is_file()
+    assert "name: nightly-update" in upd.read_text(encoding="utf-8")
+    assert integration.is_update_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_uninstall_claude_removes_update_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    await integration.uninstall("project")
+    upd = integration.update_skill_path("project")
+    assert upd is not None
+    assert not upd.exists()

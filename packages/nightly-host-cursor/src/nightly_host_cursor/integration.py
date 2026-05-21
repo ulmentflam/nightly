@@ -25,6 +25,7 @@ from pathlib import Path
 
 from nightly_core import (
     CONCLUDE_SKILL_MD,
+    UPDATE_SKILL_MD,
     AuthStatus,
     HostId,
     InstallScope,
@@ -67,6 +68,8 @@ class CursorHostIntegration(NightlyHostIntegration):
     USER_SKILL_ABSOLUTE = Path.home() / ".cursor/commands/nightly.md"
     PROJECT_CONCLUDE_RELATIVE = Path(".cursor/commands/nightly-conclude.md")
     USER_CONCLUDE_ABSOLUTE = Path.home() / ".cursor/commands/nightly-conclude.md"
+    PROJECT_UPDATE_RELATIVE = Path(".cursor/commands/nightly-update.md")
+    USER_UPDATE_ABSOLUTE = Path.home() / ".cursor/commands/nightly-update.md"
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or repo_root()).resolve()
@@ -87,21 +90,29 @@ class CursorHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_CONCLUDE_RELATIVE
         return self.USER_CONCLUDE_ABSOLUTE
 
+    def update_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_UPDATE_RELATIVE
+        return self.USER_UPDATE_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
-        conclude = self.conclude_skill_path(scope)
-        conclude.parent.mkdir(parents=True, exist_ok=True)
-        conclude.write_text(CONCLUDE_SKILL_MD, encoding="utf-8")
+        for sibling_path, sibling_md in (
+            (self.conclude_skill_path(scope), CONCLUDE_SKILL_MD),
+            (self.update_skill_path(scope), UPDATE_SKILL_MD),
+        ):
+            sibling_path.parent.mkdir(parents=True, exist_ok=True)
+            sibling_path.write_text(sibling_md, encoding="utf-8")
         self.install_keepalive_hook(scope)
 
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
-        conclude = self.conclude_skill_path(scope)
         self.uninstall_keepalive_hook(scope)
-        if conclude.exists():
-            conclude.unlink()
+        for sibling in (self.conclude_skill_path(scope), self.update_skill_path(scope)):
+            if sibling.exists():
+                sibling.unlink()
         if not target.exists():
             return
         target.unlink()

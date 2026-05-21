@@ -24,6 +24,7 @@ Commands as of Phase 8:
 - `nightly session …`   — arm/disarm the SESSION_ACTIVE marker for the Stop hook
 - `nightly hook stop`   — Claude Code Stop hook glue (called by .claude/settings)
 - `nightly stop`        — request immediate hard stop (next turn boundary)
+- `nightly update`      — pull latest source and refresh installed hosts in this repo
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -77,6 +78,11 @@ from nightly_core.runs import (
 )
 from nightly_core.specialists import specialist_prompt
 from nightly_core.triage import rank_issues
+from nightly_core.update import (
+    UpdateReport,
+    refresh_repo_install,
+    update_install,
+)
 
 app = typer.Typer(
     name="nightly",
@@ -958,6 +964,110 @@ def stop_cmd() -> None:
         raise typer.Exit(code=1)
     typer.echo(f"✓ wrote STOP sentinel — {_format_path_for_display(marker, root)}")
     typer.echo("  The model will end its turn at the next Stop hook firing.")
+
+
+@app.command(name="update")
+def update_cmd(
+    version: Annotated[
+        str,
+        typer.Option(
+            "--version",
+            help="Branch / tag / commit to upgrade to. Default: main.",
+        ),
+    ] = "main",
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Fetch and show the commit delta without checking out or syncing.",
+        ),
+    ] = False,
+    refresh_repo: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-repo/--no-refresh-repo",
+            help=(
+                "After upgrading the source, re-install every host that's "
+                "already present in this repo so it picks up the new skill / "
+                "hook / rules content. Default: on."
+            ),
+        ),
+    ] = True,
+) -> None:
+    """Update Nightly's source and refresh installed hosts in this repo.
+
+    Inspired by gsd-build's idempotent installer pattern
+    (https://github.com/gsd-build/get-shit-done). For git installs this
+    is `git fetch + checkout + uv sync`; for PyPI / pipx / uv-tool
+    installs it prints the right upgrade command and exits cleanly.
+
+    By default also walks the current repo and re-runs `nightly init`
+    for every host already installed there, so new SKILL.md content,
+    Stop-hook entries, conclude/update skill files, and AGENTS.md /
+    CLAUDE.md rules block all propagate without manual intervention.
+    """
+    try:
+        method, before, after = update_install(version=version, dry_run=dry_run)
+    except RuntimeError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    except subprocess.CalledProcessError as exc:
+        typer.echo(
+            f"✗ upgrade command failed (exit {exc.returncode}): "
+            f"{(exc.stderr or '').strip() or '(no stderr)'}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+
+    refreshed: tuple[str, ...] = ()
+    rules_action = "skipped"
+    notes: list[str] = []
+    if refresh_repo and not dry_run:
+        root = repo_root()
+        try:
+            refreshed, rules_action = refresh_repo_install(root)
+        except Exception as exc:  # surface, don't crash on per-host quirks
+            notes.append(f"refresh skipped: {exc!r}")
+
+    report = UpdateReport(
+        method=method,
+        requested_version=version,
+        before=before,
+        after=after,
+        refreshed_hosts=refreshed,
+        rules_action=rules_action,
+        dry_run=dry_run,
+        notes=tuple(notes),
+    )
+    _print_update_report(report)
+
+
+def _print_update_report(report: UpdateReport) -> None:
+    if report.method.is_git:
+        source = (
+            str(report.method.root) if report.method.root is not None else "(unknown)"
+        )
+        typer.echo(f"source:   {source}")
+    else:
+        typer.echo(f"source:   {report.method.kind}")
+    typer.echo(f"version:  {report.requested_version}{' (dry-run)' if report.dry_run else ''}")
+    if report.before or report.after:
+        if report.dry_run:
+            typer.echo(f"commit:   {report.before or '?'} (no checkout in dry-run)")
+        elif report.source_changed:
+            typer.echo(f"commit:   {report.before or '?'} → {report.after or '?'}")
+        else:
+            typer.echo(f"commit:   {report.after or report.before or '?'} (already current)")
+    if report.refreshed_hosts:
+        typer.echo("hosts:    refreshed " + ", ".join(report.refreshed_hosts))
+    elif not report.dry_run:
+        typer.echo("hosts:    none installed in this repo")
+    if report.rules_action in {"created", "updated"}:
+        typer.echo(f"rules:    {report.rules_action} AGENTS.md / CLAUDE.md block")
+    elif not report.dry_run:
+        typer.echo("rules:    unchanged")
+    for note in report.notes:
+        typer.echo(f"  · {note}")
 
 
 @hook_app.command(name="stop")
