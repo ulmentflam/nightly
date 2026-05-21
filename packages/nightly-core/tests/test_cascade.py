@@ -1,0 +1,352 @@
+"""Tests for nightly_core.cascade."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from nightly_core.cascade import (
+    CascadeChoice,
+    next_task,
+    pick_accepted_rfc,
+    pick_github_issue,
+    pick_ideated,
+    pick_in_flight,
+    pick_unblocked,
+)
+from nightly_core.plans import update_plan_status
+from nightly_core.proposers.base import Proposal
+from nightly_core.runs import new_task, start_run
+from nightly_core.triage import IssueRecord
+
+
+@pytest.fixture(autouse=True)
+def _disable_gh_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Triage shells out to `gh` by default — make sure tests never do.
+
+    Each test can still inject a fetcher via the per-test monkeypatch.
+    """
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [],
+    )
+
+
+# ── pick_in_flight ────────────────────────────────────────────────────────
+
+
+def test_pick_in_flight_none_when_empty(tmp_path: Path) -> None:
+    assert pick_in_flight(tmp_path) is None
+
+
+def test_pick_in_flight_returns_first_in_progress_plan(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    new_task(run, slug="alpha")
+    beta = new_task(run, slug="beta")
+    update_plan_status(beta.path / "plan.md", "in_progress")
+
+    plan = pick_in_flight(tmp_path)
+    assert plan is not None
+    assert plan.slug == "0002-beta"
+
+
+def test_pick_in_flight_ignores_done_plans(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    done = new_task(run, slug="alpha")
+    update_plan_status(done.path / "plan.md", "done")
+    assert pick_in_flight(tmp_path) is None
+
+
+# ── pick_unblocked ────────────────────────────────────────────────────────
+
+
+def test_pick_unblocked_none_when_no_blocked_plans(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    new_task(run, slug="alpha")
+    assert pick_unblocked(tmp_path) is None
+
+
+def test_pick_unblocked_skips_blocked_without_approval(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    update_plan_status(task.path / "plan.md", "blocked: approval")
+    assert pick_unblocked(tmp_path) is None
+
+
+def test_pick_unblocked_returns_blocked_with_approval(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    update_plan_status(task.path / "plan.md", "blocked: approval", approval_granted=True)
+    plan = pick_unblocked(tmp_path)
+    assert plan is not None
+    assert plan.approval_granted is True
+
+
+# ── pick_accepted_rfc ─────────────────────────────────────────────────────
+
+
+def _seed_rfc(root: Path, *, body: str, name: str = "001-retry.md") -> Path:
+    rfcs = root / ".planning" / "rfcs"
+    rfcs.mkdir(parents=True, exist_ok=True)
+    path = rfcs / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_pick_accepted_rfc_none_when_no_planning(tmp_path: Path) -> None:
+    assert pick_accepted_rfc(tmp_path) is None
+
+
+def test_pick_accepted_rfc_ignores_unaccepted(tmp_path: Path) -> None:
+    _seed_rfc(
+        tmp_path,
+        body=("---\nstatus: draft\n---\n# RFC\n\n- [ ] do the thing\n"),
+    )
+    assert pick_accepted_rfc(tmp_path) is None
+
+
+def test_pick_accepted_rfc_returns_first_unchecked_item(tmp_path: Path) -> None:
+    _seed_rfc(
+        tmp_path,
+        body=(
+            "---\nstatus: accepted\n---\n# RFC\n\n"
+            "- [x] already done\n"
+            "- [ ] needs doing first\n"
+            "- [ ] needs doing second\n"
+        ),
+    )
+    match = pick_accepted_rfc(tmp_path)
+    assert match is not None
+    assert match.item_text == "needs doing first"
+
+
+def test_pick_accepted_rfc_skips_rfc_with_no_unchecked_items(tmp_path: Path) -> None:
+    _seed_rfc(
+        tmp_path,
+        body="---\nstatus: accepted\n---\n# RFC\n\n- [x] all done\n",
+        name="002.md",
+    )
+    assert pick_accepted_rfc(tmp_path) is None
+
+
+# ── pick_github_issue ─────────────────────────────────────────────────────
+
+
+def _issue(number: int, **kwargs: object) -> IssueRecord:
+    created = datetime(2026, 5, 1, tzinfo=UTC)
+    return IssueRecord(
+        number=number,
+        title=str(kwargs.get("title", f"Issue {number}")),
+        body=str(kwargs.get("body", "x" * 100)),
+        labels=tuple(kwargs.get("labels", ())),  # type: ignore[arg-type]
+        created_at=created,
+        updated_at=created,
+        url=f"https://example/{number}",
+        author="alice",
+    )
+
+
+def test_pick_github_issue_none_when_no_eligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [_issue(1, labels=["do-not-automate"])],
+    )
+    assert pick_github_issue(tmp_path) is None
+
+
+def test_pick_github_issue_returns_top_ranked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [_issue(1), _issue(2, labels=["nightly-ready"])],
+    )
+    pick = pick_github_issue(tmp_path)
+    assert pick is not None
+    assert pick.number == 2
+
+
+# ── next_task (full cascade) ──────────────────────────────────────────────
+
+
+def test_next_task_nothing_when_empty_repo(tmp_path: Path) -> None:
+    choice = next_task(tmp_path)
+    assert isinstance(choice, CascadeChoice)
+    assert choice.source == "nothing"
+    assert choice.target_path is None
+
+
+def test_next_task_resumes_in_flight_first(tmp_path: Path) -> None:
+    # set up: a blocked task with approval AND an in-flight task. In-flight wins.
+    run = start_run(tmp_path)
+    blocked = new_task(run, slug="blocked-one")
+    update_plan_status(blocked.path / "plan.md", "blocked: approval", approval_granted=True)
+    in_flight = new_task(run, slug="in-flight-one")
+    update_plan_status(in_flight.path / "plan.md", "in_progress")
+
+    choice = next_task(tmp_path)
+    assert choice.source == "resume_in_flight"
+    assert "in-flight-one" in choice.summary
+
+
+def test_next_task_picks_unblocked_when_no_in_flight(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    task = new_task(run, slug="parked")
+    update_plan_status(task.path / "plan.md", "blocked: approval", approval_granted=True)
+    choice = next_task(tmp_path)
+    assert choice.source == "unblocked_approval"
+    assert "parked" in choice.summary
+
+
+def test_next_task_picks_rfc_when_no_plans(tmp_path: Path) -> None:
+    _seed_rfc(
+        tmp_path,
+        body="---\nstatus: accepted\n---\n- [ ] add a knob\n",
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "accepted_rfc"
+    assert "add a knob" in choice.summary
+
+
+def test_next_task_picks_issue_when_no_local_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [_issue(42, title="Fix login bug", labels=["nightly-ready"])],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "github_issue"
+    assert "42" in choice.summary
+    assert choice.score is not None
+    assert choice.score > 1.0
+
+
+def test_next_task_rfc_outranks_issue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_rfc(
+        tmp_path,
+        body="---\nstatus: accepted\n---\n- [ ] do RFC work\n",
+    )
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [_issue(99, labels=["nightly-ready"])],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "accepted_rfc"
+
+
+def test_next_task_unblocked_outranks_rfc(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    update_plan_status(task.path / "plan.md", "blocked: approval", approval_granted=True)
+    _seed_rfc(
+        tmp_path,
+        body="---\nstatus: accepted\n---\n- [ ] less urgent\n",
+    )
+    assert next_task(tmp_path).source == "unblocked_approval"
+
+
+# ── Phase 5: ideate step ──────────────────────────────────────────────────
+
+
+def _eligible_proposal(score: float = 3.0) -> Proposal:
+    """Build a Proposal that clears the autonomy bar."""
+    return Proposal(
+        proposer="lint_debt",
+        category="lint_debt",
+        title="apply autofixable F401",
+        body="# body",
+        score=score,
+        file_scope=("src/a.py",),
+        estimated_loc=4,
+    )
+
+
+def _ineligible_proposal(score: float = 5.0) -> Proposal:
+    """Build a Proposal that fails the autonomy bar (todo_audit category)."""
+    return Proposal(
+        proposer="todo_fixme",
+        category="todo_audit",
+        title="audit TODOs",
+        body="# body",
+        score=score,
+        file_scope=("src/a.py", "src/b.py"),
+        estimated_loc=12,
+    )
+
+
+def test_pick_ideated_returns_none_with_no_proposals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The autouse stub returns []; pick_ideated should yield None."""
+    assert pick_ideated(tmp_path) is None
+
+
+def test_pick_ideated_returns_top_eligible_proposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=2.0), _eligible_proposal(score=4.5)],
+    )
+    pick = pick_ideated(tmp_path)
+    assert pick is not None
+    assert pick.score == 4.5
+
+
+def test_pick_ideated_filters_to_auto_pr_eligible_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A higher-scoring ineligible proposal must not win — the bar gates."""
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [
+            _ineligible_proposal(score=10.0),  # highest score but ineligible
+            _eligible_proposal(score=2.0),
+        ],
+    )
+    pick = pick_ideated(tmp_path)
+    assert pick is not None
+    assert pick.proposer == "lint_debt"
+
+
+def test_next_task_picks_ideate_when_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=3.5)],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "ideate"
+    assert "apply autofixable" in choice.summary
+    assert choice.score == 3.5
+    assert "autonomy bar" in (choice.rationale or "").lower()
+
+
+def test_next_task_nothing_mentions_nightly_ideate(tmp_path: Path) -> None:
+    """When the cascade truly bottoms out, the rationale should point the
+    agent at `nightly ideate` to write drafts for human review."""
+    choice = next_task(tmp_path)
+    assert choice.source == "nothing"
+    assert "nightly ideate" in (choice.rationale or "")
+
+
+def test_next_task_github_issue_outranks_ideate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real human-tagged issue must outrank a proposer-emitted one."""
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_via_gh",
+        lambda _root, **_: [_issue(7, title="real bug", labels=["nightly-ready"])],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.9)],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "github_issue"

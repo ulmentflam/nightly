@@ -1,0 +1,22 @@
+[project]
+name = "nightly-host-antigravity"
+version = "0.0.1"
+description = "Nightly host integration for Google Antigravity (secondary host)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "Evan Owen", email = "evan@jwo3.io" }]
+dependencies = [
+  "nightly-core",
+  "httpx>=0.27",
+]
+
+[tool.uv.sources]
+nightly-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nightly_host_antigravity"]

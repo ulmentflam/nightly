@@ -1,0 +1,115 @@
+# Nightly — uv workspace root.
+#
+# This file is the workspace coordinator. It declares a meta-package `nightly`
+# that depends on every workspace member, so `uv sync` and `uv run` install all
+# of them as a single dev environment. The meta-package is not publishable
+# (`package = false`); the publishable packages live under `packages/`.
+
+[project]
+name = "nightly"
+version = "0.0.1"
+description = "Nightly — continuously-running, host-native coding agent (workspace meta-package)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Evan Owen", email = "evan@jwo3.io" }]
+keywords = ["agent", "ai", "coding", "claude", "codex", "cursor", "opencode", "antigravity", "cli"]
+dependencies = [
+  "nightly-core",
+  "nightly-host-claude",
+  "nightly-host-codex",
+  "nightly-host-cursor",
+  "nightly-host-opencode",
+  "nightly-host-antigravity",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+nightly-core              = { workspace = true }
+nightly-host-claude       = { workspace = true }
+nightly-host-codex        = { workspace = true }
+nightly-host-cursor       = { workspace = true }
+nightly-host-opencode     = { workspace = true }
+nightly-host-antigravity  = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+
+# ── ruff (lint + format) ──────────────────────────────────────────────────
+[tool.ruff]
+line-length    = 100
+target-version = "py312"
+src            = ["packages/*/src", "packages/*/tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",      # pycodestyle / pyflakes
+  "I",                # isort
+  "B",                # bugbear
+  "UP",               # pyupgrade
+  "RUF",              # ruff-specific
+  "SIM",              # simplify
+  "TID",              # tidy imports
+  "PL",               # pylint subset
+  "PT",               # pytest style
+  "ASYNC",            # async hygiene
+]
+ignore = ["E501"]      # line length handled by the formatter
+
+[tool.ruff.lint.isort]
+known-first-party = [
+  "nightly_core",
+  "nightly_host_claude",
+  "nightly_host_codex",
+  "nightly_host_cursor",
+  "nightly_host_opencode",
+  "nightly_host_antigravity",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files use literal numbers in assertions liberally — that's the point.
+# PLR2004 (magic value) and PLR0913/PLR0915 (too many args/statements) aren't
+# useful here. PLC0415 (top-level imports) is also relaxed: tests sometimes
+# scope a module import inside a single test rather than module-wide.
+"packages/*/tests/**/*.py" = ["PLR2004", "PLR0913", "PLR0915", "PLC0415"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+
+# ── pyrefly (types) ───────────────────────────────────────────────────────
+[tool.pyrefly]
+project-includes = ["packages/*/src", "packages/*/tests"]
+search-path = [
+  "packages/nightly-core/src",
+  "packages/nightly-host-antigravity/src",
+  "packages/nightly-host-claude/src",
+  "packages/nightly-host-codex/src",
+  "packages/nightly-host-cursor/src",
+  "packages/nightly-host-opencode/src",
+]
+python-version = "3.12"
+
+
+# ── pytest ────────────────────────────────────────────────────────────────
+# importmode=importlib lets each `tests/` directory live without an
+# __init__.py and avoids module-name collisions across packages.
+[tool.pytest.ini_options]
+testpaths    = ["packages"]
+python_files = ["test_*.py"]
+addopts      = ["-q", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+asyncio_mode = "auto"
+
+
+# ── uv dev tooling — installed once for the whole workspace ───────────────
+[dependency-groups]
+dev = [
+  "ruff>=0.8",
+  "pyrefly>=0.16",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+]

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+ENV/
+
+# uv
+uv.lock.* # backups, never the lockfile itself
+
+# Tooling caches
+.ruff_cache/
+.pyrefly_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Nightly runtime — left intentionally untracked here as a sensible default.
+# Per .planning/brainstorm.html §04, this is the user's preference, not Nightly's
+# requirement. Delete this line if you want session logs in version control.
+.nightly/runs/
+.nightly/atlas/
+.nightly/memory/

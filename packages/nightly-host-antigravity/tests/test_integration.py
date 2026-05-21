@@ -1,0 +1,175 @@
+"""Tests for AntigravityHostIntegration."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from nightly_core import AuthStatus, InstallScope, NightlyHostIntegration
+from nightly_host_antigravity import SKILL_MD, AntigravityHostIntegration
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    return tmp_path
+
+
+@pytest.fixture
+def integration(project: Path) -> AntigravityHostIntegration:
+    return AntigravityHostIntegration(root=project)
+
+
+def test_is_a_concrete_nightlyhostintegration() -> None:
+    assert issubclass(AntigravityHostIntegration, NightlyHostIntegration)
+    instance = AntigravityHostIntegration(root=Path("/tmp"))
+    assert isinstance(instance, NightlyHostIntegration)
+
+
+def test_host_id(integration: AntigravityHostIntegration) -> None:
+    assert integration.host_id == "antigravity"
+
+
+def test_skill_path_project_scope(integration: AntigravityHostIntegration, project: Path) -> None:
+    assert integration.skill_path("project") == (
+        project / ".gemini/antigravity/agents/nightly/SKILL.md"
+    )
+
+
+def test_skill_path_user_scope_is_absolute(integration: AntigravityHostIntegration) -> None:
+    user_path = integration.skill_path("user")
+    assert user_path.is_absolute()
+    assert user_path.parts[-3:] == ("agents", "nightly", "SKILL.md")
+    # Lives under ~/.gemini/antigravity/
+    assert "antigravity" in user_path.parts
+
+
+@pytest.mark.asyncio
+async def test_install_writes_skill_md_at_project_scope(
+    integration: AntigravityHostIntegration, project: Path
+) -> None:
+    scope: InstallScope = "project"
+    assert not integration.is_installed(scope)
+
+    await integration.install(scope)
+    target = integration.skill_path(scope)
+    assert target.is_file()
+    assert target.read_text(encoding="utf-8") == SKILL_MD
+    assert integration.is_installed(scope)
+
+    await integration.install(scope)
+    assert target.read_text(encoding="utf-8") == SKILL_MD
+
+
+@pytest.mark.asyncio
+async def test_uninstall_removes_skill_and_empty_parents_up_to_agents(
+    integration: AntigravityHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    target = integration.skill_path("project")
+    assert target.is_file()
+
+    await integration.uninstall("project")
+    assert not target.exists()
+    # nightly/ + agents/ cleaned up when empty
+    assert not (project / ".gemini/antigravity/agents/nightly").exists()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_preserves_sibling_agents(
+    integration: AntigravityHostIntegration, project: Path
+) -> None:
+    """`.gemini/antigravity/agents/` may hold other agents — leave them."""
+    sibling = project / ".gemini/antigravity/agents/other/agent.md"
+    sibling.parent.mkdir(parents=True, exist_ok=True)
+    sibling.write_text("# other agent", encoding="utf-8")
+
+    await integration.install("project")
+    await integration.uninstall("project")
+
+    # nightly/ cleaned up; the sibling agent and its parent dir remain
+    assert not (project / ".gemini/antigravity/agents/nightly").exists()
+    assert sibling.exists()
+    assert (project / ".gemini/antigravity/agents/other").is_dir()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_is_idempotent(integration: AntigravityHostIntegration) -> None:
+    await integration.uninstall("project")
+    await integration.uninstall("project")
+
+
+def test_session_id_reads_antigravity_env(
+    integration: AntigravityHostIntegration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTIGRAVITY_SESSION_ID", "ag-xyz")
+    assert integration.session_id() == "ag-xyz"
+
+
+def test_session_id_falls_back_to_gemini_env(
+    integration: AntigravityHostIntegration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTIGRAVITY_SESSION_ID", raising=False)
+    monkeypatch.setenv("GEMINI_SESSION_ID", "gem-abc")
+    assert integration.session_id() == "gem-abc"
+
+
+def test_session_id_falls_back_to_detached_uuid(
+    integration: AntigravityHostIntegration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTIGRAVITY_SESSION_ID", raising=False)
+    monkeypatch.delenv("GEMINI_SESSION_ID", raising=False)
+    sid = integration.session_id()
+    assert sid.startswith("detached-")
+    assert len(sid) > len("detached-")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sub_agent_raises_phase_7(
+    integration: AntigravityHostIntegration,
+) -> None:
+    with pytest.raises(NotImplementedError, match="Phase 7"):
+        await integration.dispatch_sub_agent(role="implementer", prompt="x", cwd="/tmp")
+
+
+@pytest.mark.asyncio
+async def test_request_approval_raises_phase_7(
+    integration: AntigravityHostIntegration,
+) -> None:
+    with pytest.raises(NotImplementedError, match="Phase 7"):
+        await integration.request_approval("q?", ["a", "b"])
+
+
+@pytest.mark.asyncio
+async def test_auth_status_without_antigravity_home(
+    integration: AntigravityHostIntegration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `~/.gemini/antigravity/` doesn't exist, auth is unknown."""
+    # Override the module-level constant by patching the integration's
+    # detection target. We can't reach into the real home dir at test time
+    # — use a sentinel path that definitely doesn't exist.
+    monkeypatch.setattr(
+        "nightly_host_antigravity.integration._ANTIGRAVITY_HOME",
+        Path("/nonexistent/path/.gemini/antigravity"),
+    )
+    status = await integration.auth_status()
+    assert isinstance(status, AuthStatus)
+    assert status.ok is False
+
+
+@pytest.mark.asyncio
+async def test_auth_status_with_antigravity_home(
+    integration: AntigravityHostIntegration,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When the directory exists, treat as ok with `unknown` plan."""
+    fake_home = tmp_path / ".gemini" / "antigravity"
+    fake_home.mkdir(parents=True)
+    monkeypatch.setattr(
+        "nightly_host_antigravity.integration._ANTIGRAVITY_HOME",
+        fake_home,
+    )
+    status = await integration.auth_status()
+    assert status.ok is True
+    assert status.plan == "unknown"

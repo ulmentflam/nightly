@@ -1,0 +1,1064 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nightly — Design Brainstorm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink:        #0B0E14;
+    --ink-2:      #11151D;
+    --ink-3:      #181D27;
+    --line:       #232936;
+    --line-2:     #2E3543;
+    --paper:      #F1ECE2;
+    --paper-dim:  #C9C2B4;
+    --muted:      #8A8676;
+    --copper:     #E8A857;
+    --copper-dim: #B7843F;
+    --teal:       #6FD0BD;
+    --rose:       #E07A78;
+    --plum:       #B58BD9;
+    --r-sm: 4px;
+    --r:    8px;
+    --r-lg: 14px;
+    --col:  68ch;
+  }
+  *,*::before,*::after { box-sizing: border-box; }
+  html { background: var(--ink); color: var(--paper); -webkit-font-smoothing: antialiased; }
+  body {
+    margin: 0;
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    font-feature-settings: "ss01","ss02","cv11";
+    background:
+      radial-gradient(1100px 600px at 80% -10%, rgba(232,168,87,0.07), transparent 60%),
+      radial-gradient(900px 500px at -5% 30%, rgba(111,208,189,0.05), transparent 60%),
+      var(--ink);
+  }
+  ::selection { background: var(--copper); color: var(--ink); }
+
+  /* ---------- typography ---------- */
+  h1,h2,h3,h4 { font-family: "Fraunces", Georgia, serif; font-weight: 400; letter-spacing: -0.01em; color: var(--paper); }
+  h1 { font-size: clamp(2.6rem, 5vw, 4.4rem); line-height: 1.02; margin: 0 0 .4em; font-weight: 300; }
+  h2 { font-size: clamp(1.7rem, 2.6vw, 2.2rem); margin: 2.6em 0 .6em; line-height: 1.1; }
+  h3 { font-size: 1.2rem; margin: 2em 0 .4em; font-family: "Inter", sans-serif; font-weight: 600; letter-spacing: -0.005em; text-transform: uppercase; font-size: .82rem; color: var(--copper); }
+  h4 { font-size: 1.02rem; margin: 1.4em 0 .3em; font-family: "Inter", sans-serif; font-weight: 600; }
+  p { margin: 0 0 1.1em; max-width: var(--col); }
+  ul,ol { max-width: var(--col); padding-left: 1.2em; }
+  li { margin-bottom: .35em; }
+  li::marker { color: var(--copper-dim); }
+  a { color: var(--copper); text-decoration: none; border-bottom: 1px solid rgba(232,168,87,.3); transition: color .15s, border-color .15s; }
+  a:hover { color: var(--paper); border-bottom-color: var(--paper); }
+  code, kbd, samp { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .88em; }
+  p code, li code { background: var(--ink-2); padding: 1px 6px; border-radius: var(--r-sm); border: 1px solid var(--line); color: var(--teal); }
+
+  /* ---------- layout ---------- */
+  .shell { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+  .hero { padding: 9rem 0 5rem; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: .6em;
+    font-family: "JetBrains Mono", monospace; font-size: .72rem;
+    color: var(--copper); text-transform: uppercase; letter-spacing: .18em;
+    margin-bottom: 2rem;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--copper); box-shadow: 0 0 12px var(--copper); animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .hero p.lede { font-size: 1.22rem; line-height: 1.55; color: var(--paper-dim); max-width: 56ch; margin-top: 1.5rem; font-family: "Fraunces", serif; font-weight: 300; }
+  .hero .meta { display: flex; gap: 2.4rem; flex-wrap: wrap; margin-top: 3rem; font-family: "JetBrains Mono", monospace; font-size: .76rem; color: var(--muted); }
+  .hero .meta b { color: var(--paper); font-weight: 500; }
+
+  main { padding: 4rem 0 6rem; }
+  section { padding: 2rem 0 3rem; scroll-margin-top: 60px; }
+  section + section { border-top: 1px dashed var(--line); }
+
+  .twocol { display: grid; grid-template-columns: 1fr 280px; gap: 3.5rem; align-items: start; }
+  @media (max-width: 920px) { .twocol { grid-template-columns: 1fr; } }
+  .aside {
+    position: sticky; top: 2rem;
+    font-family: "JetBrains Mono", monospace; font-size: .76rem;
+    color: var(--muted); line-height: 1.55;
+    border-left: 1px solid var(--line); padding: .2em 0 .2em 1.2em;
+  }
+  .aside b { color: var(--paper); font-weight: 500; }
+  .aside .label { color: var(--copper); display: block; margin-bottom: .4em; text-transform: uppercase; letter-spacing: .15em; font-size: .68rem; }
+
+  /* ---------- nav ---------- */
+  .toc {
+    position: sticky; top: 0; z-index: 5;
+    background: rgba(11,14,20,.85);
+    backdrop-filter: blur(14px) saturate(140%);
+    border-bottom: 1px solid var(--line);
+  }
+  .toc-inner { display: flex; gap: 2rem; padding: .9rem 32px; overflow-x: auto; font-family: "JetBrains Mono", monospace; font-size: .74rem; }
+  .toc-inner a { color: var(--muted); border-bottom: none; white-space: nowrap; }
+  .toc-inner a:hover { color: var(--paper); }
+  .toc-inner .brand { color: var(--copper); font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+
+  /* ---------- cards / callouts ---------- */
+  .card { background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 1.6rem 1.8rem; margin: 1.4rem 0; }
+  .card.copper { border-left: 3px solid var(--copper); }
+  .card.teal   { border-left: 3px solid var(--teal); }
+  .card.rose   { border-left: 3px solid var(--rose); }
+  .card.plum   { border-left: 3px solid var(--plum); }
+  .card .label { font-family: "JetBrains Mono", monospace; font-size: .68rem; text-transform: uppercase; letter-spacing: .18em; color: var(--copper); margin-bottom: .6em; display: block; }
+  .card.teal .label { color: var(--teal); }
+  .card.rose .label { color: var(--rose); }
+  .card.plum .label { color: var(--plum); }
+
+  blockquote {
+    margin: 2rem 0; padding: 0 0 0 1.4rem;
+    border-left: 2px solid var(--copper);
+    font-family: "Fraunces", serif; font-size: 1.25rem; line-height: 1.45;
+    color: var(--paper); font-weight: 300; font-style: italic;
+    max-width: var(--col);
+  }
+  blockquote cite { display: block; margin-top: .8em; font-family: "JetBrains Mono", monospace; font-size: .72rem; font-style: normal; color: var(--muted); letter-spacing: .1em; }
+
+  /* ---------- code blocks ---------- */
+  pre {
+    background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r);
+    padding: 1.2rem 1.4rem; overflow-x: auto; margin: 1.2rem 0;
+    font-family: "JetBrains Mono", monospace; font-size: .82rem; line-height: 1.6;
+    color: var(--paper-dim);
+  }
+  pre .kw  { color: var(--copper); }
+  pre .str { color: var(--teal); }
+  pre .com { color: var(--muted); font-style: italic; }
+  pre .fn  { color: var(--plum); }
+  pre .num { color: var(--rose); }
+
+  /* ---------- matrix table ---------- */
+  .matrix-wrap { overflow-x: auto; margin: 1.2rem 0 2rem; border: 1px solid var(--line); border-radius: var(--r); }
+  table.matrix { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  table.matrix th, table.matrix td { padding: .85rem 1rem; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.matrix thead th { background: var(--ink-3); font-family: "JetBrains Mono", monospace; font-size: .68rem; text-transform: uppercase; letter-spacing: .12em; color: var(--copper); font-weight: 500; border-bottom: 1px solid var(--line-2); }
+  table.matrix td:first-child { font-weight: 500; color: var(--paper); font-size: .76rem; font-family: "JetBrains Mono", monospace; }
+  table.matrix tr:last-child td { border-bottom: none; }
+  table.matrix tr:hover td { background: rgba(255,255,255,.015); }
+
+  .pill { display: inline-flex; align-items: center; gap: .3em; padding: 2px 8px; border-radius: 999px; font-family: "JetBrains Mono", monospace; font-size: .7rem; font-weight: 500; }
+  .pill.ok   { background: rgba(111,208,189,.12); color: var(--teal); }
+  .pill.warn { background: rgba(232,168,87,.14); color: var(--copper); }
+  .pill.bad  { background: rgba(224,122,120,.14); color: var(--rose); }
+  .pill.dim  { background: rgba(138,134,118,.14); color: var(--muted); }
+
+  /* ---------- the loop diagram ---------- */
+  .loop-diagram { background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 1.5rem; margin: 2rem 0; overflow-x: auto; }
+  .loop-diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+
+  /* ---------- file tree ---------- */
+  .tree { background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--r); padding: 1.4rem 1.6rem; font-family: "JetBrains Mono", monospace; font-size: .82rem; line-height: 1.75; color: var(--paper-dim); margin: 1.2rem 0; }
+  .tree .dir { color: var(--copper); }
+  .tree .com { color: var(--muted); }
+  .tree .new { color: var(--teal); }
+
+  /* ---------- numbered list (steps) ---------- */
+  .steps { counter-reset: step; list-style: none; padding: 0; margin: 1rem 0 2rem; }
+  .steps > li {
+    counter-increment: step;
+    position: relative;
+    padding: 1.1rem 0 1.1rem 4.2rem;
+    border-top: 1px solid var(--line);
+    max-width: none;
+  }
+  .steps > li:last-child { border-bottom: 1px solid var(--line); }
+  .steps > li::before {
+    content: counter(step, decimal-leading-zero);
+    position: absolute; left: 0; top: 1.1rem;
+    font-family: "JetBrains Mono", monospace;
+    color: var(--copper); font-size: .9rem; font-weight: 500;
+  }
+  .steps > li b { color: var(--paper); display: block; margin-bottom: .25em; font-family: "Fraunces", serif; font-weight: 500; font-size: 1.05rem; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--line); padding: 2.5rem 0; color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: .76rem; }
+  footer .shell { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }
+
+  /* references */
+  .refs { columns: 2; column-gap: 2.4rem; column-rule: 1px dashed var(--line); font-size: .82rem; max-width: none; }
+  @media (max-width: 720px) { .refs { columns: 1; } }
+  .refs li { break-inside: avoid; margin-bottom: .55em; }
+</style>
+</head>
+<body>
+
+<!-- ───────────── TOC ───────────── -->
+<nav class="toc">
+  <div class="toc-inner">
+    <span class="brand">Nightly</span>
+    <a href="#thesis">Thesis</a>
+    <a href="#prior-art">Prior Art</a>
+    <a href="#loop">The Loop</a>
+    <a href="#repo">Repo Contract</a>
+    <a href="#harness">Harnesses</a>
+    <a href="#selection">Task Selection</a>
+    <a href="#safety">Safety Rails</a>
+    <a href="#conclude">Conclude</a>
+    <a href="#report">Morning Report</a>
+    <a href="#risks">Risks</a>
+    <a href="#phases">Phases</a>
+    <a href="#refs">References</a>
+  </div>
+</nav>
+
+<!-- ───────────── HERO ───────────── -->
+<header class="hero">
+  <div class="shell">
+    <div class="eyebrow"><span class="dot"></span>Design Brainstorm · v0</div>
+    <h1>Nightly.</h1>
+    <p class="lede">A continuously-running, harness-agnostic coding agent that picks up where humans left off, ranks its own work, and lands clean, review-shaped changes by morning — pull requests when there's a remote, local proposals when there isn't — then briefs you in HTML when you tell it to wrap up.</p>
+    <div class="meta">
+      <div><b>Author</b> &nbsp; evan@jwo3.io</div>
+      <div><b>Drafted</b> &nbsp; 2026-05-20</div>
+      <div><b>Status</b> &nbsp; brainstorm — not committed design</div>
+      <div><b>Repo</b> &nbsp; playground/nightly</div>
+    </div>
+  </div>
+</header>
+
+<main class="shell">
+
+<!-- ───────────── 1. THESIS ───────────── -->
+<section id="thesis">
+  <div class="twocol">
+    <div>
+      <h3>01 · Thesis</h3>
+      <h2>An agent shaped around overnight, not turn-by-turn.</h2>
+      <p>Every shipping autonomous coding agent today is either <em>tethered</em> to a human reviewer turn-by-turn (Cursor, Claude Code interactive) or <em>single-shot</em> on an issue handed to it by name (Sweep, Copilot coding agent, Devin). Nightly is neither. It is a <b>session-shaped</b> agent: you start it, it works for hours or days, it self-directs across many issues and PRs, and it lands cleanly when you ask it to conclude.</p>
+
+      <p>The product we are designing is <em>not</em> "a smarter LLM." It is a thin, opinionated <b>harness</b> that wraps existing CLI agents (Claude Code, Cursor, Codex, Antigravity, opencode) and gives them three things they don't already have together: a persistent overnight plan, autonomous task selection across an open backlog, and a graceful drain protocol.</p>
+
+      <div class="card copper">
+        <span class="label">North star</span>
+        <p style="margin:0">You hand Nightly a repo and a tea. It hands you back, hours later, a stack of branch-isolated PRs and an HTML briefing with everything it touched, what it skipped and why, and what it would do next.</p>
+      </div>
+
+      <h4>First principles</h4>
+      <ol>
+        <li><b>Branch-isolated, PR-shaped deliverables.</b> Not a dashboard, not a chat log. Every task ends as a reviewable artifact on an isolated branch. If the repo has a GitHub remote, that artifact is a real pull request. If it doesn't — local repos, GitLab, self-hosted, air-gapped — it's a <em>local proposal</em> of the same shape (title · summary · diff · test plan · uncertainty block) that surfaces in the morning briefing as if it were a PR.</li>
+        <li><b>Surface uncertainty louder than progress.</b> Devin's well-known failure was emitting a destructive migration without flagging risk. Nightly's PR (or proposal) body has a mandatory "Things I'm not sure about / Things that could break" block; absent or empty is a check failure.</li>
+        <li><b>Always advance, never block.</b> Approvals, missing credentials, and ambiguous requirements are recorded and routed around — never waited on. Shutdown is the same shape: a cooperative two-threshold drain (<em>nudge</em> → <em>hard</em>), never <code>SIGKILL</code>. Half-finished work parks on <code>nightly/wip-&lt;run&gt;</code>, never <code>main</code>. The run is monotonic — every iteration makes forward progress, even if "forward" means parking the current task and picking the next.</li>
+        <li><b>Interactive-first; subscription-native.</b> Nightly defaults to launching from <em>inside</em> an interactive session of a host you already use — Claude Code, Codex, Cursor, opencode, Antigravity — implemented natively as a Skill, slash command, or agent. The host session is the long-running container; Nightly's loop runs inside it and dispatches specialists via each host's native sub-agent mechanism (Task tool · MCP · background agents). Because the host is already authenticated, Nightly inherits its subscription (Claude Pro/Max, ChatGPT Plus/Pro, Cursor account, Google OAuth) and never asks for an API token. A headless mode for cron / CI exists but is opt-in.</li>
+        <li><b>Memory is local; version control is yours.</b> Two folders organize artifacts by audience: <code>.nightly/</code> for agent runtime state (plans, run logs, the repo atlas) and <code>.planning/</code> for human-curated planning (this document, RFCs, design notes). Nightly never edits your <code>.gitignore</code> — what to commit, what to ignore, even whether to use those exact paths is entirely the user's call. The folder names are defaults; they're configurable in <code>config.yml</code>.</li>
+      </ol>
+    </div>
+    <aside class="aside">
+      <span class="label">Why "Nightly"</span>
+      Most code agents are designed for a <b>turn</b> — one ask, one reply. The few designed for a <b>session</b> are either tethered (Cursor) or fire-and-forget (Devin issue → PR). Nightly is the third shape: <b>session-shaped, self-directed, drainable</b>. It maps to a human cadence — kick it off before bed, review in the morning — that the existing tools don't fit.
+    </aside>
+  </div>
+</section>
+
+<!-- ───────────── 2. PRIOR ART ───────────── -->
+<section id="prior-art">
+  <h3>02 · Prior art &amp; what to steal</h3>
+  <h2>Six ideas worth lifting whole.</h2>
+
+  <p>Deep-read of the autonomous SWE space (Devin, OpenHands, SWE-agent, Sweep, AutoCodeRover, Copilot coding agent, Factory Droids, Replit Agent, Amp) surfaces a small set of design ideas that recur in the systems that actually work — and a larger set of failure modes from systems that didn't.</p>
+
+  <div class="card teal">
+    <span class="label">Steal · 01 · Wiki-as-memory (Devin)</span>
+    <p style="margin:0">Devin pre-computes a per-repo wiki (DeepWiki) — call graphs, module purposes, conventions — that is loaded into every session so the agent doesn't rediscover the codebase. Nightly should generate and refresh <code>.nightly/atlas/</code> on every cold start.</p>
+  </div>
+
+  <div class="card teal">
+    <span class="label">Steal · 02 · Typed EventLog (OpenHands)</span>
+    <p style="margin:0">OpenHands persists every action and observation as a typed event in an append-only log. This makes pause / resume / replay essentially free. Nightly's orchestrator should adopt the same shape — every harness adapter emits into one normalized <code>NightlyEvent</code> stream, persisted as JSONL.</p>
+  </div>
+
+  <div class="card teal">
+    <span class="label">Steal · 03 · Agent-Computer Interface (SWE-agent)</span>
+    <p style="margin:0">Princeton's insight: lint-on-edit + paged-file-viewer + terse search took the same model from 2% to 12.5% on SWE-bench. Nightly should never let any harness write syntactically broken code, and should expose retrieval as paged, AST-aware search rather than raw <code>grep</code>.</p>
+  </div>
+
+  <div class="card teal">
+    <span class="label">Steal · 04 · AST-aware retrieval (Sweep + AutoCodeRover)</span>
+    <p style="margin:0">Chunk by function / class / module, not by token window. Expose structured queries: <code>search_method("foo")</code>, <code>callers_of("bar")</code>, <code>defs_in_file(...)</code>. When tests fail, prime retrieval with spectrum-based fault localization.</p>
+  </div>
+
+  <div class="card teal">
+    <span class="label">Steal · 05 · Two-threshold cooperative drain (LangGraph / killswitch.md)</span>
+    <p style="margin:0">A <em>nudge</em> phase asks the agent to finalize and write the report. A <em>hard</em> phase revokes the write toolset entirely and forces emit-only. Never <code>SIGKILL</code>. Stash WIP to <code>nightly/wip-&lt;run-id&gt;</code> so resuming next session is trivial.</p>
+  </div>
+
+  <div class="card teal">
+    <span class="label">Steal · 06 · Antigravity's on-disk artifact contract</span>
+    <p style="margin:0">Antigravity persists <code>task.md</code>, <code>implementation_plan.md</code>, <code>walkthrough.md</code> per task in <code>~/.gemini/antigravity/brain/&lt;GUID&gt;/</code>. This is the cleanest "agent → orchestrator" contract in the field. Nightly's own per-run folder should follow the same shape.</p>
+  </div>
+
+  <blockquote>
+    The gap nobody is filling — and the one that defines Nightly — is autonomous task <em>selection</em>. Every leading system waits to be told which issue to work on.
+    <cite>— synthesis of prior art, 2026</cite>
+  </blockquote>
+</section>
+
+<!-- ───────────── 3. THE LOOP ───────────── -->
+<section id="loop">
+  <h3>03 · The Loop</h3>
+  <h2>One state machine. Three phases. Always drains.</h2>
+
+  <p>Nightly runs a single outer loop that cycles through <b>Plan → Execute → Report</b>. The loop's source of truth for "what to do next" is a strict priority cascade that mirrors how a competent engineer would behave waking up to an unfamiliar repo.</p>
+
+  <div class="loop-diagram">
+    <svg viewBox="0 0 1040 600" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#E8A857"/>
+        </marker>
+        <marker id="arrt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6FD0BD"/>
+        </marker>
+        <marker id="arrr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#E07A78"/>
+        </marker>
+        <marker id="arrl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#B58BD9"/>
+        </marker>
+      </defs>
+
+      <style>
+        .lab  { font: 500 12px "JetBrains Mono", monospace; fill: #F1ECE2; }
+        .sub  { font: 400 10px "JetBrains Mono", monospace; fill: #8A8676; }
+        .tag  { font: 600 9px  "JetBrains Mono", monospace; fill: #E8A857; letter-spacing: .12em; }
+        .ph   { font: 600 11px "Inter", sans-serif; fill: #E8A857; letter-spacing: .14em; text-transform: uppercase; }
+        .edgelbl { font: 600 9px "JetBrains Mono", monospace; fill: #B58BD9; letter-spacing: .08em; }
+        .edgelbl.rose { fill: #E07A78; }
+        .edgelbl.teal { fill: #6FD0BD; }
+        .node { fill: #11151D; stroke: #2E3543; stroke-width: 1; }
+        .node.copper { stroke: #E8A857; }
+        .node.teal   { stroke: #6FD0BD; }
+        .node.rose   { stroke: #E07A78; }
+        .edge { stroke: #E8A857; stroke-width: 1.5; fill: none; }
+        .edge.teal { stroke: #6FD0BD; }
+        .edge.rose { stroke: #E07A78; stroke-dasharray: 5 3; }
+        .edge.loop { stroke: #B58BD9; stroke-dasharray: 6 4; }
+        .edge.retry { stroke: #6FD0BD; stroke-dasharray: 3 3; opacity: .7; }
+      </style>
+
+      <!-- phase labels -->
+      <text class="ph" x="180" y="46" text-anchor="middle">▸ Plan</text>
+      <text class="ph" x="520" y="46" text-anchor="middle">▸ Execute</text>
+      <text class="ph" x="860" y="46" text-anchor="middle">▸ Drain &amp; Report</text>
+
+      <!-- ─────── Plan column (x = 60..300) ─────── -->
+      <rect class="node copper" x="60" y="70" width="240" height="84" rx="8"/>
+      <text class="tag" x="78" y="92">START</text>
+      <text class="lab" x="78" y="112">Ingest context → atlas</text>
+      <text class="sub" x="78" y="128">AGENTS · CLAUDE · planning</text>
+      <text class="sub" x="78" y="142">refresh repo wiki</text>
+
+      <rect class="node copper" x="60" y="184" width="240" height="84" rx="8"/>
+      <text class="tag" x="78" y="206">PICK</text>
+      <text class="lab" x="78" y="226">Resolve next unit of work</text>
+      <text class="sub" x="78" y="242">priority cascade →</text>
+      <text class="sub" x="78" y="256">plan · RFC · issue · ideate</text>
+
+      <rect class="node copper" x="60" y="298" width="240" height="74" rx="8"/>
+      <text class="tag" x="78" y="320">SCOPE</text>
+      <text class="lab" x="78" y="340">Write per-task plan.md</text>
+      <text class="sub" x="78" y="356">success criteria + risks</text>
+
+      <!-- ─────── Execute column (x = 400..640) ─────── -->
+      <rect class="node teal" x="400" y="70" width="240" height="74" rx="8"/>
+      <text class="tag" x="418" y="92" style="fill:#6FD0BD">WORKTREE</text>
+      <text class="lab" x="418" y="112">git worktree + branch</text>
+      <text class="sub" x="418" y="128">nightly/&lt;slug&gt;-&lt;ts&gt;</text>
+
+      <rect class="node teal" x="400" y="174" width="240" height="84" rx="8"/>
+      <text class="tag" x="418" y="196" style="fill:#6FD0BD">DISPATCH</text>
+      <text class="lab" x="418" y="216">Dispatch via host sub-agents</text>
+      <text class="sub" x="418" y="232">Task tool · MCP · sub-agents</text>
+      <text class="sub" x="418" y="246">specialist roles per task</text>
+
+      <rect class="node teal" x="400" y="288" width="240" height="74" rx="8"/>
+      <text class="tag" x="418" y="310" style="fill:#6FD0BD">VERIFY</text>
+      <text class="lab" x="418" y="330">Tests · lint · type · CI</text>
+      <text class="sub" x="418" y="346">all green or retry dispatch</text>
+
+      <rect class="node teal" x="400" y="392" width="240" height="74" rx="8"/>
+      <text class="tag" x="418" y="414" style="fill:#6FD0BD">LAND</text>
+      <text class="lab" x="418" y="434">Open PR or write proposal.md</text>
+      <text class="sub" x="418" y="450">uncertainty + replay attached</text>
+
+      <!-- ─────── Drain column (x = 740..980) ─────── -->
+      <rect class="node copper" x="740" y="70" width="240" height="74" rx="8"/>
+      <text class="tag" x="758" y="92">CHECK</text>
+      <text class="lab" x="758" y="112">Conclude signal received?</text>
+      <text class="sub" x="758" y="128">no → loop · yes → drain</text>
+
+      <rect class="node rose" x="740" y="174" width="240" height="74" rx="8"/>
+      <text class="tag" x="758" y="196" style="fill:#E07A78">NUDGE</text>
+      <text class="lab" x="758" y="216">Finalize current task only</text>
+      <text class="sub" x="758" y="232">no new work · stash WIP</text>
+
+      <rect class="node rose" x="740" y="278" width="240" height="74" rx="8"/>
+      <text class="tag" x="758" y="300" style="fill:#E07A78">HARD</text>
+      <text class="lab" x="758" y="320">Revoke write tools</text>
+      <text class="sub" x="758" y="336">emit-only mode</text>
+
+      <rect class="node rose" x="740" y="382" width="240" height="84" rx="8"/>
+      <text class="tag" x="758" y="404" style="fill:#E07A78">REPORT</text>
+      <text class="lab" x="758" y="424">Render briefing.html</text>
+      <text class="sub" x="758" y="440">diffs · PRs · proposals</text>
+      <text class="sub" x="758" y="454">+ session.jsonl · summary.md</text>
+
+      <!-- ─────── Edges: within Plan (vertical, center x=180) ─────── -->
+      <path class="edge" d="M 180 154 V 184" marker-end="url(#arr)"/>
+      <path class="edge" d="M 180 268 V 298" marker-end="url(#arr)"/>
+
+      <!-- SCOPE → WORKTREE (right-angle through gutter at x=350) -->
+      <path class="edge teal" d="M 300 335 H 350 V 107 H 400" marker-end="url(#arrt)"/>
+
+      <!-- ─────── Edges: within Execute (vertical, center x=520) ─────── -->
+      <path class="edge teal" d="M 520 144 V 174" marker-end="url(#arrt)"/>
+      <path class="edge teal" d="M 520 258 V 288" marker-end="url(#arrt)"/>
+      <path class="edge teal" d="M 520 362 V 392" marker-end="url(#arrt)"/>
+
+      <!-- VERIFY → DISPATCH retry (left side, dashed) -->
+      <path class="edge retry" d="M 400 325 H 370 V 216 H 400" marker-end="url(#arrt)"/>
+      <text class="edgelbl teal" x="365" y="272" text-anchor="end">retry</text>
+
+      <!-- LAND → CHECK (right-angle through gutter at x=690) -->
+      <path class="edge teal" d="M 640 429 H 690 V 107 H 740" marker-end="url(#arrt)"/>
+
+      <!-- ─────── Edges: within Drain (vertical, center x=860) ─────── -->
+      <path class="edge rose" d="M 860 144 V 174" marker-end="url(#arrr)"/>
+      <text class="edgelbl rose" x="870" y="162">drain</text>
+      <path class="edge rose" d="M 860 248 V 278" marker-end="url(#arrr)"/>
+      <path class="edge rose" d="M 860 352 V 382" marker-end="url(#arrr)"/>
+
+      <!-- ─────── Loop-back: CHECK top → above headers → left of plan → PICK left edge ─────── -->
+      <path class="edge loop" d="M 860 70 V 22 H 30 V 226 H 60" marker-end="url(#arrl)"/>
+      <text class="edgelbl" x="450" y="16" text-anchor="middle">continue · loop back to next pick</text>
+
+      <!-- ─────── Legend ─────── -->
+      <g transform="translate(60, 540)">
+        <rect x="0"   y="0" width="12" height="3" fill="#E8A857"/>
+        <text class="sub" x="20" y="6">plan flow</text>
+        <rect x="100" y="0" width="12" height="3" fill="#6FD0BD"/>
+        <text class="sub" x="120" y="6">execute flow</text>
+        <rect x="220" y="0" width="12" height="3" fill="#E07A78"/>
+        <text class="sub" x="240" y="6">drain (after conclude)</text>
+        <rect x="400" y="0" width="12" height="3" fill="#B58BD9"/>
+        <text class="sub" x="420" y="6">loop back (continue)</text>
+        <g transform="translate(580, 0)">
+          <line x1="0" y1="1.5" x2="12" y2="1.5" stroke="#6FD0BD" stroke-width="1.5" stroke-dasharray="3 3" opacity=".7"/>
+          <text class="sub" x="20" y="6">retry on failure</text>
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <h4>The priority cascade for <code>PICK</code></h4>
+  <p>This is the heart of "autonomous." Every iteration, Nightly resolves the next unit of work by walking this cascade top-to-bottom and stopping at the first match:</p>
+
+  <ol class="steps">
+    <li><b>A previous-session plan exists and is unfinished.</b> Resume it. Plans live at <code>.nightly/plans/&lt;date&gt;-&lt;slug&gt;.md</code> with explicit status. Honoring stale plans is the cheapest, highest-value behavior — the human already approved the scope.</li>
+    <li><b>A task parked as <code>blocked: approval</code> has just been unblocked.</b> Any of the three approval surfaces (per-op CLI, per-task label, repo policy) can flip a parked task to <code>ready: retry</code>. The cascade picks the unblocked task before reaching for fresh work — the human already started it.</li>
+    <li><b>A previous-session summary names follow-up work.</b> The <code>briefing.html</code> from the prior run includes a "next session would do" block. Treat each item like a queued plan.</li>
+    <li><b>An accepted RFC in <code>.planning/rfcs/</code> has unstarted work items.</b> RFCs with front-matter <code>status: accepted</code> are explicitly-blessed scopes — higher signal than a random GitHub issue. Nightly parses the RFC's task list, picks the next unchecked item, and writes a scoped plan that cites the RFC verbatim.</li>
+    <li><b>Open issues exist on the remote.</b> Triage the backlog (see §06 Task Selection), pick the highest-ranked <em>nightly-eligible</em> issue, write a scoped plan, execute.</li>
+    <li><b>Open PRs need CI rescue or review-comment cleanup.</b> Nightly-authored PRs with red CI or a maintainer's review comment are higher priority than picking a fresh issue — finishing beats starting. (In non-remote mode this becomes: open <code>nightly/*</code> branches with failing local checks.)</li>
+    <li><b>No backlog. Ideate.</b> Run the proposer suite (dep drift, coverage gaps, doc-vs-code drift, TODO/FIXME density, flaky tests, lint debt, a11y, perf hotspots). Emit ranked draft <em>issues</em>, not PRs. Land them in <code>.nightly/runs/&lt;ts&gt;/proposed/</code> (and on the remote if one exists), then loop to pick one if any meet the autonomy bar.</li>
+  </ol>
+
+  <p>The cascade is intentionally written so the riskiest behavior — pure ideation — is the lowest priority. If there is any honest work to do, Nightly does that first.</p>
+</section>
+
+<!-- ───────────── 4. REPO CONTRACT ───────────── -->
+<section id="repo">
+  <h3>04 · Repo contract</h3>
+  <h2>Two folders. Split by audience, not by commit policy.</h2>
+
+  <p>Nightly uses two top-level folders in the working tree. They're separated by <em>audience and lifecycle</em>, not by version-control treatment. <b>Nightly never edits your <code>.gitignore</code> and never assumes either folder is tracked.</b> What to commit is your call — different users land in different places, and Nightly works either way.</p>
+
+  <p><code>.planning/</code> is for <b>humans</b>: brainstorms (like this document), RFCs, ADRs, design notes, repo conventions worth writing down. Long-lived, low-volume, worth reading in a year. <code>.nightly/</code> is for the <b>agent</b>: plans, run logs, the repo atlas, summaries — the transient state of an autonomous session. High-volume, short-lived, worth reading for a day. Both are sensible <em>defaults</em>; the paths are configurable in <code>config.yml</code> (rename, move, point at <code>docs/agent/</code> or <code>.agent/</code> or whatever fits your repo).</p>
+
+  <div class="card plum">
+    <span class="label">Common configurations</span>
+    <ul style="margin:.4em 0 0">
+      <li><b>Both ignored.</b> Treat both folders as scratch — useful for solo experimentation or air-gapped runs.</li>
+      <li><b>Both committed.</b> Full audit trail; the repo is the database. Useful for shared-team Nightly habits where reproducibility matters.</li>
+      <li><b>.planning committed, .nightly ignored</b> <em>(this brainstorm's author's preference)</em>. Share design intent; keep agent log piles out of code review.</li>
+      <li><b>.nightly committed, .planning ignored.</b> Unusual but valid — useful when planning is done elsewhere (Linear, Notion) but a shared replay trail is desired.</li>
+    </ul>
+  </div>
+
+  <h4>.planning/ &mdash; human-curated</h4>
+  <div class="tree">
+<span class="dir">.planning/</span>                          <span class="com"># human-authored; design intent that outlives any session</span>
+├── brainstorm.html                  <span class="com"># this document</span>
+├── <span class="dir">rfcs/</span>                            <span class="com"># proposals before they become code</span>
+│   └── 001-multi-harness-adapter.md
+├── <span class="dir">decisions/</span>                       <span class="com"># short ADRs — what we chose, why</span>
+├── conventions.md                   <span class="com"># house style, branching, review norms</span>
+└── nightly.scope.md                 <span class="com"># what Nightly is and isn't allowed to do</span>
+  </div>
+
+  <h4>.nightly/ &mdash; agent runtime</h4>
+  <div class="tree">
+<span class="dir">.nightly/</span>                           <span class="com"># agent-emitted; renewable, high-volume, easy to regenerate</span>
+├── config.yml                       <span class="com"># harnesses, models, guardrails, folder paths</span>
+├── <span class="dir">atlas/</span>                           <span class="com"># Devin-style "wiki" — refreshed on cold start</span>
+│   ├── overview.md                  <span class="com"># architecture, conventions, build commands</span>
+│   ├── modules.json                 <span class="com"># module graph, public APIs</span>
+│   └── conventions.md               <span class="com"># inferred conventions (curated lives in .planning/)</span>
+├── <span class="dir">plans/</span>                           <span class="com"># per-task scoped plans, append-only</span>
+│   ├── 2026-05-19-fix-flaky-auth.md
+│   └── 2026-05-20-add-retry-budget.md
+├── <span class="dir">runs/</span>                            <span class="com"># one folder per session</span>
+│   └── <span class="dir">2026-05-20T22-14Z/</span>
+│       ├── session.jsonl            <span class="com"># normalized event log (OpenHands-style)</span>
+│       ├── summary.md               <span class="com"># human-readable narrative</span>
+│       ├── briefing.html            <span class="com"># the morning report (rendered on drain)</span>
+│       ├── <span class="dir">tasks/</span>                   <span class="com"># one folder per task this session</span>
+│       │   └── 0001-add-retry-budget/
+│       │       ├── plan.md
+│       │       ├── walkthrough.md   <span class="com"># Antigravity-style</span>
+│       │       ├── diff.patch
+│       │       ├── proposal.md      <span class="com"># PR-shaped: title · summary · risks · test plan</span>
+│       │       └── uncertainty.md   <span class="com"># required, validated before "ready"</span>
+│       └── <span class="dir">proposed/</span>                <span class="com"># ranked draft issues, not yet executed</span>
+├── <span class="dir">memory/</span>                          <span class="com"># long-lived agent memory across sessions</span>
+│   ├── lessons.md                   <span class="com"># "things I got wrong" — write rarely, read always</span>
+│   └── conventions.local.md         <span class="com"># learned-not-told repo conventions</span>
+└── <span class="dir">prompts/</span>                         <span class="com"># reusable system prompts per harness</span>
+  </div>
+
+  <h4>How the two folders interact</h4>
+  <p>The boundary is real but porous in one direction: Nightly <b>reads from <code>.planning/</code></b> and selectively pulls content into <code>.nightly/</code> as runtime context. The reverse never happens automatically — Nightly never writes to <code>.planning/</code>. Human-authored artifacts stay human-owned; promotion of agent-emitted drafts into <code>.planning/</code> requires a deliberate human action.</p>
+
+  <p>Three ingestion points:</p>
+  <ul>
+    <li><b>At cold start.</b> Nightly scans <code>.planning/</code> and folds relevant content into <code>.nightly/</code>:
+      <ul>
+        <li><code>.planning/conventions.md</code> → seeds <code>.nightly/atlas/conventions.md</code> (human-curated conventions are loaded first; inferred ones layer on top and never overwrite).</li>
+        <li><code>.planning/nightly.scope.md</code> → folded into the system prompt as hard scope limits (what Nightly may and may not touch).</li>
+        <li><code>.planning/rfcs/*.md</code> with status <code>accepted</code> → indexed for retrieval so harnesses can cite them.</li>
+        <li><code>.planning/decisions/*.md</code> (ADRs) → indexed; surfaced when a task touches files the ADR scoped.</li>
+        <li><code>.planning/brainstorm.html</code> and untagged notes → indexed for retrieval but flagged as <em>aspirational, not authoritative</em>.</li>
+      </ul>
+    </li>
+    <li><b>At task pick.</b> When the chosen task references an RFC, ADR, or convention by name (or when the atlas links the touched code path to one), the referenced document is copied verbatim into that task's <code>plan.md</code> context section, so the harness sees the same words the human wrote — no summarization, no rephrasing.</li>
+    <li><b>At drain.</b> If Nightly identifies work that belongs in <code>.planning/</code> rather than as a PR — a proposed RFC for a larger refactor, a new ADR for a decision it had to make, an addition to <code>conventions.md</code> — it writes the draft to <code>.nightly/runs/&lt;ts&gt;/proposed/planning/</code> and surfaces it in the briefing's "Things to approve" section. <b>It does not move it into <code>.planning/</code>.</b> The human accepts by moving the file themselves (or via a future <code>nightly promote-rfc &lt;id&gt;</code> helper).</li>
+  </ul>
+
+  <p>Nightly maintains <code>.nightly/atlas/planning-index.json</code> — a mapping from <code>.planning/</code> source files to the <code>.nightly/</code> artifacts they seeded, with content hashes. On the next cold start, changed sources trigger a re-ingest of only the affected downstream artifacts. The human edits <code>.planning/conventions.md</code>, and the next Nightly run sees the change automatically.</p>
+
+  <h4>External context Nightly auto-detects</h4>
+  <p>Nightly doesn't only read its own <code>.planning/</code>. It also pulls from established cross-tool conventions so users adopting Nightly don't have to rewrite their existing agent rules. Same one-way flow: read-only, ingested into <code>.nightly/</code>, never modified.</p>
+
+  <div class="card teal">
+    <span class="label">AGENTS.md · the cross-tool standard</span>
+    <p style="margin:0 0 .6em"><a href="https://agents.md/">AGENTS.md</a> is now stewarded by the Linux Foundation's Agentic AI Foundation and adopted across Codex, Cursor, Antigravity, opencode, Copilot, Jules, Factory, Aider, Junie, Windsurf, and Amazon Q (~60k repos as of mid-2026). Nightly reads it natively as a first-class context source, not as a Nightly-specific config.</p>
+    <p style="margin:0"><b>CLAUDE.md is also read</b>, both because Claude Code is one of Nightly's primary harness backends and because real-world repos accumulate both files during the migration period. If both exist, AGENTS.md wins on conflict; CLAUDE.md fills any sections AGENTS.md doesn't cover.</p>
+  </div>
+
+  <p>Precedence mirrors Codex's lookup, walking root → working directory with closest-wins semantics for monorepos:</p>
+
+  <pre><span class="com"># .nightly/config.yml — context discovery (defaults shown)</span>
+context:
+  rules:
+    - <span class="str">AGENTS.override.md</span>   <span class="com"># local-only overrides; typically untracked</span>
+    - <span class="str">AGENTS.md</span>            <span class="com"># cross-tool standard — preferred</span>
+    - <span class="str">CLAUDE.md</span>            <span class="com"># Anthropic's holdout; read as companion / fallback</span>
+    - <span class="str">.cursor/rules/**/*.mdc</span><span class="com"># Cursor rules — indexed if present</span>
+
+  planning:
+    - <span class="str">.planning/</span>           <span class="com"># Nightly's default — human-curated</span>
+    - <span class="str">specs/</span>               <span class="com"># GitHub spec-kit (~88k stars)</span>
+    - <span class="str">docs/adr/</span>            <span class="com"># Nygard ADRs</span>
+    - <span class="str">docs/rfc/</span>            <span class="com"># RFCs</span>
+    - <span class="str">docs/design/</span>         <span class="com"># long-form design docs</span>
+    - <span class="str">PLAN.md</span>              <span class="com"># OpenAI cookbook ExecPlans</span>
+    - <span class="str">PLANS.md</span>             <span class="com"># same, plural</span>
+
+  closest_wins: <span class="num">true</span>          <span class="com"># nested AGENTS.md / CLAUDE.md override root</span>
+  trust:
+    rules:    authoritative   <span class="com"># cannot be contradicted by inference</span>
+    planning: aspirational    <span class="com"># indexed, cited, but not binding</span></pre>
+
+  <p>The discovery is order-sensitive — earlier entries win on conflict — and every detected source is logged in <code>session.jsonl</code> with a content hash, so a reviewer can see exactly which files shaped any given task. None of this is mandatory: a repo with only <code>AGENTS.md</code> and nothing in <code>.planning/</code> works fine; a repo with only <code>docs/adr/</code> works fine; a Nightly-native repo with <code>.planning/</code> and no AGENTS.md works fine.</p>
+
+  <div class="card rose">
+    <span class="label">What Nightly does <em>not</em> do</span>
+    <ul style="margin:.4em 0 0">
+      <li>Does not invent <code>NIGHTLY.md</code>. That mistake — every harness shipping its own rules-file format — was the reason AGENTS.md exists in the first place.</li>
+      <li>Does not write to <code>AGENTS.md</code>, <code>CLAUDE.md</code>, <code>specs/</code>, <code>docs/</code>, or any of the discovered paths. Those are human-owned.</li>
+      <li>Does not require the <code>.planning/</code> folder name. Configure <code>planning:</code> however you like; <code>.planning/</code> is just the default.</li>
+    </ul>
+  </div>
+
+  <div class="twocol">
+    <div>
+      <h4>Why split this way</h4>
+      <ol>
+        <li><b>Signal vs noise.</b> Human-authored design (worth reading in a year) and agent-emitted runtime state (worth reading for a day) shouldn't share a folder. Mixing them buries the signal regardless of whether either is committed.</li>
+        <li><b>Regeneration boundary.</b> Everything in <code>.nightly/</code> is, in principle, regenerable from the repo + <code>.planning/</code> + a cold Nightly start. Everything in <code>.planning/</code> is not. That boundary is more important than commit policy and survives any version-control choice.</li>
+        <li><b>One-way trust.</b> Pulling human-authored constraints into agent runtime is safe and desirable. Letting the agent rewrite human-authored intent is not. The asymmetric flow encodes that.</li>
+        <li><b>Local-first.</b> Nightly works on a fresh clone with no remote at all. The agent's state never depends on a server it can reach.</li>
+      </ol>
+    </div>
+    <aside class="aside">
+      <span class="label">Inspirations</span>
+      <b>Antigravity</b>'s <code>brain/&lt;GUID&gt;/</code> markdown bundle (artifact contract).<br>
+      <b>OpenHands</b>' <code>.openhands/microagents/</code> + <code>AGENTS.md</code> (in-repo memory).<br>
+      <b>Devin</b>'s DeepWiki — but in your repo, not theirs.<br>
+      <b>Claude Code</b>'s <code>.claude/</code> settings cascade.<br>
+      <b>Cursor</b>'s <code>.cursor/</code> rules folder.
+    </aside>
+  </div>
+</section>
+
+<!-- ───────────── 5. HOSTS ───────────── -->
+<section id="harness">
+  <h3>05 · Hosts &amp; how Nightly plugs into each</h3>
+  <h2>One Nightly. Implemented natively inside every host you already use.</h2>
+
+  <p>Nightly's default mode is to run <em>inside</em> an interactive session of a host you've already opened — Claude Code, Codex, Cursor, opencode, Antigravity. It's distributed as a thin, native integration for each: a Skill, a slash command, an agent registration. They all load the same core library — loop, priority cascade, drain, briefing renderer — and read/write the same on-disk artifact contract (<code>.nightly/</code>). The host session is the long-running container; Nightly orchestrates within it, dispatching specialist sub-agents through each host's native mechanism.</p>
+
+  <p>This design answers four things at once. <b>Subscription auth</b> — the host is already logged in, so Nightly inherits Claude Pro/Max, ChatGPT Plus/Pro, Cursor account, or Google OAuth without ever asking for a token. <b>UX continuity</b> — no new tool to learn; Nightly lives in the editor you already use. <b>Sub-agent dispatch</b> — every modern host has Task-tool / MCP / background-agent primitives, so Nightly reuses them instead of inventing its own. <b>Context-window economics</b> — sub-agents get their own context windows, so the host session isn't forced to hold every task's working memory.</p>
+
+  <div class="matrix-wrap">
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Interactive launcher</th>
+          <th>Sub-agent dispatch primitives</th>
+          <th>Subscription source</th>
+          <th>v1 priority</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Claude Code</td>
+          <td><code>.claude/skills/nightly/SKILL.md</code> + <code>/nightly</code></td>
+          <td>Task tool (sub-agents with own context) · MCP · hooks</td>
+          <td>Claude Pro · Max · Team</td>
+          <td><span class="pill ok">primary</span></td>
+        </tr>
+        <tr>
+          <td>Codex CLI</td>
+          <td><code>~/.codex/skills/nightly/SKILL.md</code> + slash command</td>
+          <td>MCP client &amp; server · <code>codex exec</code> sub-spawn · Seatbelt/Landlock</td>
+          <td>ChatGPT Plus · Pro · Business · Edu · Enterprise</td>
+          <td><span class="pill ok">primary</span></td>
+        </tr>
+        <tr>
+          <td>opencode</td>
+          <td><code>.opencode/agents/nightly/</code> + slash command via SSE server</td>
+          <td>Sub-agents · plugins · MCP</td>
+          <td>opencode auth (per-provider, in <code>auth.json</code>)</td>
+          <td><span class="pill ok">primary</span></td>
+        </tr>
+        <tr>
+          <td>Cursor</td>
+          <td><code>.cursor/commands/nightly</code> + Background Agent template</td>
+          <td>Background Agents (cloud VM) · MCP · inline tool calls</td>
+          <td>Cursor account</td>
+          <td><span class="pill warn">secondary</span></td>
+        </tr>
+        <tr>
+          <td>Antigravity</td>
+          <td>Managed Agent registered in Agent Manager</td>
+          <td>Sub-agents · MCP · managed Chromium</td>
+          <td>Google OAuth (Gemini API)</td>
+          <td><span class="pill warn">secondary</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>What every host integration must implement</h4>
+
+  <p>Each per-host integration is small — typically &lt; 500 lines — because the loop logic lives in the shared core. The integration only has to handle five things: registering the launcher with the host, dispatching specialist sub-agents through the host's mechanism, exposing the host's session id, surfacing approval prompts through the host's native UI, and reporting subscription health.</p>
+
+  <div class="card copper">
+    <span class="label">Stack · Python 3.12+ with uv</span>
+    <p style="margin:0 0 .6em">Nightly is implemented in <b>Python 3.12+</b>, managed with <b>uv</b>. The core library and each host integration ship as separate <code>uv</code>-managed packages — <code>nightly-core</code>, <code>nightly-host-claude</code>, <code>nightly-host-codex</code>, and so on — in a single workspace.</p>
+    <p style="margin:0 0 .6em">Inner stack: <b>asyncio</b> throughout · <b>httpx</b> (HTTP) + <b>httpx-sse</b> (opencode's SSE event stream) · <b>pydantic v2</b> (data models, config, event envelopes) · <b>typer</b> (CLI) · <b>jinja2</b> (briefing.html renderer) · <b>tree-sitter</b> (atlas / AST-aware retrieval) · <b>markdown-it-py</b> (RFC and AGENTS.md ingestion). Dev loop: <b>ruff</b> (lint + format) · <b>Pyrefly</b> (types — Meta's Rust-backed checker) · <b>pytest</b> + <b>pytest-asyncio</b>, all wired behind a single <b>Makefile</b> (<code>make check</code>, <code>make test</code>, <code>make type</code>).</p>
+    <p style="margin:0"><b>Why Python over TS:</b> every host boundary is either REST, MCP, markdown, or subprocess — all of which Python handles natively. The Claude Agent SDK has first-class Python support; MCP servers are predominantly Python; AST tooling (tree-sitter, <code>ast</code>) and AGENTS.md / RFC parsing are more mature here. The one TS-leaning piece is opencode's first-party SDK, but its REST/SSE surface is trivially callable from <code>httpx</code>.</p>
+  </div>
+
+  <pre><span class="com"># nightly/hosts/contract.py</span>
+<span class="kw">from</span> abc <span class="kw">import</span> ABC, abstractmethod
+<span class="kw">from</span> datetime <span class="kw">import</span> datetime
+<span class="kw">from</span> typing <span class="kw">import</span> Literal
+<span class="kw">from</span> pydantic <span class="kw">import</span> BaseModel
+
+HostId = Literal[<span class="str">"claude"</span>, <span class="str">"codex"</span>, <span class="str">"cursor"</span>, <span class="str">"opencode"</span>, <span class="str">"antigravity"</span>]
+SpecialistRole = Literal[<span class="str">"implementer"</span>, <span class="str">"tester"</span>, <span class="str">"reviewer"</span>, <span class="str">"researcher"</span>]
+
+
+<span class="kw">class</span> <span class="fn">SubAgentResult</span>(BaseModel):
+    role: SpecialistRole
+    output: <span class="kw">str</span>
+    tool_calls: <span class="kw">list</span>[<span class="kw">dict</span>]
+    elapsed_ms: <span class="kw">int</span>
+
+
+<span class="kw">class</span> <span class="fn">AuthStatus</span>(BaseModel):
+    ok: <span class="kw">bool</span>
+    plan: <span class="kw">str</span> | <span class="kw">None</span> = <span class="kw">None</span>
+    expires_at: datetime | <span class="kw">None</span> = <span class="kw">None</span>
+
+
+<span class="kw">class</span> <span class="fn">NightlyHostIntegration</span>(ABC):
+    host_id: HostId
+
+    <span class="com"># idempotent: install the launcher (Skill / command / agent file) into the host</span>
+    @abstractmethod
+    <span class="kw">async def</span> <span class="fn">install</span>(<span class="kw">self</span>, scope: Literal[<span class="str">"project"</span>, <span class="str">"user"</span>]) -> <span class="kw">None</span>: ...
+
+    <span class="com"># dispatch a specialist sub-agent through the host's native primitive</span>
+    @abstractmethod
+    <span class="kw">async def</span> <span class="fn">dispatch_sub_agent</span>(
+        <span class="kw">self</span>,
+        *,
+        role: SpecialistRole,
+        prompt: <span class="kw">str</span>,
+        cwd: <span class="kw">str</span>,                         <span class="com"># per-task git worktree</span>
+        allowed_tools: <span class="kw">list</span>[<span class="kw">str</span>] | <span class="kw">None</span> = <span class="kw">None</span>,
+        timeout_s: <span class="kw">float</span> | <span class="kw">None</span> = <span class="kw">None</span>,
+    ) -> SubAgentResult: ...
+
+    <span class="com"># host's session id — recorded in session.jsonl for audit / replay</span>
+    @abstractmethod
+    <span class="kw">def</span> <span class="fn">session_id</span>(<span class="kw">self</span>) -> <span class="kw">str</span>: ...
+
+    <span class="com"># surface an approval question through the host's native UI</span>
+    @abstractmethod
+    <span class="kw">async def</span> <span class="fn">request_approval</span>(<span class="kw">self</span>, q: <span class="kw">str</span>, choices: <span class="kw">list</span>[<span class="kw">str</span>]) -> <span class="kw">str</span>: ...
+
+    <span class="com"># verify subscription is alive and won't expire mid-session</span>
+    @abstractmethod
+    <span class="kw">async def</span> <span class="fn">auth_status</span>(<span class="kw">self</span>) -> AuthStatus: ...</pre>
+
+  <p>The shared core calls <code>dispatch_sub_agent</code> whenever the loop delegates work to a specialist. Inside Claude Code that becomes a Task-tool invocation via the Claude Agent SDK; inside Codex it's an MCP call or a spawned <code>codex exec</code>; inside Cursor it can spawn a Background Agent. The core never knows which host it's in — only the integration does. That's the seam.</p>
+
+  <h4>Per-host mapping notes</h4>
+  <ul>
+    <li><b>Claude Code</b> — the natural primary. <code>dispatchSubAgent</code> maps to the Task tool; specialists run with their own sub-agent contexts and stream their own assistant/tool-use events. <code>PreToolUse</code> / <code>PostToolUse</code> hooks gate destructive operations through Nightly's approval surface. The Skill file at <code>.claude/skills/nightly/SKILL.md</code> ships pre-populated with the priority cascade prompt, the loop instructions, and pointers to the on-disk plan.</li>
+    <li><b>Codex CLI</b> — installed as a Codex skill + slash command. <code>dispatchSubAgent</code> prefers MCP for in-session dispatch; falls back to spawning a separate <code>codex exec --json</code> when the sub-agent needs a fresh sandbox. Codex's native Seatbelt (macOS) / Landlock (Linux) sandboxing applies automatically — Nightly does not need to wrap it.</li>
+    <li><b>opencode</b> — registered as a sub-agent under <code>.opencode/agents/nightly/</code>. The SSE server architecture is a gift: the loop just subscribes to <code>/global/event</code> for its event stream. <code>POST /session/:id/fork</code> is how specialist sub-agents are spawned with copied context.</li>
+    <li><b>Cursor</b> — slash command + a Background Agent template. <code>dispatchSubAgent</code> can either invoke a Background Agent (remote VM, slow but isolated) or run inline when latency matters. Cursor's existing branch-and-PR deliverable model is the closest to Nightly's by default.</li>
+    <li><b>Antigravity</b> — registered as a Managed Agent in the Agent Manager. Disk contract is the richest of the five: Nightly mirrors its own <code>.nightly/runs/&lt;ts&gt;/tasks/&lt;n&gt;/</code> layout into Antigravity's <code>~/.gemini/antigravity/brain/&lt;GUID&gt;/</code> so the Agent Manager UI shows familiar walkthroughs.</li>
+  </ul>
+
+  <div class="card rose">
+    <span class="label">A real risk: host context-window exhaustion</span>
+    <p style="margin:0">Because Nightly runs inside the host's session, multi-hour runs put pressure on the host's context window. Mitigation is structural: <b>all durable Nightly state lives on disk in <code>.nightly/</code>, never in the host's conversation.</b> The host can compact freely; the loop re-reads its plan, atlas, and lessons from disk on each iteration. Sub-agent dispatch via Task tool / MCP also gives each specialist its own window. The host's context is a working set, not a memory.</p>
+  </div>
+
+  <h4>Headless mode — opt-in, for cron and CI</h4>
+
+  <p>When there is no interactive session to launch from — overnight cron at 02:00, CI pipelines, scripted batches — Nightly runs in <em>headless</em> mode and spawns each host's CLI directly: <code>claude -p</code>, <code>codex exec</code>, <code>opencode run</code>. The on-disk artifact contract is identical, the loop logic is identical; only the launcher differs. Authentication still inherits from cached subscription credentials in <code>~/.claude/</code>, <code>~/.codex/</code>, <code>~/.gemini/</code>, etc. Raw API tokens are a fallback for sandboxed CI environments without a persistent home directory — set via <code>ANTHROPIC_API_KEY</code> / <code>OPENAI_API_KEY</code> / etc. when you must, never required.</p>
+
+  <div class="card plum">
+    <span class="label">Anthropic Agent SDK metering — heads up</span>
+    <p style="margin:0">Starting <b>2026-06-15</b>, Anthropic meters <code>claude -p</code> and Claude Agent SDK usage against a <em>separate</em> monthly credit pool tied to your subscription, distinct from interactive Claude Code usage. It's still subscription-billed (no API key required), but the credit is sub-allocated. Headless-mode Nightly users on Claude Pro/Max should account for this — either by capping headless run frequency, or by setting an opt-in <code>ANTHROPIC_API_KEY</code> for headless mode only. Interactive-mode Nightly (the default) is unaffected — it runs inside Claude Code's normal session and uses the normal pool.</p>
+  </div>
+</section>
+
+<!-- ───────────── 6. TASK SELECTION ───────────── -->
+<section id="selection">
+  <h3>06 · Task selection &amp; ideation</h3>
+  <h2>The unsolved-on-purpose part.</h2>
+
+  <p>Across the entire autonomous-SWE field, real autonomous <em>selection</em> of work — "which issue should I pick?" — is not a solved problem. The leading shipping products punt on it: humans tag (Devin / Copilot's <code>nightly-ready</code> label model). Nightly cannot punt that hard, because the whole product premise is unattended overnight work — but it can structure the problem so that the riskiest behavior is always the last resort.</p>
+
+  <h4>Issue ranking — lightweight, transparent, overridable</h4>
+  <p>A simple multiplicative score, recomputed each iteration. Designed to be readable in <code>session.jsonl</code> so any pick can be explained:</p>
+
+  <pre><span class="com">score = w_label × w_age × w_blast × w_coverage × w_recent_activity</span>
+
+w_label          <span class="com"># nightly-ready=1.5 · good-first-issue=1.2 · bug=1.1 · default=1.0</span>
+w_age            <span class="com"># softplus(days_open / 30), capped at 1.6 — older &gt; older</span>
+w_blast          <span class="com"># 1.4 if single-file · 1.0 if multi-file · 0.5 if cross-cutting</span>
+w_coverage       <span class="com"># 1.3 if touched paths have &gt;80% test coverage · 0.7 otherwise</span>
+w_recent_activity<span class="com"># 0.4 if a human commented in last 24h (don't step on them) · else 1.0</span></pre>
+
+  <p>Three hard gates apply independently of score: an issue must (a) have a clear acceptance criterion or be transparently transformable into one, (b) not be tagged <code>do-not-automate</code>, and (c) not require credentials Nightly doesn't have.</p>
+
+  <h4>Ideation — proposer, not executor</h4>
+  <p>When the backlog is empty, Nightly does <b>not</b> spontaneously write features. The Devin migration-script failure is the warning: ungrounded autonomous "improvements" become surprise PRs that get rejected and erode trust. Instead, Nightly runs a <em>proposer suite</em> that emits ranked draft <em>issues</em> for human approval, and only escalates one to a PR if it clears a high autonomy bar.</p>
+
+  <div class="twocol">
+    <div>
+      <h4>Proposer sources</h4>
+      <ul>
+        <li><b>Dependency drift</b> — minor + patch upgrades with green test runs (Dependabot's job, but treated as a backlog signal).</li>
+        <li><b>Coverage gaps</b> — modules in the dependency hot path with <code>&lt; 60%</code> coverage.</li>
+        <li><b>Doc-vs-code drift</b> — signatures in <code>README</code> / <code>docs/</code> that no longer match exported APIs.</li>
+        <li><b>TODO/FIXME audit</b> — stale comments with associated test failures or issue links.</li>
+        <li><b>Flaky test triage</b> — tests with a recent fail-then-pass pattern in CI history.</li>
+        <li><b>Lint debt</b> — newly-introduced rules with autofixable violations.</li>
+        <li><b>Accessibility &amp; perf</b> — Lighthouse / axe-core regressions on changed pages.</li>
+        <li><b>Type holes</b> — <code>any</code> / <code>unknown</code> at module boundaries (TS) or untyped fns (Py).</li>
+      </ul>
+    </div>
+    <aside class="aside">
+      <span class="label">The autonomy bar for proposer-to-PR</span>
+      A proposed issue may be auto-executed without a human approving it <em>only if</em>:
+      <ol style="font-size: inherit; margin: .4em 0 0">
+        <li>It is single-file and reverts cleanly.</li>
+        <li>Touched paths have <code>&gt;90%</code> test coverage.</li>
+        <li>It is in the dep-upgrade or autofixable-lint category.</li>
+        <li>The change is &lt; 80 lines.</li>
+      </ol>
+      Everything else lands as a ranked draft issue in <code>.nightly/runs/&lt;ts&gt;/proposed/</code> and (optionally) on the remote.
+    </aside>
+  </div>
+</section>
+
+<!-- ───────────── 7. SAFETY RAILS ───────────── -->
+<section id="safety">
+  <h3>07 · Branch hygiene · check gates · uncertainty</h3>
+  <h2>Every change earns its review.</h2>
+
+  <p>The deliverable model is dual: <b>PR if there's a GitHub remote, local proposal if there isn't.</b> Both end as a branch plus a structured artifact a human can read in five minutes. The gates below apply identically to either path — the only difference is whether the artifact is rendered into a GitHub PR body or into the morning briefing's "changes needing review" section.</p>
+
+  <div class="twocol">
+    <div>
+      <h4>Branch &amp; worktree discipline</h4>
+      <ul>
+        <li>Every task gets its own <code>git worktree</code>, isolated by directory. Nightly's main process and the harness child process never share a working tree.</li>
+        <li>Branches are named <code>nightly/&lt;slug&gt;-&lt;short-ts&gt;</code>. <code>main</code> is never written to by Nightly, ever. Drained WIP parks on <code>nightly/wip-&lt;run-id&gt;</code>.</li>
+        <li>One PR (or proposal) per task. Multi-task PRs are forbidden — small, atomic, reviewer-friendly diffs are non-negotiable (this is the WRAP guidance from Copilot and the Cognition recipe).</li>
+        <li>When a GitHub remote exists, Nightly opens PRs as <b>drafts</b> until all checks pass; the "ready for review" flip is automatic on green, not on the agent's say-so. When there's no remote, the proposal is marked <code>status: draft</code> in its YAML front-matter until checks pass, then flipped to <code>status: ready</code>.</li>
+      </ul>
+
+      <h4>The done definition</h4>
+      <p>A task is "done" only when, on the isolated branch:</p>
+      <ol>
+        <li>All existing tests pass <em>locally</em>.</li>
+        <li>All new tests for new code pass (and exist — uncovered new code fails its own check).</li>
+        <li>Lint, format, type-check are green <em>locally</em>.</li>
+        <li><em>If</em> a remote with CI exists: remote CI also passes. If there's no remote CI, the local check suite is the gate.</li>
+        <li>The required <code>uncertainty.md</code> exists and is non-empty.</li>
+        <li>The PR body (or <code>proposal.md</code>) has the structured sections (see §09).</li>
+      </ol>
+      <p>Any of those red → artifact stays <code>draft</code> and the task either continues or, on drain, parks as WIP.</p>
+
+      <h4>What "proposal" looks like in practice</h4>
+      <p>When there is no GitHub remote, each task writes <code>.nightly/runs/&lt;ts&gt;/tasks/&lt;n&gt;-&lt;slug&gt;/proposal.md</code> with the same shape a PR body would have: title, summary, motivation, test plan, diff (or link to <code>diff.patch</code>), things that could break, things I'm not sure about, approval-needed items. The morning briefing collects these alongside any real PRs into a single "changes needing review" list; the human reviewer reads the proposal, runs <code>nightly diff &lt;task&gt;</code> for a colored view, and either <code>nightly accept</code> (merge into base), <code>nightly request-changes</code> (re-queues with feedback), or leaves it as a long-lived branch.</p>
+
+      <h4>The refusal policy</h4>
+      <p>An autonomous agent's hardest design choice is what it <em>will not do on its own</em>. Nightly's defaults are intentionally conservative — the Devin migration incident is what bad defaults look like — and grouped into six categories. Each refused operation writes a structured record to <code>.nightly/runs/&lt;ts&gt;/proposed/approvals/&lt;id&gt;.md</code> with the exact command attempted, why it was refused, and how to approve it.</p>
+
+      <div class="card copper">
+        <span class="label">Refusal is a fork, not a halt</span>
+        <p style="margin:0 0 .6em"><b>Nightly never blocks waiting for an approval.</b> The whole point of overnight unattended runs is that a human isn't sitting at the terminal at 03:00. When the agent hits a refusal, it forks:</p>
+        <ul style="margin:0">
+          <li><b>If the refused op is optional</b> — the task can complete without it — the task proceeds, the gap is documented in <code>uncertainty.md</code>, and the refused op surfaces in the briefing's "Things to approve."</li>
+          <li><b>If the refused op is required</b> — the task cannot complete without it — Nightly <em>rolls back the worktree to the last clean commit</em> and parks the entire task on <code>nightly/wip-&lt;run-id&gt;/&lt;slug&gt;</code> with <code>plan.md</code> marked <code>blocked: approval</code>. Half-finished work is never landed as a PR or proposal.</li>
+        </ul>
+        <p style="margin:.6em 0 0">Either way the run keeps moving: Nightly picks the next item from the priority cascade and continues. Approvals are reviewed <em>after the fact</em>, on the human's schedule.</p>
+      </div>
+
+      <ol>
+        <li><b>Destructive git.</b> Force-push, <code>git reset --hard</code> on shared branches, branch deletion (<code>-D</code>), history rewrites (<code>rebase -i</code> on pushed commits, <code>filter-repo</code>), amending pushed commits, <code>--no-verify</code> / <code>--no-gpg-sign</code>, any direct push to <code>main</code> / <code>master</code> / <code>release/*</code>. Nightly only ever pushes to <code>nightly/&lt;slug&gt;-&lt;ts&gt;</code>.</li>
+
+        <li><b>Production state.</b> Anything that mutates a live environment — <code>kubectl apply</code> against a prod context, <code>terraform apply</code> against prod state, <code>helm upgrade --install</code>, deploy commands, IAM / role / permission edits, schema migrations on live databases, mass data deletion, billing-API calls in live mode, secret rotation, edits to <code>.env</code> or any vault / secret-manager binding (AWS Secrets Manager, GCP Secret Manager, HashiCorp Vault, 1Password, GitHub repo secrets).</li>
+
+        <li><b>External communication &amp; publishing.</b> Sending email, posting to Slack / Discord / social channels, opening issues or PR comments in <em>other</em> repos, publishing packages (<code>npm publish</code>, <code>pypi upload</code>, <code>cargo publish</code>, <code>docker push</code>, <code>gem push</code>, <code>helm push</code>), calling third-party APIs that have real-world effects (payments, transactional email, infrastructure provisioning, calendar invites).</li>
+
+        <li><b>Network egress to unknown domains.</b> Nightly maintains a per-repo domain allowlist seeded from declared dependencies + AGENTS.md + prior-session traffic. Outbound calls to anything else require approval. The active allowlist is logged in <code>.nightly/runs/&lt;ts&gt;/allowlist.json</code> for audit.</li>
+
+        <li><b>Scope creep.</b> Edits outside the task's declared file scope, mass renames or moves, top-level structural changes (new git submodules, dropped lockfiles, restructured <code>src/</code>), CI/CD modifications (<code>.github/workflows/*</code>, <code>.gitlab-ci.yml</code>, pre-commit configs), <code>LICENSE</code> edits or adding GPL / AGPL-incompatible deps without an explicit policy decision, en-masse <code>.gitignore</code> rewrites.</li>
+
+        <li><b>Bypassing test or type safety.</b> Disabling, skipping, or deleting tests; commenting out assertions; introducing <code># type: ignore</code> / <code># noqa</code> / <code>// @ts-ignore</code> in changed paths that didn't already have them; lowering coverage thresholds; weakening type signatures to <code>Any</code> / <code>unknown</code> / <code>any</code> at module boundaries. The agent is allowed to add <em>new</em> ignores only when accompanied by a one-line justification in <code>uncertainty.md</code>.</li>
+      </ol>
+
+      <h4>How approvals work</h4>
+      <p>Three approval surfaces, in order of friction and blast radius. <b>All three are retro</b> — they record a decision about an operation that already got refused. The next time Nightly visits the parent task, it sees the approval and retries the operation. None of them interrupt or unblock a run that's already in flight.</p>
+      <ul>
+        <li><b>Per-op approval.</b> <code>nightly approve &lt;id&gt;</code> from CLI (or any host session) marks one refused operation as approved. If the parent task is still queued in the current run, the loop's next visit retries it; otherwise it gets retried in the next session. Lowest friction; smallest blast radius. Best for one-off cases the agent couldn't anticipate.</li>
+        <li><b>Per-task label.</b> Tagging the corresponding GitHub issue (or local task plan) with <code>nightly:approved:&lt;category&gt;</code> grants approval to that whole task. Same retro semantics — takes effect on the next visit. The label is recorded in <code>plan.md</code> for audit alongside the PR/proposal.</li>
+        <li><b>Repo policy.</b> Editing <code>.planning/nightly.scope.md</code> tightens or loosens the deny list across all future runs — pre-approve dep upgrades for this repo, forbid touching certain paths entirely, etc. Nightly reads this file but never writes to it.</li>
+      </ul>
+
+      <p>Tasks parked as <code>blocked: approval</code> are picked back up as a high-priority entry in the cascade (just below resumed in-flight plans) the moment any of the three surfaces grants approval. The cascade never blocks waiting; it just routes around blocked tasks until they're unblocked.</p>
+
+      <p>One category is hard-coded and not policy-overridable: <b>destructive git operations against protected branches</b>. Even with <code>nightly:approved:destructive-git</code>, Nightly will not force-push to <code>main</code> or rewrite shared history. That floor stays.</p>
+
+      <h4>The uncertainty requirement</h4>
+      <p>Refusal is the binary half of safety; uncertainty is the gradient half. Every task generates an <code>uncertainty.md</code> that the PR body or proposal links to, and Nightly's check suite refuses to mark the task <code>ready</code> if it's missing or empty. Required sections:</p>
+      <ul>
+        <li><b>Things I'm not sure about</b> — places where the agent guessed.</li>
+        <li><b>Things that could break</b> — externally-observable risks (data, perf, API contracts).</li>
+        <li><b>Things I skipped on purpose</b> — out-of-scope items, with reasons.</li>
+        <li><b>Approval needed for</b> — each refused operation by id, cross-linked to <code>proposed/approvals/&lt;id&gt;.md</code>.</li>
+      </ul>
+    </div>
+    <aside class="aside">
+      <span class="label">The Devin lesson</span>
+      Cognition's Devin once shipped a destructive data-migration script <em>without flagging that it was destructive</em>. That single incident defines the failure mode every autonomous coding agent has to design against. Nightly answers it three ways: (1) outer sandbox blocks unapproved domains/paths, (2) PR/proposal body mandates "could break" enumeration, (3) any irreversible op without an approval label aborts the task.
+    </aside>
+  </div>
+</section>
+
+<!-- ───────────── 8. CONCLUDE ───────────── -->
+<section id="conclude">
+  <h3>08 · The conclude protocol</h3>
+  <h2>Two thresholds. Never <code>SIGKILL</code>.</h2>
+
+  <p>"Stop now" is the most dangerous instruction Nightly can receive — the obvious implementations (kill the process, drop the worktree) lose hours of work and leave the repo in a half-modified state. Borrowing from LangGraph and the killswitch.md graceful-stop pattern:</p>
+
+  <ol class="steps">
+    <li><b>User sends <code>nightly conclude</code>.</b> The orchestrator flips a flag visible to the next step transition in the loop. It does <em>not</em> interrupt the running tool call. The current task continues to completion <em>or</em> to its next clean checkpoint, whichever is sooner.</li>
+    <li><b>Nudge phase.</b> The agent is told: "Finalize current task. No new exploration. If it can land cleanly in ≤ N minutes, land it. Otherwise stash and exit." The harness's allowed-tools list is rewritten to forbid starting new tasks. Tests, lint, and PR-creation tools stay live.</li>
+    <li><b>Hard phase.</b> If the nudge timeout expires, the harness's write tools are revoked — the agent can read but not edit, run tests but not push. WIP commits go to <code>nightly/wip-&lt;run-id&gt;</code> with a structured <code>WIP.md</code> at the root explaining what was in-flight.</li>
+    <li><b>Report phase.</b> The agent (with read-only tools) generates the final <code>summary.md</code> and Nightly's renderer produces <code>briefing.html</code> from the normalized event log.</li>
+    <li><b>Teardown.</b> Worktrees are detached but not deleted (their existence is the artifact). The session folder is committed to the repo on a <code>nightly/session-&lt;ts&gt;</code> branch.</li>
+  </ol>
+
+  <div class="card plum">
+    <span class="label">Mid-task conclude semantics</span>
+    <p style="margin:0">If <code>conclude</code> arrives mid-task, Nightly does <em>not</em> halt. It tells the user "concluding — wrapping current task on <code>nightly/&lt;slug&gt;</code>, ETA ~Xm", and only after that task reaches a clean stopping point does it proceed to the report phase. The orchestrator's promise is "always drain, never abandon."</p>
+  </div>
+</section>
+
+<!-- ───────────── 9. MORNING REPORT ───────────── -->
+<section id="report">
+  <h3>09 · The morning briefing</h3>
+  <h2>One HTML file. Everything that happened.</h2>
+
+  <p>The deliverable. Generated on drain, committed to the repo, opened in a browser. Designed to be reviewed in 5–10 minutes by a sleep-deprived human with a coffee. Structure inspired by Linear changelog + Stripe Press + a really good engineering postmortem.</p>
+
+  <div class="card copper">
+    <span class="label">briefing.html · top-to-bottom</span>
+    <ol style="margin:.4em 0 0">
+      <li><b>Hero glance</b> — N changes ready · M proposed issues · K tasks · runtime · LOC touched · check pass rate. The hero adapts to context: "PRs" if there's a GitHub remote, "proposals" otherwise, with the count visually identical.</li>
+      <li><b>Changes needing review</b> — every task's deliverable in one list. Each row has title, branch, base, diff stats, mandatory "could break" excerpt, <code>draft</code> / <code>ready</code> status, replay link, and a type badge: <span class="pill ok">PR</span> if pushed to a GitHub remote, <span class="pill warn">PROPOSAL</span> if local-only. Reviewers click through to the GitHub PR or to the embedded <code>proposal.md</code> renderer respectively.</li>
+      <li><b>Proposed issues</b> — ranked, with rationale and source signal (dep drift / coverage / a11y / etc.). Same shape regardless of remote.</li>
+      <li><b>Things I didn't do</b> — issues considered and skipped, with why-skipped. (Often more useful than what was done.)</li>
+      <li><b>Things to approve</b> — operations Nightly refused to run autonomously. Each row shows the refused op, why it was refused, <em>what happened to the parent task</em> (continued without it / parked as WIP on <code>nightly/wip-...</code>), and a one-click <code>nightly approve &lt;id&gt;</code> command. Approvals are retro — they take effect on Nightly's next visit to that task, not by interrupting a live run.</li>
+      <li><b>Atlas deltas</b> — what changed in the repo's structural model since last session.</li>
+      <li><b>Lessons</b> — new entries written to <code>.nightly/memory/lessons.md</code> this run.</li>
+      <li><b>Session replay</b> — collapsed event log, expandable per-task, with diff inlines.</li>
+      <li><b>Next session would do</b> — the queue Nightly would pick from if started again now. Editable; humans can re-rank.</li>
+    </ol>
+  </div>
+
+  <p>The briefing is itself a normal HTML file — no JS framework, no server, no dashboard. Embedded styles, embedded diffs, openable offline. Same design language as this document (because that's the test: if this document is good enough to read, the briefing is too).</p>
+</section>
+
+<!-- ───────────── 10. RISKS ───────────── -->
+<section id="risks">
+  <h3>10 · Risks &amp; open questions</h3>
+  <h2>What we don't know yet.</h2>
+
+  <ul>
+    <li><b>Cost variance.</b> Long-horizon agent sessions cost real money — Cognition reports $5–$30 per resolver run for OpenHands; Devin sessions can be far more. Nightly's "until you tell me to stop" loop is open-ended by default. <b>Open:</b> what's the right per-session budget cap, and is it a hard kill, a nudge, or a model downgrade?</li>
+    <li><b>The "stop existing on its own" problem.</b> If Nightly's autonomy bar for ideation is too high, it does nothing useful on empty-backlog nights and the human loses confidence. If too low, it generates surprise PRs and the human loses confidence. <b>Open:</b> calibrate the proposer-to-PR bar against actual repos before shipping.</li>
+    <li><b>Harness fragility.</b> All five harnesses are evolving fast; CLI flags break. <b>Open:</b> integration tests against each harness on a fixed model snapshot, run on every Nightly release.</li>
+    <li><b>Sandbox parity.</b> Only Codex offers OS-level isolation. The wrap-in-container strategy works on Linux but is awkward on macOS dev machines. <b>Open:</b> is the macOS Seatbelt profile reliable enough to ship as Nightly's default, or do we require Docker?</li>
+    <li><b>Atlas freshness.</b> Devin-style wikis decay. A stale atlas is worse than no atlas. <b>Open:</b> regenerate on every cold start, or diff-based incremental updates?</li>
+    <li><b>Multi-repo sessions.</b> The brainstorm assumes one repo per Nightly process. Real engineering work often crosses repos (frontend + backend + infra). <b>Open:</b> v2 scope or v1 must-have?</li>
+    <li><b>Concurrent task parallelism.</b> Replit Agent 4 runs 10 concurrent tasks. Nightly could too, with worktrees making it cheap. <b>Open:</b> default to serial (simpler), allow opt-in parallel?</li>
+    <li><b>Authentication for the long-running case.</b> Tokens expire. Cookies expire. <b>Open:</b> what's the credential-refresh strategy when Nightly is unattended for 8+ hours?</li>
+  </ul>
+</section>
+
+<!-- ───────────── 11. PHASES ───────────── -->
+<section id="phases">
+  <h3>11 · A phased build plan</h3>
+  <h2>What we can ship in pieces.</h2>
+
+  <ol class="steps">
+    <li><b>Phase 0 · Repo contract + Python workspace.</b> <code>uv</code>-managed monorepo with <code>nightly-core</code> + per-host package stubs. <code>pyproject.toml</code>, ruff + Pyrefly + pytest wired behind a <code>Makefile</code> (<code>make install</code>, <code>make check</code>, <code>make test</code>). <code>.nightly/</code> + <code>.planning/</code> folder shape + AGENTS.md / CLAUDE.md auto-detection. Manual workflow first — write the atlas and a plan by hand, validate the contract on a real repo before any orchestrator code runs.</li>
+    <li><b>Phase 1 · Claude Code Skill — the primary interactive host.</b> Ship <code>.claude/skills/nightly/SKILL.md</code> with the loop prompt and on-disk plan pointers. Implement <code>install()</code> and <code>sessionId()</code>; defer sub-agent dispatch. Single explicit human-given task, end-to-end. Goal: prove the host-integration model.</li>
+    <li><b>Phase 2 · Sub-agent dispatch via Task tool.</b> Implement <code>dispatchSubAgent</code> mapped to Claude Code's Task tool. Specialist roles: implementer · tester · reviewer · researcher. Each runs in its own sub-agent context window. Validate the worktree + drain + uncertainty + briefing flow.</li>
+    <li><b>Phase 3 · Issue triage + priority cascade + resumption.</b> GitHub-issue reading, the ranking score, plan/RFC/summary resumption. Nightly is now autonomous-for-a-bounded-backlog inside Claude Code.</li>
+    <li><b>Phase 4 · Codex + opencode skills.</b> Second and third primary hosts. Codex unlocks the OS-sandbox story (Seatbelt/Landlock); opencode unlocks the SSE event stream for free.</li>
+    <li><b>Phase 5 · The proposer suite.</b> Dep drift, coverage, doc-vs-code drift, lint debt, a11y, perf. Emit ranked draft issues. Wire the autonomy bar for proposer-to-PR.</li>
+    <li><b>Phase 6 · Cursor command + Antigravity managed agent.</b> Secondary hosts. Cursor uses Background Agents for isolated sub-agents; Antigravity mirrors the disk contract into <code>brain/&lt;GUID&gt;/</code>.</li>
+    <li><b>Phase 7 · Headless mode for cron + CI.</b> Subprocess launchers (<code>claude -p</code>, <code>codex exec</code>, <code>opencode run</code>) with subscription-credential inheritance and optional API-token fallback. Same on-disk contract, different launch path.</li>
+    <li><b>Phase 8 · Multi-task parallelism + concurrent worktrees.</b> Opt-in.</li>
+  </ol>
+</section>
+
+<!-- ───────────── 12. REFERENCES ───────────── -->
+<section id="refs">
+  <h3>12 · References</h3>
+  <h2>What this document was built on.</h2>
+
+  <ul class="refs">
+    <li><a href="https://cognition.ai/blog/introducing-devin">Cognition — Introducing Devin</a></li>
+    <li><a href="https://cognition.ai/blog/swe-bench-technical-report">Cognition — SWE-bench technical report</a></li>
+    <li><a href="https://cognition.ai/blog/devin-for-terminal">Cognition — Devin for Terminal</a></li>
+    <li><a href="https://docs.devin.ai/work-with-devin/advanced-capabilities">Devin — Advanced Capabilities / Session Insights</a></li>
+    <li><a href="https://arxiv.org/pdf/2407.16741">OpenHands paper (arXiv 2407.16741)</a></li>
+    <li><a href="https://arxiv.org/html/2511.03690v2">OpenHands SDK paper (arXiv 2511.03690)</a></li>
+    <li><a href="https://docs.openhands.dev/openhands/usage/microagents/microagents-repo">OpenHands microagents docs</a></li>
+    <li><a href="https://docs.openhands.dev/sdk/arch/agent-server">OpenHands Agent Server architecture</a></li>
+    <li><a href="https://arxiv.org/abs/2405.15793">SWE-agent paper (arXiv 2405.15793)</a></li>
+    <li><a href="https://swe-agent.com/0.7/background/aci/">SWE-agent — Agent-Computer Interface</a></li>
+    <li><a href="https://github.com/sweepai/sweep">Sweep AI repository</a></li>
+    <li><a href="https://e2b.dev/blog/sweep-founders-share-learnings-from-building-an-ai-coding-assistant">Sweep founders — lessons learned</a></li>
+    <li><a href="https://arxiv.org/abs/2404.05427">AutoCodeRover paper (arXiv 2404.05427)</a></li>
+    <li><a href="https://github.blog/ai-and-ml/github-copilot/wrap-up-your-backlog-with-github-copilot-coding-agent/">GitHub — WRAP framework</a></li>
+    <li><a href="https://docs.github.com/copilot/concepts/agents/coding-agent/about-coding-agent">GitHub Copilot coding agent docs</a></li>
+    <li><a href="https://code.claude.com/docs/en/headless">Claude Code — headless</a></li>
+    <li><a href="https://code.claude.com/docs/en/agent-sdk">Claude Agent SDK overview</a></li>
+    <li><a href="https://code.claude.com/docs/en/best-practices">Claude Code — best practices</a></li>
+    <li><a href="https://devops.com/claude-code-routines-anthropics-answer-to-unattended-dev-automation/">Claude Code Routines (DevOps.com)</a></li>
+    <li><a href="https://www.anthropic.com/research/long-running-Claude">Anthropic — long-running Claude research</a></li>
+    <li><a href="https://docs.cursor.com/en/background-agent">Cursor — Background Agents</a></li>
+    <li><a href="https://cursor.com/docs">Cursor — Documentation</a></li>
+    <li><a href="https://github.com/openai/codex">openai/codex repository</a></li>
+    <li><a href="https://developers.openai.com/codex/concepts/sandboxing">Codex sandbox docs</a></li>
+    <li><a href="https://developers.openai.com/codex/agent-approvals-security">Codex approvals &amp; security</a></li>
+    <li><a href="https://developers.openai.com/codex/cli/reference">Codex CLI reference</a></li>
+    <li><a href="https://developers.googleblog.com/build-with-google-antigravity-our-new-agentic-development-platform/">Google — Build with Antigravity</a></li>
+    <li><a href="https://antigravity.google/docs">Antigravity documentation</a></li>
+    <li><a href="https://github.com/michaelw9999/antigravity-cli">Unofficial antigravity-cli (artifact layout)</a></li>
+    <li><a href="https://opencode.ai/docs">opencode documentation</a></li>
+    <li><a href="https://opencode.ai/docs/server/">opencode server docs</a></li>
+    <li><a href="https://github.com/sst/opencode">sst/opencode repository</a></li>
+    <li><a href="https://factory.ai/news/code-droid-technical-report">Factory — Code Droid technical report</a></li>
+    <li><a href="https://factory.ai/news/terminal-bench">Factory — Terminal-Bench SOTA</a></li>
+    <li><a href="https://blog.replit.com/introducing-agent-3-our-most-autonomous-agent-yet">Replit Agent 3</a></li>
+    <li><a href="https://blog.replit.com/automated-self-testing">Replit — REPL-based self-testing</a></li>
+    <li><a href="https://sourcegraph.com/amp">Sourcegraph Amp</a></li>
+    <li><a href="https://cosine.sh/blog/genie-autonomous-software-engineer">Cosine — Genie 2.0</a></li>
+    <li><a href="https://www.datacamp.com/tutorial/crewai-vs-langgraph-vs-autogen">LangGraph vs CrewAI vs AutoGen</a></li>
+    <li><a href="https://killswitch.md/">KILLSWITCH.md standard</a></li>
+    <li><a href="https://93days.me/building-a-kill-switch-for-your-ai-agent-stopping-execution-safely/">Building a kill-switch for your AI agent</a></li>
+    <li><a href="https://martinfowler.com/articles/harness-engineering.html">Martin Fowler — Harness engineering for coding agents</a></li>
+    <li><a href="https://agents.md/">AGENTS.md — the cross-tool standard</a></li>
+    <li><a href="https://developers.openai.com/codex/guides/agents-md">Codex — AGENTS.md guide (lookup precedence)</a></li>
+    <li><a href="https://github.com/anthropics/claude-code/issues/31005">claude-code#31005 — Support AGENTS.md (feature request)</a></li>
+    <li><a href="https://solmaz.io/log/2025/09/08/claude-md-agents-md-migration-guide/">CLAUDE.md → AGENTS.md migration guide</a></li>
+    <li><a href="https://tessl.io/blog/the-rise-of-agents-md-an-open-standard-and-single-source-of-truth-for-ai-coding-agents/">Tessl — The rise of AGENTS.md</a></li>
+    <li><a href="https://www.polarpoint.io/blog/2026/03/29/ai-convention-files-the-complete-taxonomy/">Polarpoint — AI convention files taxonomy</a></li>
+    <li><a href="https://github.com/github/spec-kit">GitHub spec-kit</a></li>
+    <li><a href="https://developer.microsoft.com/blog/spec-driven-development-spec-kit">Microsoft — Spec-driven development with Spec Kit</a></li>
+    <li><a href="https://adr.github.io/">Architectural Decision Records (adr.github.io)</a></li>
+    <li><a href="https://developers.openai.com/cookbook/articles/codex_exec_plans">OpenAI Cookbook — PLANS.md for multi-hour problem solving</a></li>
+    <li><a href="https://docs.astral.sh/uv/">uv — Python package &amp; project manager (Astral)</a></li>
+    <li><a href="https://docs.pydantic.dev/latest/">Pydantic v2 — data validation</a></li>
+    <li><a href="https://www.python-httpx.org/">httpx — async HTTP client</a></li>
+    <li><a href="https://docs.astral.sh/ruff/">ruff — Python lint &amp; format (Astral)</a></li>
+    <li><a href="https://pyrefly.org/">Pyrefly — Rust-backed Python type checker (Meta)</a></li>
+  </ul>
+</section>
+
+</main>
+
+<footer>
+  <div class="shell">
+    <div>Nightly · brainstorm v0 · committed 2026-05-20</div>
+    <div>Not a spec. The opinions in here are testable, not settled.</div>
+  </div>
+</footer>
+
+</body>
+</html>

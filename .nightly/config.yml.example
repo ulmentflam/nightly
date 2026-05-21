@@ -1,0 +1,73 @@
+# .nightly/config.yml — copy this file to config.yml and edit.
+# All keys are optional; the values shown are the defaults.
+
+# ── Hosts ─────────────────────────────────────────────────────────────────
+# Which interactive hosts Nightly is willing to launch from. The order is
+# the preference order when more than one is available.
+hosts:
+  - claude       # primary
+  - codex        # primary
+  - opencode     # primary
+  - cursor       # secondary
+  - antigravity  # secondary
+
+
+# ── Models ────────────────────────────────────────────────────────────────
+# Per-host model overrides. Leave a host out to use the host's default.
+models:
+  claude: claude-opus-4-6
+  codex:  gpt-5.5
+
+
+# ── Context discovery ─────────────────────────────────────────────────────
+# Where Nightly reads human-authored design intent and rules from.
+# `rules` are authoritative; `planning` is aspirational (indexed, cited, but
+# never binding). See brainstorm §04 "External context Nightly auto-detects".
+context:
+  rules:
+    - AGENTS.override.md      # local-only overrides; typically untracked
+    - AGENTS.md               # cross-tool standard — preferred
+    - CLAUDE.md               # Anthropic holdout; read as companion / fallback
+    - .cursor/rules/**/*.mdc  # Cursor rules — indexed if present
+
+  planning:
+    - .planning/              # Nightly's default — human-curated
+    - specs/                  # GitHub spec-kit
+    - docs/adr/               # Nygard ADRs
+    - docs/rfc/               # RFCs
+    - docs/design/            # long-form design docs
+    - PLAN.md                 # OpenAI cookbook ExecPlans
+    - PLANS.md                # same, plural
+
+  closest_wins: true          # nested AGENTS.md / CLAUDE.md override root
+  trust:
+    rules:    authoritative
+    planning: aspirational
+
+
+# ── Budgets ───────────────────────────────────────────────────────────────
+budgets:
+  session_minutes: 600        # 10h wall-clock cap before drain
+  task_minutes:    45         # per-task soft cap before re-scope
+  dispatch_concurrency: 1     # serial by default; opt in to parallel later
+
+
+# ── Branch hygiene ────────────────────────────────────────────────────────
+git:
+  branch_prefix:   nightly/   # all Nightly branches share this prefix
+  wip_prefix:      nightly/wip-
+  protected:       [main, master, "release/*"]
+  draft_until_green: true     # PRs stay draft until all checks pass
+
+
+# ── Refusal policy ────────────────────────────────────────────────────────
+# See brainstorm §07 "The refusal policy". Defaults are conservative.
+# Add per-task labels (nightly:approved:<category>) or edit
+# .planning/nightly.scope.md to loosen.
+refuse:
+  destructive_git:        true   # hard floor — cannot be policy-overridden
+  production_state:       true
+  external_communication: true
+  network_egress_unknown: true
+  scope_creep:            true
+  bypass_test_or_type:    true

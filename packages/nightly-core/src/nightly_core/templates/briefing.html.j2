@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nightly — briefing · {{ run_id }}</title>
+<style>
+  :root {
+    --ink:        #0B0E14;
+    --ink-2:      #11151D;
+    --ink-3:      #181D27;
+    --line:       #232936;
+    --line-2:     #2E3543;
+    --paper:      #F1ECE2;
+    --paper-dim:  #C9C2B4;
+    --muted:      #8A8676;
+    --copper:     #E8A857;
+    --teal:       #6FD0BD;
+    --rose:       #E07A78;
+    --plum:       #B58BD9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--ink);
+    color: var(--paper);
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell { max-width: 880px; margin: 0 auto; padding: 5rem 32px 6rem; }
+  .eyebrow { display:inline-flex; align-items:center; gap:.6em; font-family:ui-monospace,monospace; font-size:.72rem; color:var(--copper); text-transform:uppercase; letter-spacing:.18em; margin-bottom:1.6rem; }
+  .eyebrow .dot { width:6px; height:6px; border-radius:50%; background:var(--copper); box-shadow:0 0 12px var(--copper); }
+  h1 { font: 300 clamp(2.4rem, 4.5vw, 3.6rem)/1.05 "Fraunces", Georgia, serif; margin:0 0 .4em; color: var(--paper); letter-spacing:-0.01em; }
+  h2 { font: 600 .8rem/1 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.16em; color:var(--copper); margin:3rem 0 1rem; }
+  .meta { font-family:ui-monospace,monospace; font-size:.78rem; color:var(--muted); margin:0 0 2rem; }
+  .meta b { color:var(--paper); font-weight:500; }
+
+  .glance { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:1rem; margin:0 0 1rem; }
+  .glance .card { background:var(--ink-2); border:1px solid var(--line); border-radius:10px; padding:1rem 1.2rem; }
+  .glance .card.copper { border-left:3px solid var(--copper); }
+  .glance .card.teal   { border-left:3px solid var(--teal); }
+  .glance .card.rose   { border-left:3px solid var(--rose); }
+  .glance .card.plum   { border-left:3px solid var(--plum); }
+  .glance .label { font:600 .65rem/1 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.16em; color:var(--copper); }
+  .glance .card.teal .label { color: var(--teal); }
+  .glance .card.rose .label { color: var(--rose); }
+  .glance .card.plum .label { color: var(--plum); }
+  .glance .value { font: 300 1.9rem/1 "Fraunces", Georgia, serif; margin-top:.5rem; color:var(--paper); }
+
+  /* narrative / prose blocks */
+  .narrative {
+    background: var(--ink-2);
+    border-left: 3px solid var(--copper);
+    border-radius: 10px;
+    padding: 1.6rem 2rem;
+    margin: 2rem 0;
+  }
+  .narrative.lessons { border-left-color: var(--plum); }
+  .narrative.placeholder { border-left-color: var(--line-2); color: var(--muted); font-style: italic; }
+  .narrative .label { font: 600 .68rem/1 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.16em; color:var(--copper); margin-bottom: 1rem; }
+  .narrative.lessons .label { color: var(--plum); }
+  .prose { font-size: .95rem; line-height: 1.7; color: var(--paper-dim); max-width: 70ch; }
+  .prose > :first-child { margin-top: 0; }
+  .prose > :last-child  { margin-bottom: 0; }
+  .prose p { margin: 0 0 1em; }
+  .prose h1, .prose h2, .prose h3, .prose h4 {
+    font: 600 .8rem/1.3 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    color: var(--copper);
+    margin: 1.6em 0 .6em;
+  }
+  .prose ul, .prose ol { padding-left: 1.4em; margin: 0 0 1em; }
+  .prose li { margin-bottom: .35em; }
+  .prose code { background: var(--ink-3); padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--teal); font-size: .85em; font-family: ui-monospace, monospace; }
+  .prose pre { background: var(--ink-3); border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.2rem; overflow-x: auto; margin: 1em 0; }
+  .prose pre code { background: none; border: none; padding: 0; }
+  .prose strong { color: var(--paper); font-weight: 600; }
+  .prose em { color: var(--paper-dim); font-style: italic; }
+  .prose blockquote {
+    margin: 1em 0; padding: .2em 0 .2em 1.2em;
+    border-left: 2px solid var(--copper); color: var(--paper-dim); font-style: italic;
+  }
+  .prose a { color: var(--copper); text-decoration: none; border-bottom: 1px solid rgba(232,168,87,.3); }
+  .prose a:hover { color: var(--paper); border-bottom-color: var(--paper); }
+  .prose hr { border: 0; border-top: 1px dashed var(--line); margin: 2em 0; }
+
+  /* task rows */
+  ul.rows { list-style:none; padding:0; margin:0; border-top:1px solid var(--line); }
+  ul.rows li { border-bottom:1px solid var(--line); padding:.9rem 0; font-family:ui-monospace,monospace; font-size:.84rem; }
+  .task-head { display:flex; align-items:baseline; gap:1rem; flex-wrap:wrap; }
+  .task-head .slug { color:var(--paper); flex:1; min-width:200px; }
+  .pill { display:inline-flex; align-items:center; padding:1px 9px; border-radius:999px; font:600 .68rem/1.4 ui-monospace,monospace; letter-spacing:.05em; }
+  .pill.ok      { background:rgba(111,208,189,.12); color:var(--teal); }
+  .pill.warn    { background:rgba(232,168,87,.14); color:var(--copper); }
+  .pill.missing { background:rgba(224,122,120,.14); color:var(--rose); }
+  .pill.notes   { background:rgba(181,139,217,.14); color:var(--plum); }
+
+  details.task-notes { margin-top:.7rem; }
+  details.task-notes > summary {
+    cursor: pointer;
+    color: var(--plum);
+    font: 600 .68rem/1 ui-monospace, monospace;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    padding: .3rem 0;
+    list-style: none;
+  }
+  details.task-notes > summary::-webkit-details-marker { display: none; }
+  details.task-notes > summary::before { content: "▸ "; color: var(--plum); }
+  details.task-notes[open] > summary::before { content: "▾ "; }
+  details.task-notes > .prose { margin-top: .6rem; padding-left: 1rem; border-left: 1px dashed var(--line-2); }
+
+  .empty { color:var(--muted); font-style:italic; padding:1rem 0; }
+  footer { margin-top:4rem; padding-top:2rem; border-top:1px dashed var(--line); font:.75rem/1.5 ui-monospace,monospace; color:var(--muted); }
+</style>
+</head>
+<body>
+<main class="shell">
+  <div class="eyebrow">
+    <span class="dot"></span>
+    {% if is_concluded %}briefing · concluded{% else %}briefing · in progress{% endif %}
+  </div>
+  <h1>{{ run_id }}</h1>
+  <div class="meta">
+    <b>Tasks</b>&nbsp; {{ tasks|length }}
+    &nbsp;·&nbsp; <b>Approvals pending</b>&nbsp; {{ approvals|length }}
+    &nbsp;·&nbsp; <b>Planning proposals</b>&nbsp; {{ planning|length }}
+    &nbsp;·&nbsp; <b>Ideated issues</b>&nbsp; {{ issues|length }}
+    {% if generated_at %}
+    &nbsp;·&nbsp; <b>Generated</b>&nbsp; {{ generated_at }}
+    {% endif %}
+  </div>
+
+  <div class="glance">
+    <div class="card copper">
+      <div class="label">tasks</div>
+      <div class="value">{{ tasks|length }}</div>
+    </div>
+    <div class="card teal">
+      <div class="label">ready</div>
+      <div class="value">{{ ready_count }}</div>
+    </div>
+    <div class="card rose">
+      <div class="label">to approve</div>
+      <div class="value">{{ approvals|length }}</div>
+    </div>
+    <div class="card plum">
+      <div class="label">proposed planning</div>
+      <div class="value">{{ planning|length }}</div>
+    </div>
+    <div class="card copper">
+      <div class="label">ideated issues</div>
+      <div class="value">{{ issues|length }}</div>
+    </div>
+  </div>
+
+  {# ── session narrative (agent-authored, optional) ────────────────── #}
+  {% if session_narrative %}
+    <section class="narrative">
+      <div class="label">session narrative</div>
+      <div class="prose">{{ session_narrative }}</div>
+    </section>
+  {% else %}
+    <section class="narrative placeholder">
+      <div class="label">session narrative</div>
+      <div class="prose">
+        <p>No <code>briefing.md</code> on disk — the agent didn't get a chance to
+        synthesize this run, or this run finished before drain. The structural
+        sections below still reflect what landed.</p>
+      </div>
+    </section>
+  {% endif %}
+
+  <h2>Tasks</h2>
+  {% if tasks %}
+    <ul class="rows">
+    {% for t in tasks %}
+      <li>
+        <div class="task-head">
+          <span class="slug">{{ t.slug }}</span>
+          <span class="pill {{ 'ok' if t.has_plan else 'missing' }}">plan</span>
+          <span class="pill {{ 'ok' if t.has_proposal else 'missing' }}">proposal</span>
+          <span class="pill {{ 'ok' if t.has_uncertainty else 'missing' }}">uncertainty</span>
+          {% if t.notes %}<span class="pill notes">notes</span>{% endif %}
+        </div>
+        {% if t.notes %}
+        <details class="task-notes">
+          <summary>show notes</summary>
+          <div class="prose">{{ t.notes }}</div>
+        </details>
+        {% endif %}
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">No tasks recorded for this run.</p>
+  {% endif %}
+
+  <h2>Things to approve</h2>
+  {% if approvals %}
+    <ul class="rows">
+    {% for a in approvals %}
+      <li>
+        <div class="task-head">
+          <span class="slug">{{ a.id }}</span>
+          <span class="pill missing">refused</span>
+          <span class="pill warn">nightly approve {{ a.id }}</span>
+        </div>
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">Nothing to approve this run.</p>
+  {% endif %}
+
+  <h2>Proposed planning</h2>
+  {% if planning %}
+    <ul class="rows">
+    {% for p in planning %}
+      <li>
+        <div class="task-head">
+          <span class="slug">{{ p.id }}</span>
+          <span class="pill warn">draft RFC / ADR</span>
+        </div>
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">No planning artifacts proposed this run.</p>
+  {% endif %}
+
+  <h2>Proposed issues</h2>
+  {% if issues %}
+    <ul class="rows">
+    {% for i in issues %}
+      <li>
+        <div class="task-head">
+          <span class="slug">{{ i.title }}</span>
+          <span class="pill warn">{{ i.proposer }}</span>
+          <span class="pill notes">{{ i.category }}</span>
+          {% if i.auto_pr_eligible %}
+          <span class="pill ok">auto-PR eligible · score {{ i.score }}</span>
+          {% else %}
+          <span class="pill missing">human review · score {{ i.score }}</span>
+          {% endif %}
+        </div>
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">No issues ideated this run. Run <code>nightly ideate</code> to surface candidates.</p>
+  {% endif %}
+
+  {# ── lessons (agent-authored, optional) ──────────────────────────── #}
+  {% if lessons %}
+    <section class="narrative lessons">
+      <div class="label">lessons</div>
+      <div class="prose">{{ lessons }}</div>
+    </section>
+  {% endif %}
+
+  <footer>
+    Nightly briefing · run <b>{{ run_id }}</b> · generated by <code>nightly brief</code>
+  </footer>
+</main>
+</body>
+</html>
