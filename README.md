@@ -16,31 +16,51 @@ below is the operator's view.
 
 ---
 
-## Quick start
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ulmentflam/nightly/main/install.sh | bash
+```
+
+The installer is idempotent (re-run it to update), bootstraps `uv` if
+it's missing, clones to `~/.local/share/nightly`, and drops a `nightly`
+shim at `~/.local/bin/nightly`. Re-running checks for updates.
+
+Honors a few env vars: `NIGHTLY_HOME` (clone target),
+`NIGHTLY_VERSION` (branch/tag/SHA), `NIGHTLY_BIN` (shim location),
+`NIGHTLY_REPO` (git URL — useful for forks).
+
+### Or, install from source (for development)
 
 ```bash
 git clone git@github.com:ulmentflam/nightly.git
 cd nightly
 make install                    # uv sync --all-packages
-
-# install Nightly's Skill into the host you use (default = claude)
-uv run nightly init             # writes .claude/skills/nightly/SKILL.md
-# or:    uv run nightly init --host codex
-# or:    uv run nightly init --host opencode --scope user
+make check                      # ruff + Pyrefly + pytest
+uv run nightly --help           # or `source .venv/bin/activate && nightly --help`
 ```
 
-Then open your host (Claude Code, etc.) in this repo and ask Nightly to
-work on a task — the Skill takes over. For unattended runs:
+## Quick start
+
+Once installed, point Nightly at the host you use:
 
 ```bash
-uv run nightly start            # create a session
-uv run nightly task add-retry -d "Add retry budget to auth client"
-uv run nightly run --concurrency 2 --max-tasks 5
-uv run nightly brief            # render .nightly/runs/<id>/briefing.html
+nightly init                    # default = Claude Code
+# or:  nightly init --host codex
+# or:  nightly init --host opencode --scope user
 ```
 
-You can also `source .venv/bin/activate` once to skip the `uv run`
-prefix on every command.
+Then open your host (Claude Code, Codex, etc.) in any repo and ask
+Nightly to work on a task — the Skill takes over. For unattended runs:
+
+```bash
+cd <some-repo>
+nightly init                    # one-time per repo
+nightly start                   # create a session
+nightly task add-retry -d "Add retry budget to auth client"
+nightly run --concurrency 2 --max-tasks 5   # multi-task headless dispatch
+nightly brief                   # render .nightly/runs/<id>/briefing.html
+```
 
 ---
 
