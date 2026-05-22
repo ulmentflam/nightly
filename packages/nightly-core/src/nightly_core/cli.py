@@ -25,6 +25,7 @@ Commands as of Phase 8:
 - `nightly hook stop`   — Claude Code Stop hook glue (called by .claude/settings)
 - `nightly stop`        — request immediate hard stop (next turn boundary)
 - `nightly update`      — pull latest source and refresh installed hosts in this repo
+- `nightly doctor`      — diagnose & repair a drifted nightly install (skills + scaffold)
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -52,6 +53,7 @@ from nightly_core.contract import (
     NightlyHostIntegration,
     SpecialistRole,
 )
+from nightly_core.doctor import DoctorReport, diagnose_and_repair
 from nightly_core.driver import DriverConfig, run_loop
 from nightly_core.ideation import run_proposers, write_drafts
 from nightly_core.keepalive import KEEPALIVE_STRATEGIES, pick_keepalive
@@ -1068,6 +1070,101 @@ def _print_update_report(report: UpdateReport) -> None:
         typer.echo("rules:    unchanged")
     for note in report.notes:
         typer.echo(f"  · {note}")
+
+
+@app.command(name="doctor")
+def doctor_cmd(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Diagnose only — print drift without writing anything.",
+        ),
+    ] = False,
+    scope: Annotated[
+        InstallScope,
+        typer.Option(help="Which scope to repair — repo-local 'project' or user-global 'user'."),
+    ] = "project",
+    install_host: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--host",
+            help=(
+                "Force-install these hosts even if they aren't already present in this repo. "
+                "May be passed multiple times. Default: only repair hosts already installed."
+            ),
+        ),
+    ] = None,
+    install_all: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Force-install every supported host. Overrides --host.",
+        ),
+    ] = False,
+) -> None:
+    """Repair a drifted Nightly install — scaffold, config, rules, skills.
+
+    Inspired by `gsd-build/get-shit-done`'s idempotent installer pattern
+    (https://github.com/gsd-build/get-shit-done) and `brew doctor`'s
+    diagnose-and-suggest UX. Walks the install surface and reconciles
+    each piece: the `.nightly/` scaffold, `.nightly/config.yml`, the
+    AGENTS.md / CLAUDE.md rules block, and every host's full skill set
+    (main `/nightly`, `/nightly-conclude`, `/nightly-update`, Stop-hook
+    entry). Idempotent — safe to re-run any time.
+
+    By default only hosts already present in this repo get repaired.
+    Pass `--host claude --host cursor` (or `--all`) to force-install
+    additional hosts. `--dry-run` reports drift without writing.
+    """
+    root = repo_root()
+    extra: tuple[str, ...] = ()
+    if install_all:
+        extra = tuple(_HOST_LOADERS.keys())
+    elif install_host:
+        extra = tuple(install_host)
+
+    report = diagnose_and_repair(
+        root,
+        dry_run=dry_run,
+        scope=scope,
+        extra_hosts=extra,
+    )
+    _print_doctor_report(report, root=root)
+    if not report.healthy:
+        raise typer.Exit(code=1)
+
+
+def _print_doctor_report(report: DoctorReport, *, root: Path) -> None:
+    """Tabular doctor output with a one-line summary."""
+    typer.echo(f"repo: {root}")
+    if report.dry_run:
+        typer.echo("mode: dry-run (no changes written)")
+    typer.echo("")
+    typer.echo(f"{'status':<10} {'check':<22} detail")
+    typer.echo("-" * 70)
+    glyph = {
+        "ok": "✓ ok",
+        "repaired": "✓ fixed",
+        "missing": "✗ miss",
+        "skipped": "·",
+        "error": "✗ err",
+    }
+    for c in report.checks:
+        mark = glyph.get(c.status, c.status)
+        typer.echo(f"{mark:<10} {c.description:<22} {c.detail}")
+    typer.echo("")
+    if report.dry_run:
+        if report.missing:
+            typer.echo(f"would repair: {len(report.missing)} item(s)")
+        else:
+            typer.echo("all clear — nothing to repair")
+    elif report.repaired:
+        typer.echo(f"repaired: {len(report.repaired)} item(s)")
+    else:
+        typer.echo("all clear — install is healthy")
+    if report.errors:
+        typer.echo(f"errors: {len(report.errors)} item(s) — see detail above", err=True)
 
 
 @hook_app.command(name="stop")

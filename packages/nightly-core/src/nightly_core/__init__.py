@@ -41,6 +41,7 @@ from nightly_core.contract import (
     SpecialistRole,
     SubAgentResult,
 )
+from nightly_core.doctor import DoctorCheck, DoctorReport, diagnose_and_repair
 from nightly_core.driver import (
     DriverConfig,
     TaskOutcome,
@@ -113,6 +114,8 @@ __all__ = [
     "BriefingContext",
     "CascadeChoice",
     "CascadeSource",
+    "DoctorCheck",
+    "DoctorReport",
     "DriverConfig",
     "HeadlessResult",
     "HostId",
@@ -148,6 +151,7 @@ __all__ = [
     "current_run_pointer",
     "default_proposers",
     "default_subprocess_runner",
+    "diagnose_and_repair",
     "fetch_via_gh",
     "list_plans",
     "list_runs",
