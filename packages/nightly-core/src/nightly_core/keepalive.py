@@ -60,16 +60,18 @@ class KeepaliveStrategy:
 
 # The strategies are ordered by Karpathy's "think harder" sequence:
 # first re-read the in-scope files, then mine past near-misses, then
-# escalate to more radical re-examinations.
+# escalate to more radical re-examinations. Every prompt is imperative
+# — the contract is "if you can recommend, execute," so these prompts
+# command a concrete next action rather than inviting deliberation.
 KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
     KeepaliveStrategy(
         name="reread_planning",
         prompt=(
-            "Re-read every file under `.planning/` (RFCs, ADRs, conventions, "
-            "brainstorms). Look for design intent the proposer suite did not "
-            "surface — half-finished sketches, deferred ideas, 'someday' "
-            "notes, conventions that have drifted from the code. Pick one "
-            "and scope it as a Nightly task."
+            "Open the highest-priority file under `.planning/` (RFC closest to "
+            "accepted, newest ADR, most recent brainstorm). Pick the first "
+            "design intent that isn't already implemented and scope it as a "
+            "Nightly task with `nightly task <slug>`. Start work this turn — "
+            "do not write a separate plan-of-plans first."
         ),
         applies_when=(
             "`.planning/` exists and contains files the recent runs did not "
@@ -80,24 +82,25 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
         name="mine_uncertainty",
         prompt=(
             "Walk every `uncertainty.md` across past task directories. Each "
-            "entry is a place where a previous agent picked a default rather "
-            "than asking. Many of those defaults are now stale — the code "
-            "around them has changed. Pick the most consequential one to "
-            "revisit and turn it into a follow-up task."
+            "entry is a refusal-policy gap. Pick the most consequential one, "
+            "scope a task to address the underlying refusal (e.g. document a "
+            "destructive op proposal, file an approval request), and start "
+            "executing this turn."
         ),
         applies_when=(
-            "Past runs have written `uncertainty.md` files that have not been "
-            "reconciled in a follow-up."
+            "Past runs have written `uncertainty.md` files for refusal-policy "
+            "gaps that have not yet been reconciled."
         ),
     ),
     KeepaliveStrategy(
         name="revive_parked",
         prompt=(
             "List every plan with `status: parked` or `status: blocked: approval`. "
-            "For each, decide: (a) has the blocker resolved? (the missing "
-            "credential exists now, the dependent PR landed, the conflict is "
-            "moot) — if so, unblock; (b) is the task still wanted? — if not, "
-            "park it permanently with a note. Don't leave parked plans rotting."
+            "Pick the first one whose blocker has resolved (credential now "
+            "exists, dependent PR landed, conflict moot) and update its "
+            "status to `in_progress` — then continue work on it this turn. If "
+            "no blocker has cleared, pick the staleest parked plan and mark "
+            "it permanently parked with a one-line note."
         ),
         applies_when=(
             "There exist `parked` or `blocked: approval` plans whose context "
@@ -107,11 +110,11 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
     KeepaliveStrategy(
         name="merge_near_misses",
         prompt=(
-            "Walk past proposals and parked plans for near-misses that share "
-            "a theme (overlapping file scope, similar refusal categories, "
-            "complementary refactors). Two below-the-bar proposals can "
-            "sometimes combine into one above-the-bar task. Sketch the "
-            "merger as a new task plan."
+            "Walk past proposals and parked plans for two that share theme "
+            "(overlapping file scope, similar category, complementary "
+            "refactors). Combine them into a single task plan with "
+            "`nightly task <slug>` and start executing this turn. If no two "
+            "compose cleanly, escalate to `radical_reread`."
         ),
         applies_when=(
             "Recent runs have produced multiple proposals that were below the "
@@ -121,11 +124,11 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
     KeepaliveStrategy(
         name="closed_pr_inspiration",
         prompt=(
-            "Read the last ~10 closed Nightly PRs' review threads (human, "
-            "CodeRabbit, Cursor, Copilot, Greptile). Look for reviewer "
-            "suggestions that were not actioned because they were out of "
-            "scope at the time. Pick one that is *now* in scope and turn it "
-            "into a task. Cite the PR + comment URL in the plan."
+            "List the last ~10 closed Nightly PRs. For each, scan reviewer "
+            "threads (human, CodeRabbit, Cursor, Copilot, Greptile) for "
+            "suggestions that were out of scope at the time but in scope now. "
+            "Pick the first such suggestion, scope it as a task citing the "
+            "PR + comment URL, and start executing this turn."
         ),
         applies_when=(
             "A GitHub remote exists and Nightly has authored merged or "
@@ -136,11 +139,10 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
         name="radical_reread",
         prompt=(
             "Re-read `AGENTS.md` / `CLAUDE.md` and the top-level `README.md` "
-            "as if you'd never seen this repo. Note three things that look "
-            "weird, surprising, or under-documented. Pick the one most likely "
-            "to be a real bug, missing test, or stale doc — and scope a task "
-            "to fix it. This is the 'fresh eyes' strategy: assume the "
-            "proposer suite missed something obvious."
+            "as if you'd never seen this repo. Pick the first thing that "
+            "looks weird, surprising, or under-documented and most likely to "
+            "be a real bug or stale doc. Scope a task for it and start "
+            "executing this turn — do not write a survey first."
         ),
         applies_when=(
             "All of the above have been exhausted in the current run. This "

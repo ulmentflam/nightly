@@ -13,6 +13,7 @@ from nightly_core.cascade import (
     pick_accepted_rfc,
     pick_github_issue,
     pick_ideated,
+    pick_ideated_fallback,
     pick_in_flight,
     pick_pr_rescue,
     pick_unblocked,
@@ -330,12 +331,13 @@ def test_next_task_picks_ideate_when_nothing_else(
     assert "autonomy bar" in (choice.rationale or "").lower()
 
 
-def test_next_task_nothing_mentions_nightly_ideate(tmp_path: Path) -> None:
-    """When the cascade truly bottoms out, the rationale should point the
-    agent at `nightly ideate` to write drafts for human review."""
+def test_next_task_nothing_mentions_session_start(tmp_path: Path) -> None:
+    """When the cascade bottoms out in a *disarmed* session, the rationale
+    should point the agent at `nightly session start` so the next call
+    enables the auto-ideate fallback path."""
     choice = next_task(tmp_path)
     assert choice.source == "nothing"
-    assert "nightly ideate" in (choice.rationale or "")
+    assert "session start" in (choice.rationale or "")
 
 
 def test_next_task_github_issue_outranks_ideate(
@@ -543,3 +545,88 @@ def test_next_task_github_issue_still_outranks_pr_rescue(
     choice = next_task(tmp_path)
     # Brainstorm §03 step 4 (github_issue) precedes step 5 (pr_rescue).
     assert choice.source == "github_issue"
+
+
+# ── auto-ideate fallback (armed-session lever) ────────────────────────────
+
+
+def _arm_session(root: Path) -> Path:
+    """Helper: start a run and arm SESSION_ACTIVE on it."""
+    run = start_run(root)
+    marker = run.path / "SESSION_ACTIVE"
+    marker.write_text("armed\n", encoding="utf-8")
+    return marker
+
+
+def test_pick_ideated_fallback_returns_top_regardless_of_eligibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback returns the highest-scoring proposal even if ineligible."""
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [
+            _ineligible_proposal(score=9.0),
+            _eligible_proposal(score=4.0),
+        ],
+    )
+    pick = pick_ideated_fallback(tmp_path)
+    assert pick is not None
+    assert pick.score == 9.0
+    assert pick.proposer == "todo_fixme"  # ineligible category wins
+
+
+def test_pick_ideated_fallback_returns_none_when_no_proposals(
+    tmp_path: Path,
+) -> None:
+    """Empty proposer suite → None, even in fallback mode."""
+    # Default autouse stub keeps run_proposers empty in the test env.
+    assert pick_ideated_fallback(tmp_path) is None
+
+
+def test_next_task_fires_ideate_fallback_when_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Armed session + only ineligible proposals → cascade dispatches anyway."""
+    _arm_session(tmp_path)
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_ineligible_proposal(score=4.0)],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "ideate_fallback"
+    assert "fallback" in choice.summary
+    assert choice.score == 4.0
+    rationale = choice.rationale or ""
+    assert "armed" in rationale.lower() or "local proposal" in rationale.lower()
+
+
+def test_next_task_skips_fallback_when_disarmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disarmed session: ineligible proposals → cascade returns `nothing`."""
+    # Don't arm; even if there's a run, no SESSION_ACTIVE marker.
+    start_run(tmp_path)
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_ineligible_proposal(score=4.0)],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "nothing"
+
+
+def test_next_task_strict_ideate_outranks_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An eligible proposal still goes through the strict `ideate` path —
+    the fallback is only consulted when strict ideate finds nothing."""
+    _arm_session(tmp_path)
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [
+            _ineligible_proposal(score=9.0),  # higher but ineligible
+            _eligible_proposal(score=3.0),
+        ],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "ideate"
+    assert choice.score == 3.0  # strict path wins over higher-scoring fallback

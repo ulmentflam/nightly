@@ -45,58 +45,60 @@ overnight orchestrator), these rules override any default "ask the user
 when unsure" behavior. They apply to Nightly-driven sessions only —
 normal interactive use of this repo is unaffected.
 
-1. **Never prompt the user for clarification or confirmation.** Nightly
-   runs are unattended by contract. If a question would normally arise,
-   pick the most reasonable default, record your assumption in the
-   current task's `uncertainty.md`, and proceed.
-2. **Never invoke any "ask the user" tool.** This is an absolute
-   prohibition for the entire Nightly session. Do not call Claude
-   Code's `AskUserQuestion`, or any equivalent question-prompt tool
-   exposed by Codex / Cursor / opencode / Antigravity, or any blocking
-   UI dialog. If you reach for one, stop and assume the default instead.
+The whole contract reduces to one rule: **if you can name a
+recommendation, execute it.** Everything below is consequences.
+
+1. **If you can recommend, execute.** The moment you can articulate a
+   "here's what I'd do" — do it. No follow-up question, no log entry,
+   no parking the task, no waiting for confirmation. Naming, ordering,
+   idiom, library version, helper choice, file layout, refactor scope:
+   pick the option most consistent with the existing codebase and
+   `.planning/` design intent, and ship it. The morning briefing is
+   where humans review choices — not the running session.
+2. **Never prompt the user for clarification or confirmation.** Nightly
+   runs are unattended by contract. If you find yourself reaching for
+   "should I…" — you already have a recommendation. Stop reaching, take
+   it. Do not call `AskUserQuestion` or any equivalent prompt tool
+   (Claude Code / Codex / Cursor / opencode / Antigravity). The tool is
+   off-limits for the entire Nightly session.
 3. **Never stop the session for questions.** Halting blocks the run.
-   The whole point of the orchestrator is that it makes monotonic
-   forward progress; a pause is a regression.
-4. **Always pick the recommended option.** When multiple choices are
-   plausible, choose the one most consistent with the existing
-   codebase, `.planning/` design intent, and Nightly's refusal policy.
-   Where a "recommended" option is offered explicitly, take it.
-5. **Record uncertainty in `uncertainty.md`, not by asking.** That file
-   is mandatory at task completion and exists for exactly this purpose.
-   "I wasn't sure between X and Y; I picked X because …" is the right
-   shape.
-6. **Refusal-policy violations are the only stop condition** — and even
-   there, the always-advance rule applies. Record the refused operation
-   to `.nightly/runs/<run-id>/proposed/approvals/<id>.md`, document the
-   gap in `uncertainty.md`, and route around it.
-7. **Never stop just because the cascade returned `nothing` — think
-   harder first.** Inspired by [Karpathy's
-   autoresearch](https://github.com/karpathy/autoresearch): when no
-   in-flight, unblocked, RFC, issue, PR-rescue, or ideated work
-   remains, **do not render the briefing and exit yet**. Run
-   `nightly keepalive` and walk its re-engagement strategies — re-read
-   `.planning/`, mine past `uncertainty.md` for stale defaults, revive
-   parked / blocked plans whose blockers have resolved, look for
-   near-misses among recent proposals, scan closed-PR review threads
-   for in-scope suggestions, do a fresh-eyes re-read of the entry
-   docs. Only when *every* strategy comes up empty do you render the
-   briefing and exit. The human might be asleep — your contract is
-   monotonic forward progress until interrupted, not "stop the moment
-   the obvious work runs out."
-8. **Arm the host-level keep-alive at session start.** Run
+   The whole point of the orchestrator is monotonic forward progress;
+   a pause is a regression.
+4. **`uncertainty.md` is for refusal-policy gaps and nothing else.**
+   Do **not** use `uncertainty.md` as a stop-substitute, an "I wasn't
+   totally sure" diary, or a place to log small judgment calls. The
+   file exists exclusively to record cases where Nightly's refusal
+   policy (destructive git, production state, external communication,
+   network egress to unknown hosts, scope creep, bypass test/type)
+   blocked the recommended action. Every other choice — pick and ship,
+   no log. The diff is the audit trail for ordinary judgment calls.
+5. **Refusal-policy violations are the only stop condition** — and
+   even there, the always-advance rule applies. Record the refused
+   operation to `.nightly/runs/<run-id>/proposed/approvals/<id>.md`,
+   note the refusal in `uncertainty.md`, and route around it to a
+   different task.
+6. **Never stop just because the cascade returned `nothing`.** When no
+   in-flight, unblocked, RFC, issue, or PR-rescue work remains, the
+   cascade automatically falls through to ideation — and while the
+   session is armed it dispatches the top-scoring proposal regardless
+   of whether it clears the auto-PR autonomy bar (non-eligible
+   proposals land as a local proposal branch instead of a real PR).
+   You should never see the cascade return `nothing` during an active
+   run. If you somehow do, immediately run `nightly ideate` and start
+   the highest-scoring proposal — do not deliberate, do not render
+   the briefing, do not exit.
+7. **Arm the host-level keep-alive at session start.** Run
    `nightly session start` as the first thing the /nightly skill does.
    This writes a `SESSION_ACTIVE` marker that the host's Stop-equivalent
    hook checks every turn boundary; without it, the hook lets the
    session end naturally. With it, the hook re-injects a "continue on
-   X" prompt so the session keeps moving even when the model's own
-   intent would have been to stop. The marker has a 4-hour TTL —
-   re-running `nightly session start` between long-lived work refreshes
-   it. Four of the five Nightly hosts have a real force-continue hook
-   (Claude Code's `Stop`, Codex CLI's `Stop`, Cursor 1.7+'s `stop`,
-   Antigravity / Gemini CLI's `AfterAgent`). opencode has no
-   equivalent — for that host the keep-alive is `soft` and relies on
-   the rule text above (the model is told to never stop). The
-   disk-based off-ramps below work everywhere regardless.
+   X" prompt so the session keeps moving. The marker has a 4-hour TTL
+   — re-running `nightly session start` refreshes it. Four of the five
+   Nightly hosts have a real force-continue hook (Claude Code's
+   `Stop`, Codex CLI's `Stop`, Cursor 1.7+'s `stop`, Antigravity /
+   Gemini CLI's `AfterAgent`). opencode is `soft` and relies on the
+   rule text above (the model is told to never stop). The disk-based
+   off-ramps below work everywhere regardless.
 
 ### Human shutdown intervention
 
@@ -114,9 +116,9 @@ off-ramps stop a running Nightly session at any time:
   and kills the session immediately. Always available as the
   emergency stop.
 
-If you find yourself about to ask the user something: stop, pick the
-better default, document the choice, and continue. The morning briefing
-is where humans review your work — not the running session.
+If you find yourself about to ask the user something: pick the better
+default and ship it. Decision is cheaper than deliberation; deliberation
+is cheaper than asking; asking is forbidden.
 """
 
 

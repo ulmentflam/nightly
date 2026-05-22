@@ -882,8 +882,9 @@ def test_keepalive_command_marks_recommendation(
 def test_keepalive_command_name_flag_prints_one_prompt(repo: Path) -> None:
     result = runner.invoke(app, ["keepalive", "--name", "reread_planning"])
     assert result.exit_code == 0
-    # No header / no other strategies — just the one prompt.
-    assert "Re-read every file under" in result.output
+    # No header / no other strategies — just the one prompt. New
+    # imperative phrasing opens with "Open the highest-priority file …".
+    assert "highest-priority file" in result.output
     assert "## mine_uncertainty" not in result.output
 
 

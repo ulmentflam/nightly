@@ -96,9 +96,21 @@ def test_rules_body_mentions_the_load_bearing_constraints() -> None:
     body = NIGHTLY_RULES_BODY
     assert "Never prompt" in body
     assert "Never stop" in body
-    assert "Always pick" in body
+    # New core directive: "if you can recommend, execute."
+    assert "recommend" in body
+    assert "execute" in body
     assert "uncertainty.md" in body
     assert "refusal policy" in body.lower() or "refusal-policy" in body.lower()
+
+
+def test_rules_body_narrows_uncertainty_md_to_refusal_only() -> None:
+    """The new contract: uncertainty.md is for refusal-policy gaps only."""
+    body = NIGHTLY_RULES_BODY
+    # The phrase that flags the new narrowed scope must appear.
+    assert "refusal-policy gaps" in body or "refusal-policy" in body.lower()
+    # And we must not still be telling agents to log every assumption.
+    assert "record your assumption" not in body
+    assert "Record uncertainty" not in body
 
 
 def test_seed_rules_appends_blank_line_separator(tmp_path: Path) -> None:

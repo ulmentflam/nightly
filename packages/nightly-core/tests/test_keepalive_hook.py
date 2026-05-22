@@ -107,14 +107,16 @@ def test_force_continue_increments_turn_counter(initialized_repo: Path) -> None:
 
 
 def test_continuation_reason_includes_cascade_summary(initialized_repo: Path) -> None:
-    """When the cascade returns `nothing`, the prompt should point at keepalive."""
+    """When the cascade returns `nothing`, the prompt should command action."""
     arm_session(initialized_repo)
     decision = compute_stop_hook_decision(initialized_repo)
     assert decision.should_block
     reason = decision.payload["reason"]
+    # Header is always present
     assert "Nightly keepalive" in reason
-    # Empty backlog → `nothing` → hint at think-harder strategies
-    assert "nightly keepalive" in reason or "Continue on:" in reason
+    # Empty backlog → imperative "make a recommendation now" command,
+    # NOT a "consider running nightly keepalive" suggestion.
+    assert "Make a recommendation" in reason or "Continue on:" in reason
 
 
 def test_arm_disarm_lifecycle(initialized_repo: Path) -> None:

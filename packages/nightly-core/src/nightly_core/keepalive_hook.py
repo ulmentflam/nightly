@@ -231,14 +231,22 @@ def _build_continue_reason(root: Path | None, *, run_id: str, turn: int) -> str:
     header = f"[Nightly keepalive · run {run_id} · turn {turn}]"
 
     if choice.source == "nothing":
+        # The auto-ideate fallback should have caught this when the session
+        # is armed — reaching this branch with an armed session means the
+        # proposer suite returned literally zero candidates. Tell the model
+        # to *make* a recommendation, not to deliberate.
         return (
             f"{header}\n"
-            "The cascade returned `nothing`. Per the never-stop rule, "
-            "do not render the briefing and exit yet — run `nightly keepalive` "
-            "and walk its think-harder strategies (re-read .planning/, mine "
-            "uncertainty.md, revive parked plans, scan closed PR reviews, "
-            "fresh-eyes re-read of entry docs). Pick the recommended strategy, "
-            "scope a new task from it, and continue."
+            "The cascade returned `nothing` and the proposer suite is empty. "
+            "Do NOT render the briefing and exit. Make a recommendation right "
+            "now and execute it:\n"
+            "  1. Pick the most consequential open question you can name from "
+            ".planning/, README.md, AGENTS.md, or a recent uncertainty.md.\n"
+            "  2. Scope it as a new task with `nightly task <slug>`.\n"
+            "  3. Start executing — do not write a plan first, do not ask, do "
+            "not park.\n"
+            "If you can articulate a 'here's what I'd do', that IS the "
+            "recommendation. Ship it."
         )
 
     target_hint = ""
@@ -250,8 +258,9 @@ def _build_continue_reason(root: Path | None, *, run_id: str, turn: int) -> str:
         f"Continue on: {choice.summary}\n"
         f"Cascade source: {choice.source}{target_hint}\n"
         f"{choice.rationale or ''}\n"
-        "Pick this up where the previous turn left off — do not ask for "
-        "confirmation, do not end the turn waiting for input. Read the plan, "
+        "Pick this up where the previous turn left off. Do not ask for "
+        "confirmation, do not deliberate, do not end the turn waiting for "
+        "input. If you can name a recommendation, execute it — read the plan, "
         "advance it, commit, move on. The user is asleep."
     ).strip()
 

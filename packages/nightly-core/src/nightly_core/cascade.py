@@ -26,6 +26,7 @@ from nightly_core.paths import planning_dir, repo_root
 from nightly_core.plans import PlanRecord, list_plans
 from nightly_core.pr_feedback import FeedbackFetcher, PRFeedback, fetch_feedback
 from nightly_core.proposers.base import Proposal
+from nightly_core.runs import current_run
 from nightly_core.triage import IssueRanking, rank_issues
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "pick_accepted_rfc",
     "pick_github_issue",
     "pick_ideated",
+    "pick_ideated_fallback",
     "pick_in_flight",
     "pick_pr_rescue",
     "pick_unblocked",
@@ -50,9 +52,11 @@ CascadeSource = Literal[
     "github_issue",
     "pr_rescue",
     "ideate",
+    "ideate_fallback",
     "nothing",
 ]
-"""Which cascade rule fired. `nothing` means no work was found."""
+"""Which cascade rule fired. `nothing` means no work was found *and* no
+fallback proposal was available (or the session wasn't armed)."""
 
 CASCADE_SOURCES: tuple[CascadeSource, ...] = (
     "resume_in_flight",
@@ -61,8 +65,29 @@ CASCADE_SOURCES: tuple[CascadeSource, ...] = (
     "github_issue",
     "pr_rescue",
     "ideate",
+    "ideate_fallback",
     "nothing",
 )
+
+
+# Marker filename mirrored from keepalive_hook.SESSION_ACTIVE_FILENAME.
+# Inlined rather than imported because keepalive_hook imports from this
+# module — we'd otherwise have a circular import.
+_SESSION_ACTIVE_FILENAME = "SESSION_ACTIVE"
+
+
+def _session_armed(root: Path | None = None) -> bool:
+    """True iff the current run has a SESSION_ACTIVE marker.
+
+    Mirrors the keep-alive contract: when armed, the Stop hook will
+    force-continue and the cascade should never return `nothing`. When
+    disarmed, returning `nothing` is fine — no one's force-continuing
+    the session anyway.
+    """
+    run = current_run(root)
+    if run is None:
+        return False
+    return (run.path / _SESSION_ACTIVE_FILENAME).is_file()
 
 
 @dataclass(frozen=True)
@@ -314,14 +339,30 @@ def pick_pr_rescue(
 def pick_ideated(root: Path | None = None) -> Proposal | None:
     """Run the proposer suite and return an auto-PR-eligible proposal, if any.
 
-    This is the cascade's last-resort productive step: when no human work
-    exists, run the ideation suite and see if any proposal clears the
-    conservative autonomy bar. If yes, the cascade returns it as work the
-    agent can execute autonomously. If no, the cascade falls through to
-    `nothing` and the agent should write narrative + brief + exit.
+    The strict step: run the ideation suite and see if any proposal clears
+    the conservative autonomy bar. If yes, return it as work the agent can
+    execute autonomously and land as a real PR. If no, the cascade either
+    falls through to `pick_ideated_fallback` (armed sessions) or to
+    `nothing` (disarmed sessions).
     """
     proposals = run_proposers(root or repo_root())
     return top_auto_pr(proposals)
+
+
+def pick_ideated_fallback(root: Path | None = None) -> Proposal | None:
+    """Highest-scoring proposal regardless of autonomy-bar eligibility.
+
+    The "make a recommendation, just go" lever. Only fires when the
+    session is armed (SESSION_ACTIVE present) and the strict cascade
+    came up empty — turning the cascade's bottom rung from "give up"
+    into "ship the best idea, even if it's a local proposal branch
+    rather than an auto-PR." The driver downgrades non-eligible
+    proposals to a local proposal branch automatically.
+    """
+    proposals = run_proposers(root or repo_root())
+    if not proposals:
+        return None
+    return proposals[0]  # already score-sorted desc by run_proposers
 
 
 # ── the cascade itself ────────────────────────────────────────────────────
@@ -419,18 +460,41 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
             score=ideated.score,
         )
 
+    # Armed-session fallback: when nothing else is left, ship the best
+    # proposal we can find regardless of whether it clears the auto-PR
+    # bar. Non-eligible ones land as a local proposal branch instead of
+    # an automatic PR — the agent + driver decide on landing strategy.
+    # This is the "if you can recommend, execute" lever expressed in the
+    # cascade: the recommendation IS the top-scoring proposal.
+    if _session_armed(root):
+        fallback = pick_ideated_fallback(root)
+        if fallback is not None:
+            return CascadeChoice(
+                source="ideate_fallback",
+                summary=f"work on proposed (fallback): {fallback.title}",
+                target_path=None,
+                rationale=(
+                    f"Session is armed and the strict cascade came up empty. "
+                    f"Top proposal from '{fallback.proposer}' "
+                    f"(category {fallback.category}, score {fallback.score:.2f}, "
+                    f"{fallback.estimated_loc} LOC, "
+                    f"scope {list(fallback.file_scope)}) does not clear the "
+                    "auto-PR autonomy bar — dispatching anyway as a local "
+                    "proposal branch. The agent should land it locally (no "
+                    "automatic PR) and let the morning briefing surface it for "
+                    "human review."
+                ),
+                score=fallback.score,
+            )
+
     return CascadeChoice(
         source="nothing",
         summary="no work — backlog is empty",
         rationale=(
             "No in-flight plans, no unblocked tasks, no accepted RFC items, "
             "no nightly-eligible issues, no PR-rescue candidates, no "
-            "auto-PR-eligible proposals. "
-            "Before rendering the briefing and exiting, run `nightly keepalive` "
-            "and walk its think-harder strategies (re-read .planning/, mine "
-            "uncertainty.md, revive parked plans, scan closed PR reviews, "
-            "fresh-eyes re-read of entry docs). Only after every strategy "
-            "comes up empty: run `nightly ideate` to leave draft proposals "
-            "for human review, then write narrative + brief + exit."
+            "proposals at any tier. Session is not armed — graceful exit is "
+            "appropriate. Arm with `nightly session start` and re-run "
+            "`nightly next` to enable the auto-ideate fallback path."
         ),
     )
