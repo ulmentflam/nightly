@@ -26,6 +26,8 @@ Commands as of Phase 8:
 - `nightly stop`        — request immediate hard stop (next turn boundary)
 - `nightly update`      — pull latest source and refresh installed hosts in this repo
 - `nightly doctor`      — diagnose & repair a drifted nightly install (skills + scaffold)
+- `nightly verify`      — detect & run the repo's linters / formatters / type checkers
+- `nightly ci`          — print CI status across open Nightly PRs (failed = work)
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -47,6 +49,7 @@ from nightly_core.autonomy import can_auto_pr
 from nightly_core.briefing import write_briefing
 from nightly_core.cascade import next_task as cascade_next
 from nightly_core.cascade import pick_pr_rescue
+from nightly_core.ci_watch import PRCIStatus, list_ci_status
 from nightly_core.contract import (
     HostId,
     InstallScope,
@@ -85,6 +88,7 @@ from nightly_core.update import (
     refresh_repo_install,
     update_install,
 )
+from nightly_core.verify import VerifyReport, run_verify
 
 app = typer.Typer(
     name="nightly",
@@ -1070,6 +1074,158 @@ def _print_update_report(report: UpdateReport) -> None:
         typer.echo("rules:    unchanged")
     for note in report.notes:
         typer.echo(f"  · {note}")
+
+
+@app.command(name="verify")
+def verify_cmd(
+    only: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--only",
+            help=(
+                "Only run checks with these names (e.g. --only ruff-check --only mypy). "
+                "May be passed multiple times. Default: run every detected check."
+            ),
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="List detected checks without running anything.",
+        ),
+    ] = False,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help="Per-check timeout in seconds. Default: 300.",
+        ),
+    ] = 300.0,
+) -> None:
+    """Detect & run the repo's linters / formatters / type checkers.
+
+    Run before opening any Nightly PR — the auto-PR autonomy bar
+    assumes lint and format pass. Detected tools come from
+    `pyproject.toml` (ruff/black/mypy/pyrefly), `package.json`
+    (eslint/prettier/tsc), `go.mod` (gofmt/go vet), `Cargo.toml`
+    (cargo fmt/clippy), and `Makefile` (lint/check/verify targets).
+
+    Exits non-zero on any failed check or missing configured tool so
+    the agent can branch on `$?` from the prompt.
+    """
+    root = repo_root()
+    report = run_verify(
+        root,
+        dry_run=dry_run,
+        only=only,
+        timeout_s=timeout,
+    )
+    _print_verify_report(report, root=root)
+    if report.failed or report.not_found:
+        raise typer.Exit(code=1)
+
+
+def _print_verify_report(report: VerifyReport, *, root: Path) -> None:
+    typer.echo(f"repo: {root}")
+    if report.dry_run:
+        typer.echo("mode: dry-run (no commands executed)")
+    typer.echo("")
+    if not report.checks:
+        typer.echo("· no linters or formatters detected for this repo")
+        return
+    typer.echo(f"{'status':<10} {'check':<16} command")
+    typer.echo("-" * 70)
+    glyph = {
+        "ok": "✓ ok",
+        "failed": "✗ fail",
+        "skipped": "·",
+        "not_found": "✗ miss",
+    }
+    for c in report.checks:
+        mark = glyph.get(c.status, c.status)
+        cmd = " ".join(c.command)
+        typer.echo(f"{mark:<10} {c.name:<16} {cmd}")
+    typer.echo("")
+    if report.dry_run:
+        typer.echo(f"detected: {len(report.checks)} check(s)")
+        return
+    if report.ok:
+        typer.echo(f"all clear — {len(report.passed)} check(s) passed")
+        return
+    if report.failed:
+        typer.echo(f"failed: {len(report.failed)} check(s):")
+        for c in report.failed:
+            typer.echo(f"  ✗ {c.name} (exit {c.exit_code})")
+            head = c.output.splitlines()[:6]
+            for line in head:
+                typer.echo(f"      {line}")
+    if report.not_found:
+        typer.echo(
+            f"missing tooling: {len(report.not_found)} check(s) — "
+            "install the binary or remove the config",
+            err=True,
+        )
+        for c in report.not_found:
+            typer.echo(f"  ✗ {c.name} ({' '.join(c.command)})", err=True)
+
+
+@app.command(name="ci")
+def ci_cmd(
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            help=(
+                "Inspect just this branch (default: every open Nightly PR). "
+                "Useful when the agent wants to recheck after pushing a fix."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Print CI status across open Nightly PRs.
+
+    Glanced at between tasks — failed checks naturally route into the
+    `pr_rescue` cascade step on the next `nightly next`, so the agent
+    doesn't need to block waiting on CI. Exits non-zero when any PR
+    has a failing check (the agent can branch on it).
+    """
+    root = repo_root()
+    statuses = list_ci_status(root)
+    if branch is not None:
+        statuses = [s for s in statuses if s.branch == branch]
+    _print_ci_status(statuses)
+    if any(s.is_failing for s in statuses):
+        raise typer.Exit(code=1)
+
+
+def _print_ci_status(statuses: list[PRCIStatus]) -> None:
+    if not statuses:
+        typer.echo("· no open Nightly PRs (or `gh` CLI unavailable)")
+        return
+    typer.echo(f"{'overall':<10} {'pr':<6} {'branch':<40} failed")
+    typer.echo("-" * 78)
+    glyph = {
+        "pass": "✓ pass",
+        "fail": "✗ fail",
+        "cancel": "✗ canc",
+        "pending": "· pend",
+        "skipping": "· skip",
+        "unknown": "· ?",
+    }
+    for s in statuses:
+        mark = glyph.get(s.overall, s.overall)
+        failed_names = ", ".join(c.name for c in s.failed_checks) or "—"
+        typer.echo(f"{mark:<10} #{s.pr_number:<5} {s.branch:<40} {failed_names}")
+    typer.echo("")
+    failing = [s for s in statuses if s.is_failing]
+    pending = [s for s in statuses if s.is_pending]
+    if failing:
+        typer.echo(f"failing: {len(failing)} PR(s) — cascade will route to pr_rescue")
+    elif pending:
+        typer.echo(f"pending: {len(pending)} PR(s) — keep working, recheck later")
+    else:
+        typer.echo("all clear")
 
 
 @app.command(name="doctor")

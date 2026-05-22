@@ -87,7 +87,25 @@ recommendation, execute it.** Everything below is consequences.
    run. If you somehow do, immediately run `nightly ideate` and start
    the highest-scoring proposal — do not deliberate, do not render
    the briefing, do not exit.
-7. **Arm the host-level keep-alive at session start.** Run
+7. **Run `nightly verify` before opening any PR.** Nightly auto-detects
+   this repo's linters, formatters, and type checkers (ruff, black,
+   mypy, pyrefly, eslint, prettier, tsc, gofmt, go vet, cargo fmt,
+   clippy, plus `make lint` / `make check` / `make verify` umbrella
+   targets) and runs them. A non-zero exit blocks the PR — fix the
+   findings (run the tool's auto-fix variant locally first if it has
+   one) and re-verify until clean. Do not push code that fails the
+   repo's own quality gates; that's exactly the contributor etiquette
+   a human reviewer would apply.
+8. **Watch CI between tasks with `nightly ci`.** After a Nightly PR is
+   opened, CI on the remote runs asynchronously. Between tasks (or
+   after committing the current one), run `nightly ci` to see whether
+   any open Nightly PR has failed checks. **Do not block waiting on
+   CI** — keep picking up new work from the cascade. When CI fails,
+   the failure is already a `PRFeedback` kind and the cascade's
+   `pr_rescue` step will surface it on the next `nightly next`. The
+   `nightly ci` glance just lets you confirm there's nothing in-flight
+   that needs your attention before starting a brand-new investigation.
+9. **Arm the host-level keep-alive at session start.** Run
    `nightly session start` as the first thing the /nightly skill does.
    This writes a `SESSION_ACTIVE` marker that the host's Stop-equivalent
    hook checks every turn boundary; without it, the hook lets the

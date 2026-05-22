@@ -111,6 +111,31 @@ def test_build_task_prompt_includes_plan_body_and_constraints(tmp_path: Path) ->
     # Paths surfaced explicitly
     assert str(plan.path) in prompt
     assert str(task.path) in prompt
+    # New post-Phase-9l directives
+    assert "nightly verify" in prompt
+    assert "nightly ci" in prompt
+    assert "recommendation" in prompt
+
+
+def test_build_task_prompt_fallback_says_no_pr(tmp_path: Path) -> None:
+    """ideate_fallback prompts must explicitly tell the agent: no PR."""
+    from nightly_core.cascade import CascadeChoice
+
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    plan = read_plan(task.path / "plan.md")
+    choice = CascadeChoice(
+        source="ideate_fallback",
+        summary="work on proposed (fallback): apply ruff fix",
+        rationale="below auto-PR bar, dispatching as local proposal",
+    )
+
+    prompt = build_task_prompt(plan, task.path, cascade_choice=choice)
+    assert "LOCAL PROPOSAL" in prompt or "no PR" in prompt.lower()
+    assert "do **not** open a pull request" in prompt.lower() or "do not open a pr" in prompt.lower()
+    # Strict-ideate prompt (no choice) should NOT carry the downgrade
+    strict_prompt = build_task_prompt(plan, task.path)
+    assert "LOCAL PROPOSAL" not in strict_prompt
 
 
 # ── run_one_task ──────────────────────────────────────────────────────────

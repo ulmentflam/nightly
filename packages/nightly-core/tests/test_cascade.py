@@ -614,6 +614,29 @@ def test_next_task_skips_fallback_when_disarmed(
     assert choice.source == "nothing"
 
 
+def test_next_task_honors_conclude_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bug fix: when CONCLUDE is present, the cascade must NOT hand out new
+    work — even when in-flight plans or ideate proposals exist."""
+    run = start_run(tmp_path)
+    # Plenty of work would normally route — an in-progress plan + an
+    # eligible proposal. Both must be ignored once CONCLUDE is written.
+    task = new_task(run, slug="alpha")
+    update_plan_status(task.path / "plan.md", "in_progress")
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+    (run.path / "CONCLUDE").write_text("", encoding="utf-8")
+
+    choice = next_task(tmp_path)
+    assert choice.source == "concluded"
+    assert choice.target_path is None
+    rationale = choice.rationale or ""
+    assert "conclude" in rationale.lower()
+
+
 def test_next_task_strict_ideate_outranks_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

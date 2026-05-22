@@ -25,11 +25,18 @@ from nightly_core.cascade import (
     pick_accepted_rfc,
     pick_github_issue,
     pick_ideated,
+    pick_ideated_fallback,
     pick_in_flight,
     pick_unblocked,
 )
 from nightly_core.cascade import (
     next_task as cascade_next,
+)
+from nightly_core.ci_watch import (
+    CICheck,
+    PRCIStatus,
+    fetch_pr_checks,
+    list_ci_status,
 )
 from nightly_core.conclude_skill import CONCLUDE_SKILL_MD, UPDATE_SKILL_MD
 from nightly_core.contract import (
@@ -102,6 +109,7 @@ from nightly_core.triage import (
     rank_issues,
     score_issue,
 )
+from nightly_core.verify import VerifyCheck, VerifyReport, detect_checks, run_verify
 
 __all__ = [
     "AUTO_PR_CATEGORIES",
@@ -112,6 +120,7 @@ __all__ = [
     "UPDATE_SKILL_MD",
     "AuthStatus",
     "BriefingContext",
+    "CICheck",
     "CascadeChoice",
     "CascadeSource",
     "DoctorCheck",
@@ -126,6 +135,7 @@ __all__ = [
     "KeepaliveSupport",
     "LintDebtProposer",
     "NightlyHostIntegration",
+    "PRCIStatus",
     "PlanRecord",
     "PlanStatus",
     "Proposal",
@@ -139,6 +149,8 @@ __all__ = [
     "TaskOutcome",
     "TodoFixmeProposer",
     "TypeHoleProposer",
+    "VerifyCheck",
+    "VerifyReport",
     "__version__",
     "all_roles",
     "auto_pr_rejection_reason",
@@ -151,8 +163,11 @@ __all__ = [
     "current_run_pointer",
     "default_proposers",
     "default_subprocess_runner",
+    "detect_checks",
     "diagnose_and_repair",
+    "fetch_pr_checks",
     "fetch_via_gh",
+    "list_ci_status",
     "list_plans",
     "list_runs",
     "new_run_id",
@@ -162,6 +177,7 @@ __all__ = [
     "pick_accepted_rfc",
     "pick_github_issue",
     "pick_ideated",
+    "pick_ideated_fallback",
     "pick_in_flight",
     "pick_unblocked",
     "planning_dir",
@@ -174,6 +190,7 @@ __all__ = [
     "run_one_task",
     "run_proposers",
     "run_subprocess",
+    "run_verify",
     "runs_dir",
     "score_issue",
     "slugify",

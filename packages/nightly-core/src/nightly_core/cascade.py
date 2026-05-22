@@ -46,6 +46,7 @@ __all__ = [
 
 
 CascadeSource = Literal[
+    "concluded",
     "resume_in_flight",
     "unblocked_approval",
     "accepted_rfc",
@@ -55,10 +56,17 @@ CascadeSource = Literal[
     "ideate_fallback",
     "nothing",
 ]
-"""Which cascade rule fired. `nothing` means no work was found *and* no
-fallback proposal was available (or the session wasn't armed)."""
+"""Which cascade rule fired.
+
+- `concluded` — `nightly conclude` was called (CONCLUDE marker present).
+  No new work; drain and render the briefing. Takes precedence over
+  every other step in the cascade.
+- `nothing` — no work was found *and* no fallback proposal was available
+  (or the session wasn't armed). Distinct from `concluded` because it
+  may transition to ideate_fallback if the session arms later."""
 
 CASCADE_SOURCES: tuple[CascadeSource, ...] = (
+    "concluded",
     "resume_in_flight",
     "unblocked_approval",
     "accepted_rfc",
@@ -68,6 +76,24 @@ CASCADE_SOURCES: tuple[CascadeSource, ...] = (
     "ideate_fallback",
     "nothing",
 )
+
+
+# Marker filename mirrored from runs.conclude_run.
+_CONCLUDE_FILENAME = "CONCLUDE"
+
+
+def _conclude_requested(root: Path | None = None) -> bool:
+    """True iff the current run has a CONCLUDE marker.
+
+    `nightly conclude` writes this file; `nightly next` must honor it
+    by halting the cascade before any cascade step runs. Without this
+    check the agent keeps picking up new ideate work after the human
+    has signaled drain.
+    """
+    run = current_run(root)
+    if run is None:
+        return False
+    return (run.path / _CONCLUDE_FILENAME).is_file()
 
 
 # Marker filename mirrored from keepalive_hook.SESSION_ACTIVE_FILENAME.
@@ -372,6 +398,7 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
     """Walk the cascade and return the first hit.
 
     The order is fixed:
+    0. CONCLUDE marker present → return `concluded` (drain, no new work)
     1. resume an `in_progress` plan
     2. resume a `blocked: approval` plan whose approval has been granted
     3. start the next unchecked item from an accepted RFC
@@ -379,6 +406,24 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
     5. nothing — caller decides whether to ideate (Phase 5) or stop
     """
     root = (root or repo_root()).resolve()
+
+    # CONCLUDE wins absolutely. Once the human asks the run to wind
+    # down, the cascade must not hand out new work — neither in-flight
+    # resumes nor ideate fallbacks. Drain the current task only.
+    if _conclude_requested(root):
+        return CascadeChoice(
+            source="concluded",
+            summary="conclude requested — drain in-flight task only",
+            target_path=None,
+            rationale=(
+                "`nightly conclude` was invoked (CONCLUDE marker is present "
+                "under the current run). Do not pick up new work from any "
+                "cascade step. Finish the task currently in flight (if any), "
+                "render the morning briefing with `nightly brief`, and let "
+                "the Stop hook allow the session to end. The human is back; "
+                "monotonic forward progress is no longer the contract."
+            ),
+        )
 
     in_flight = pick_in_flight(root)
     if in_flight is not None:

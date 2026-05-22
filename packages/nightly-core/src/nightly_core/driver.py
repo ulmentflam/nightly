@@ -32,6 +32,7 @@ from typing import Literal
 from nightly_core.cascade import CascadeChoice, next_task
 from nightly_core.contract import HostId, NightlyHostIntegration
 from nightly_core.headless import HeadlessResult
+from nightly_core.ideation import run_proposers
 from nightly_core.paths import repo_root
 from nightly_core.plans import (
     PlanRecord,
@@ -40,7 +41,8 @@ from nightly_core.plans import (
     read_plan,
     update_plan_status,
 )
-from nightly_core.runs import Run, current_run
+from nightly_core.proposers.base import Proposal
+from nightly_core.runs import Run, TaskDir, current_run, new_task
 from nightly_core.worktree import GitRunner, WorktreeHandle, create_worktree
 
 __all__ = [
@@ -93,14 +95,60 @@ class TaskOutcome:
 # ── prompt builder ────────────────────────────────────────────────────────
 
 
-def build_task_prompt(plan: PlanRecord, task_dir: Path) -> str:
+def build_task_prompt(
+    plan: PlanRecord,
+    task_dir: Path,
+    *,
+    cascade_choice: CascadeChoice | None = None,
+) -> str:
     """Build a focused prompt to send to `host.run_headless` for one task.
 
     Headless invocations don't pre-load the Skill the way an interactive
     session does, so we inline the load-bearing constraints right in the
     prompt. The body of `plan.md` already carries the task's success
     criteria and file scope.
+
+    `cascade_choice` lets the driver tell the agent which cascade step
+    produced this task — most importantly, whether it came from the
+    auto-ideate fallback (in which case the agent lands locally rather
+    than opening a PR).
     """
+    is_fallback = (
+        cascade_choice is not None and cascade_choice.source == "ideate_fallback"
+    )
+    if is_fallback:
+        landing_section = f"""\
+## Landing instructions — LOCAL PROPOSAL (no PR)
+
+This task came from the auto-ideate fallback path: the cascade exhausted
+every human-supplied work source and surfaced the highest-scoring
+proposal even though it did not clear Nightly's auto-PR autonomy bar
+(category / size / file-scope checks). Do **not** open a pull request
+for this task. Instead:
+
+1. Implement the change in this worktree as usual.
+2. Commit the changes locally on the worktree's branch.
+3. Write a thorough `proposal.md` to `{task_dir}` so a reviewer can
+   evaluate the change tomorrow morning. Include diff summary, test
+   evidence, and the risks you weighed.
+4. Set the plan's frontmatter to `status: done`. The branch remains
+   unmerged; the morning briefing will surface it for human review.
+
+The whole point of the local-proposal downgrade is that the work is
+preserved without burdening human reviewers with an auto-opened PR
+that didn't clear the bar.
+"""
+    else:
+        landing_section = f"""\
+## Landing instructions
+
+Commit your changes on this worktree's branch and open a PR (the
+morning workflow will surface it for review). Write a `proposal.md`
+to `{task_dir}` summarizing what you changed, the test plan, and any
+risks — even when a PR is opened, the local proposal is the audit
+trail.
+"""
+
     return f"""\
 You are Nightly running headlessly on a single task. Your current working
 directory is a fresh git worktree forked from the project's main branch.
@@ -108,20 +156,38 @@ directory is a fresh git worktree forked from the project's main branch.
 **Task plan:** `{plan.path}`
 **Task folder:** `{task_dir}`
 
+## Core directive
+
+**If you can name a recommendation, execute it.** Do not ask for
+clarification, do not pause for confirmation, do not write `uncertainty.md`
+entries for ordinary judgment calls (naming, ordering, idiom, library
+choice). `uncertainty.md` is reserved for refusal-policy gaps only.
+
 ## What to do
 
 1. Read the plan body below carefully.
 2. Implement the change inside this worktree. Edit only files in the
    plan's declared file scope.
-3. Run the project's local checks (`make check`, `pytest`, etc.) and
-   confirm they pass before declaring done.
-4. Write `proposal.md` to `{task_dir}` summarizing what you changed,
-   the test plan, and any risks.
-5. Write `uncertainty.md` to `{task_dir}` with non-empty sections:
-   *Things I'm not sure about*, *Things that could break*,
-   *Things I skipped on purpose*, *Approval needed for*.
-6. Update the plan's YAML frontmatter: `status: done` on a clean land,
-   `status: parked` if you couldn't complete it.
+3. Run the project's tests (`make test`, `pytest`, `npm test`, etc.) and
+   confirm they pass.
+4. **Run `nightly verify`** — Nightly detects this repo's linters and
+   formatters (ruff, black, eslint, prettier, gofmt, rustfmt, …) and
+   runs them. Do not declare the task done or open a PR while
+   `nightly verify` returns non-zero. Fix the failures first.
+5. **Check `nightly ci`** for any prior Nightly PRs with failed checks
+   on the remote. CI failures are work — if any open Nightly PR shows
+   red, finish this task first, then the cascade will route to
+   `pr_rescue` on its own. You do NOT need to block on CI; keep working
+   while it runs.
+
+{landing_section}
+
+6. Write `uncertainty.md` to `{task_dir}` **only** if you hit a
+   refusal-policy gap. Otherwise leave the file out — recording every
+   judgment call is exactly the loophole the new contract closes.
+7. Update the plan's YAML frontmatter: `status: done` on a clean land,
+   `status: parked` only when a refusal-policy block actually prevents
+   completion.
 
 ## Refusal policy (do NOT run autonomously)
 
@@ -151,6 +217,7 @@ async def run_one_task(  # noqa: PLR0913 - per-task dispatch needs every dimensi
     base_branch: str = "main",
     branch_prefix: str = "nightly/",
     git_runner: GitRunner | None = None,
+    cascade_choice: CascadeChoice | None = None,
 ) -> TaskOutcome:
     """Claim → create worktree → dispatch → reconcile status.
 
@@ -162,6 +229,10 @@ async def run_one_task(  # noqa: PLR0913 - per-task dispatch needs every dimensi
     Claim is done via the transient `dispatching` status, which the
     cascade explicitly skips — that's how multi-task batches avoid
     re-picking the same plan within one batch.
+
+    `cascade_choice` is forwarded to `build_task_prompt` so the agent
+    gets the right landing instructions — most importantly, the local-
+    proposal downgrade for `ideate_fallback` work.
     """
     update_plan_status(plan.path, "dispatching")
 
@@ -177,7 +248,9 @@ async def run_one_task(  # noqa: PLR0913 - per-task dispatch needs every dimensi
             branch_prefix=branch_prefix,
             runner=git_runner,
         )
-        prompt = build_task_prompt(plan, plan.path.parent)
+        prompt = build_task_prompt(
+            plan, plan.path.parent, cascade_choice=cascade_choice
+        )
         headless = await host.run_headless(
             prompt,
             cwd=worktree.path,
@@ -222,6 +295,46 @@ def _is_concluding(run: Run | None) -> bool:
     return marker is not None and marker.is_file()
 
 
+_IDEATE_SOURCES: frozenset[str] = frozenset({"ideate", "ideate_fallback"})
+
+
+def _materialize_proposal_as_plan(
+    *,
+    root: Path,
+    proposal: Proposal,
+    source: str,
+) -> PlanRecord | None:
+    """Turn a Proposal into a real `tasks/NNNN-<slug>/plan.md` in the current run.
+
+    Returns the freshly-created plan record (status `ready`), or None if
+    no run is active. The plan body carries the proposal's body verbatim
+    plus a header noting the cascade source (so a reviewer can see this
+    came from auto-ideate vs auto-ideate-fallback).
+    """
+    run = current_run(root)
+    if run is None:
+        _log.info("no active run; cannot materialize proposal %r", proposal.title)
+        return None
+    task: TaskDir = new_task(run, slug=proposal.slug, description=proposal.title)
+    plan_path = task.path / "plan.md"
+    plan = read_plan(plan_path)
+    # Replace the placeholder body with the proposal content, prefixed
+    # with a one-line provenance note. Frontmatter is left intact.
+    provenance = (
+        f"_Proposal materialized from cascade source `{source}` — "
+        f"proposer={proposal.proposer}, category={proposal.category}, "
+        f"score={proposal.score:.2f}, estimated_loc={proposal.estimated_loc}._\n\n"
+    )
+    new_body = f"\n{provenance}{proposal.body.rstrip()}\n"
+    from nightly_core.plans import render_frontmatter  # noqa: PLC0415 - local
+
+    plan_path.write_text(
+        render_frontmatter(plan.metadata, new_body),
+        encoding="utf-8",
+    )
+    return read_plan(plan_path)
+
+
 async def _pick_batch(
     root: Path,
     batch_size: int,
@@ -231,25 +344,50 @@ async def _pick_batch(
     Returns (plan, cascade_choice) tuples. May return fewer than
     `batch_size` if the cascade runs out. The cascade source is
     preserved on the choice for the outcome record.
+
+    For `ideate` / `ideate_fallback` sources the cascade returns a
+    Proposal rather than a plan file — we materialize the proposal into
+    a real `tasks/NNNN-<slug>/plan.md` first so the rest of the
+    dispatch pipeline (worktree, headless, status reconcile) works
+    uniformly.
     """
     out: list[tuple[PlanRecord, CascadeChoice]] = []
     for _ in range(batch_size):
         choice = next_task(root)
         if choice.source == "nothing":
             break
-        # For Phase 8 we only dispatch tasks that have a concrete plan
-        # file on disk (resume_in_flight / unblocked_approval). The other
-        # cascade sources (accepted_rfc, github_issue, ideate) need a
-        # plan-creation step we don't ship in this phase.
-        if choice.target_path is None or not choice.target_path.is_file():
+
+        plan: PlanRecord | None = None
+        if choice.target_path is not None and choice.target_path.is_file():
+            plan = read_plan(choice.target_path)
+        elif choice.source in _IDEATE_SOURCES:
+            # Run the proposer suite again to fetch the top proposal —
+            # the cascade returned a CascadeChoice with `score` but the
+            # Proposal object is not on the choice itself. Cheap to redo.
+            proposals = run_proposers(root)
+            if not proposals:
+                _log.info("ideate source %s but proposer suite is empty", choice.source)
+                break
+            proposal = (
+                proposals[0]
+                if choice.source == "ideate_fallback"
+                else next(
+                    (p for p in proposals if p.score == choice.score), proposals[0]
+                )
+            )
+            plan = _materialize_proposal_as_plan(
+                root=root, proposal=proposal, source=choice.source
+            )
+
+        if plan is None:
             _log.info(
-                "cascade returned %s but no plan file to dispatch (target=%s); "
-                "skipping for Phase 8",
+                "cascade returned %s but no plan available (target=%s); "
+                "skipping this batch",
                 choice.source,
                 choice.target_path,
             )
             break
-        plan = read_plan(choice.target_path)
+
         # Claim the plan so the next cascade tick won't pick it again.
         # `dispatching` is the transient sentinel the cascade explicitly
         # skips — using `in_progress` here would let the cascade re-pick
@@ -312,6 +450,7 @@ async def run_loop(
                     base_branch=cfg.base_branch,
                     branch_prefix=cfg.branch_prefix,
                     git_runner=git_runner,
+                    cascade_choice=choice,
                 )
             # Stamp the cascade source onto the outcome.
             return TaskOutcome(
