@@ -28,6 +28,7 @@ Commands as of Phase 8:
 - `nightly doctor`      — diagnose & repair a drifted nightly install (skills + scaffold)
 - `nightly verify`      — detect & run the repo's linters / formatters / type checkers
 - `nightly ci`          — print CI status across open Nightly PRs (failed = work)
+- `nightly bug`         — bundle run state into a debug report; optionally open issue
 
 This is the planned-phase CLI surface complete (Phases 0-8).
 """
@@ -47,6 +48,11 @@ import typer
 from nightly_core._version import __version__
 from nightly_core.autonomy import can_auto_pr
 from nightly_core.briefing import write_briefing
+from nightly_core.bug import DEFAULT_BUG_REPO
+from nightly_core.bug import build_report as build_bug_report
+from nightly_core.bug import gh_command as bug_gh_command
+from nightly_core.bug import submit_report as submit_bug_report
+from nightly_core.bug import write_report as write_bug_report
 from nightly_core.cascade import next_task as cascade_next
 from nightly_core.cascade import pick_pr_rescue
 from nightly_core.ci_watch import PRCIStatus, list_ci_status
@@ -1226,6 +1232,86 @@ def _print_ci_status(statuses: list[PRCIStatus]) -> None:
         typer.echo(f"pending: {len(pending)} PR(s) — keep working, recheck later")
     else:
         typer.echo("all clear")
+
+
+@app.command(name="bug")
+def bug_cmd(
+    title: Annotated[
+        str | None,
+        typer.Option(
+            "--title",
+            "-t",
+            help="Issue title. Defaults to a stamped auto-title with the run id.",
+        ),
+    ] = None,
+    describe: Annotated[
+        str | None,
+        typer.Option(
+            "--describe",
+            "-d",
+            help=(
+                "Short free-text 'what went wrong' summary — becomes the report's "
+                "first section so reviewers see context before the disk dump."
+            ),
+        ),
+    ] = None,
+    repo: Annotated[
+        str,
+        typer.Option(
+            "--repo",
+            help=(
+                "GitHub `owner/name` to file the issue against. Default is the "
+                "upstream Nightly source repo."
+            ),
+        ),
+    ] = DEFAULT_BUG_REPO,
+    submit: Annotated[
+        bool,
+        typer.Option(
+            "--submit/--no-submit",
+            help=(
+                "Run `gh issue create` after writing the report. Default: on. "
+                "Disable to capture state without filing publicly."
+            ),
+        ),
+    ] = True,
+) -> None:
+    """Bundle Nightly run state into a debug report; optionally open an issue.
+
+    Use this when Nightly itself looks wrong — the agent self-concluded,
+    the Stop hook stopped force-continuing while work remained, the
+    cascade ignored a real plan, a worktree wedged. Captures
+    `keepalive.log`, plan statuses, on-disk markers, last briefing,
+    `nightly status`, `nightly next`, recent git log, and the
+    AGENTS.md / CLAUDE.md rules block into a single markdown report
+    under `.nightly/bugs/<timestamp>/report.md`. When `gh` is available
+    and `--submit` is on, opens an issue against `--repo` (default:
+    upstream Nightly).
+
+    `nightly bug` is a **human-invoked** off-ramp — the agent must
+    never run it; doing so would mask the very behavior the operator
+    is trying to capture (see AGENTS.md rule 10).
+    """
+    root = repo_root()
+    report = build_bug_report(root=root, title=title, summary=describe)
+    written = write_bug_report(report)
+    typer.echo(f"✓ wrote report → {_format_path_for_display(written, root)}")
+    for extra in report.extra_attachments:
+        typer.echo(f"  · attachment: {_format_path_for_display(extra, root)}")
+
+    if not submit:
+        typer.echo("· skipping `gh issue create` (--no-submit)")
+        typer.echo("  to file later: " + " ".join(bug_gh_command(report, repo=repo)))
+        return
+
+    result = submit_bug_report(report, repo=repo)
+    if result.ok:
+        typer.echo(f"✓ filed issue on {repo}: {result.issue_url or '(url not captured)'}")
+        return
+    typer.echo(f"✗ {result.error or 'gh issue create failed'}", err=True)
+    typer.echo("  report still on disk — file manually with:", err=True)
+    typer.echo("    " + " ".join(result.command), err=True)
+    raise typer.Exit(code=1)
 
 
 @app.command(name="doctor")

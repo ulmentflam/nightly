@@ -122,3 +122,48 @@ def test_seed_rules_appends_blank_line_separator(tmp_path: Path) -> None:
     # The block follows after a blank line, not glued onto the last char.
     pre = text[: text.index(MARKER_START)]
     assert pre.endswith("\n\n"), f"expected blank-line gap, got tail: {pre[-5:]!r}"
+
+
+# ── Phase 9n: anti-self-conclude rule ─────────────────────────────────────
+
+
+def test_rules_body_forbids_self_conclude() -> None:
+    """Rule 10: the agent must never invoke `nightly conclude` itself.
+
+    Regression guard for the 2026-05 corpus-forge incident where the
+    Nightly agent ran `nightly conclude` after `nightly brief` on its
+    own initiative, freezing the cascade short-circuit at `concluded`
+    and ending the session with unblocked RFC items on disk.
+    """
+    body = NIGHTLY_RULES_BODY
+    # The new rule must mention the off-ramp commands by name.
+    assert "Never invoke the human shutdown off-ramps" in body
+    for command in ("nightly conclude", "nightly stop", "nightly bug"):
+        assert command in body, f"rule should reference {command}"
+    # And it must call out the agent's correct end-of-cascade flow.
+    assert "nightly ideate" in body
+    assert "nightly brief" in body
+    # Past failure citation — keeps future edits from softening the rule
+    # without realising why it exists.
+    assert "self-conclude" in body.lower() or "self-invoke" in body.lower() or (
+        "freeze" in body.lower() and "concluded" in body
+    )
+
+
+def test_rules_body_marks_off_ramps_as_human_only() -> None:
+    """The `Human shutdown intervention` section must say the agent
+    doesn't run those commands itself — otherwise a re-read of just the
+    off-ramp list could re-suggest the wrong behavior."""
+    body = NIGHTLY_RULES_BODY
+    assert "Human shutdown intervention" in body
+    # The clarifying line that distinguishes operator-from-agent.
+    assert "human controls" in body.lower() or "operator control" in body.lower()
+
+
+def test_rules_body_documents_nightly_bug_off_ramp() -> None:
+    """The new `nightly bug` debugging tool needs to be visible in the
+    rules block so the operator knows about it and the agent knows it's
+    out of bounds."""
+    body = NIGHTLY_RULES_BODY
+    assert "nightly bug" in body
+    assert "Filing a bug" in body or "file a bug" in body.lower()

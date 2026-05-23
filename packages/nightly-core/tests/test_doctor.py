@@ -30,8 +30,9 @@ class _FakeIntegration:
     """Minimal NightlyHostIntegration shim for doctor tests.
 
     Mirrors the surface doctor inspects: skill_path / conclude_skill_path /
-    update_skill_path / is_keepalive_hook_installed / keepalive_support /
-    install. Each path is a Path under the repo so writes are local.
+    update_skill_path / bug_skill_path / is_keepalive_hook_installed /
+    keepalive_support / install. Each path is a Path under the repo so
+    writes are local.
     """
 
     def __init__(
@@ -40,7 +41,7 @@ class _FakeIntegration:
         name: str,
         *,
         keepalive_support: str = "forced",
-        installed_pieces: tuple[str, ...] = ("main", "conclude", "update", "hook"),
+        installed_pieces: tuple[str, ...] = ("main", "conclude", "update", "bug", "hook"),
     ) -> None:
         self._root = root
         self._name = name
@@ -57,6 +58,9 @@ class _FakeIntegration:
     def update_skill_path(self, scope: str) -> Path:
         return self._root / f".fake-{self._name}/skills/nightly-update/SKILL.md"
 
+    def bug_skill_path(self, scope: str) -> Path:
+        return self._root / f".fake-{self._name}/skills/nightly-bug/SKILL.md"
+
     def is_installed(self, scope: str) -> bool:
         return self.skill_path(scope).is_file()
 
@@ -69,6 +73,7 @@ class _FakeIntegration:
             ("main", self.skill_path(scope)),
             ("conclude", self.conclude_skill_path(scope)),
             ("update", self.update_skill_path(scope)),
+            ("bug", self.bug_skill_path(scope)),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{kind} for {self._name}\n", encoding="utf-8")
@@ -173,6 +178,7 @@ def test_host_ok_when_everything_present(repo: Path) -> None:
         claude.skill_path("project"),
         claude.conclude_skill_path("project"),
         claude.update_skill_path("project"),
+        claude.bug_skill_path("project"),
     ):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("present\n", encoding="utf-8")
@@ -212,6 +218,7 @@ def test_soft_host_does_not_require_stop_hook(repo: Path) -> None:
         opencode.skill_path("project"),
         opencode.conclude_skill_path("project"),
         opencode.update_skill_path("project"),
+        opencode.bug_skill_path("project"),
     ):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("present\n", encoding="utf-8")

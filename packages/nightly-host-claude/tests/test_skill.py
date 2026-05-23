@@ -113,3 +113,28 @@ def test_skill_md_documents_plan_status_lifecycle() -> None:
     """Phase 3: the skill should reference status transitions."""
     for status in ("ready", "in_progress", "done", "blocked: approval", "parked"):
         assert status in SKILL_MD, f"skill should reference status {status!r}"
+
+
+# ── Phase 9n: anti-self-conclude guard ────────────────────────────────────
+
+
+def test_skill_md_forbids_self_conclude() -> None:
+    """Skill must mirror rules.py rule 10: the agent never runs
+    `nightly conclude`, `nightly stop`, or `nightly bug` itself."""
+    text = SKILL_MD
+    assert "never invoke" in text.lower() or "Never invoke" in text
+    # Both the off-ramp triplet and the correct end-of-cascade pattern
+    # must be explicit.
+    for cmd in ("nightly conclude", "nightly ideate", "nightly brief"):
+        assert cmd in text, f"skill should reference {cmd}"
+    # The "Conclude — human-only" section header (or equivalent phrasing)
+    # gives a re-read of just the conclude section a clear stop sign.
+    assert "human-only" in text.lower() or "human only" in text.lower()
+
+
+def test_skill_md_off_ramp_list_is_marked_human_only() -> None:
+    """The off-ramp bullets near session start must remind the agent
+    those are operator controls — not part of the agent's wrap-up flow."""
+    text = SKILL_MD
+    # The phrase that disambiguates operator-vs-agent intent.
+    assert "operator controls" in text.lower() or "never invoke them yourself" in text.lower()

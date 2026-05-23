@@ -245,6 +245,7 @@ def _host_is_present(
         paths.append(integration.skill_path(scope))  # type: ignore[attr-defined]
     paths.append(integration.conclude_skill_path(scope))
     paths.append(integration.update_skill_path(scope))
+    paths.append(integration.bug_skill_path(scope))
     return any(p is not None and p.is_file() for p in paths)
 
 
@@ -267,6 +268,9 @@ def _host_needs_repair(
     upd = integration.update_skill_path(scope)
     if upd is not None and not upd.is_file():
         missing.append("update skill")
+    bug = integration.bug_skill_path(scope)
+    if bug is not None and not bug.is_file():
+        missing.append("bug skill")
     if (
         scope == "project"
         and integration.keepalive_support == "forced"

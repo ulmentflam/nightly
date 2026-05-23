@@ -18,6 +18,11 @@ from nightly_core.briefing import (
     render_briefing,
     write_briefing,
 )
+from nightly_core.bug import DEFAULT_BUG_REPO, BugReport
+from nightly_core.bug import build_report as build_bug_report
+from nightly_core.bug import gh_command as bug_gh_command
+from nightly_core.bug import submit_report as submit_bug_report
+from nightly_core.bug import write_report as write_bug_report
 from nightly_core.cascade import (
     CASCADE_SOURCES,
     CascadeChoice,
@@ -38,7 +43,11 @@ from nightly_core.ci_watch import (
     fetch_pr_checks,
     list_ci_status,
 )
-from nightly_core.conclude_skill import CONCLUDE_SKILL_MD, UPDATE_SKILL_MD
+from nightly_core.conclude_skill import (
+    BUG_SKILL_MD,
+    CONCLUDE_SKILL_MD,
+    UPDATE_SKILL_MD,
+)
 from nightly_core.contract import (
     AuthStatus,
     HostId,
@@ -114,12 +123,15 @@ from nightly_core.verify import VerifyCheck, VerifyReport, detect_checks, run_ve
 __all__ = [
     "AUTO_PR_CATEGORIES",
     "AUTO_PR_LOC_CEILING",
+    "BUG_SKILL_MD",
     "CASCADE_SOURCES",
     "CONCLUDE_SKILL_MD",
+    "DEFAULT_BUG_REPO",
     "PLAN_STATUSES",
     "UPDATE_SKILL_MD",
     "AuthStatus",
     "BriefingContext",
+    "BugReport",
     "CICheck",
     "CascadeChoice",
     "CascadeSource",
@@ -154,6 +166,8 @@ __all__ = [
     "__version__",
     "all_roles",
     "auto_pr_rejection_reason",
+    "bug_gh_command",
+    "build_bug_report",
     "build_context",
     "build_task_prompt",
     "can_auto_pr",
@@ -196,8 +210,10 @@ __all__ = [
     "slugify",
     "specialist_prompt",
     "start_run",
+    "submit_bug_report",
     "top_auto_pr",
     "update_plan_status",
     "write_briefing",
+    "write_bug_report",
     "write_drafts",
 ]

@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 
 from nightly_core import (
+    BUG_SKILL_MD,
     CONCLUDE_SKILL_MD,
     UPDATE_SKILL_MD,
     AuthStatus,
@@ -69,6 +70,8 @@ class ClaudeHostIntegration(NightlyHostIntegration):
     USER_CONCLUDE_ABSOLUTE = Path.home() / ".claude/skills/nightly-conclude/SKILL.md"
     PROJECT_UPDATE_RELATIVE = Path(".claude/skills/nightly-update/SKILL.md")
     USER_UPDATE_ABSOLUTE = Path.home() / ".claude/skills/nightly-update/SKILL.md"
+    PROJECT_BUG_RELATIVE = Path(".claude/skills/nightly-bug/SKILL.md")
+    USER_BUG_ABSOLUTE = Path.home() / ".claude/skills/nightly-bug/SKILL.md"
 
     def __init__(
         self,
@@ -102,15 +105,23 @@ class ClaudeHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_UPDATE_RELATIVE
         return self.USER_UPDATE_ABSOLUTE
 
+    def bug_skill_path(self, scope: InstallScope) -> Path:
+        """Path to the `/nightly-bug` SKILL.md for `scope`."""
+        if scope == "project":
+            return self._root / self.PROJECT_BUG_RELATIVE
+        return self.USER_BUG_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(SKILL_MD, encoding="utf-8")
-        # Companion skills (`/nightly-conclude`, `/nightly-update`) live
-        # alongside the main one. Each gets its own folder under skills/.
+        # Companion skills (`/nightly-conclude`, `/nightly-update`,
+        # `/nightly-bug`) live alongside the main one. Each gets its
+        # own folder under skills/.
         for sibling_path, sibling_md in (
             (self.conclude_skill_path(scope), CONCLUDE_SKILL_MD),
             (self.update_skill_path(scope), UPDATE_SKILL_MD),
+            (self.bug_skill_path(scope), BUG_SKILL_MD),
         ):
             if sibling_path is not None:
                 sibling_path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +136,11 @@ class ClaudeHostIntegration(NightlyHostIntegration):
         target = self.skill_path(scope)
         self.uninstall_keepalive_hook(scope)
         # Remove every companion skill first (same parent cleanup applies).
-        for sibling in (self.conclude_skill_path(scope), self.update_skill_path(scope)):
+        for sibling in (
+            self.conclude_skill_path(scope),
+            self.update_skill_path(scope),
+            self.bug_skill_path(scope),
+        ):
             if sibling is not None and sibling.exists():
                 sibling.unlink()
                 self._trim_skill_parents(sibling)

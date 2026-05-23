@@ -117,11 +117,30 @@ recommendation, execute it.** Everything below is consequences.
    Gemini CLI's `AfterAgent`). opencode is `soft` and relies on the
    rule text above (the model is told to never stop). The disk-based
    off-ramps below work everywhere regardless.
+10. **Never invoke the human shutdown off-ramps yourself.** The shell
+   commands `nightly conclude`, `nightly stop`, and the matching slash
+   commands `/nightly-conclude`, `/nightly-stop`, `/nightly-bug`
+   exist **for the human operator only**. The agent never runs them
+   — not at end-of-session, not when the cascade looks empty, not when
+   "the work feels done." If you reach a turn boundary and the cascade
+   has nothing left, run `nightly ideate` to surface proposals and
+   `nightly brief` to render the report — then end your turn and let
+   the Stop hook decide whether to force-continue (armed) or release
+   (CONCLUDE / STOP / stale marker / max turns). The only signals that
+   wind a session down are disk markers placed by the human (CONCLUDE,
+   STOP) or by the hook's own safety caps. The agent's wrap-up is
+   `nightly ideate` → `nightly brief` → end turn. Concluding is an
+   intervention, not a workflow step. Past failure: agents have
+   self-concluded — running `nightly conclude` after `nightly brief`
+   on their own to "tidy up" — which freezes the cascade short-circuit
+   at `concluded` and ends the session with unblocked RFC items still
+   on disk.
 
 ### Human shutdown intervention
 
 The keep-alive must never trap the operator. Three independent
-off-ramps stop a running Nightly session at any time:
+off-ramps stop a running Nightly session at any time. **None of these
+are commands the agent runs** — they are human controls (see Rule 10):
 
 - **`nightly conclude`** — graceful drain. The current task finishes,
   the briefing renders, the session ends naturally at the next turn
@@ -133,6 +152,17 @@ off-ramps stop a running Nightly session at any time:
 - **Ctrl-C / `/quit`** — interrupt. Bypasses the Stop hook entirely
   and kills the session immediately. Always available as the
   emergency stop.
+
+### Filing a bug against Nightly itself
+
+When Nightly's own behavior looks wrong (self-concluding, ignoring the
+cascade, hook misfires, runaway loops), the operator runs
+`nightly bug` (or `/nightly-bug`). This bundles the current run's
+`keepalive.log`, plan statuses, briefing, and on-disk markers into a
+markdown report under `.nightly/bugs/` and — if `gh` is available —
+opens an issue on the Nightly repo. **The agent never invokes
+`nightly bug` itself**; it is a debugging tool for the human, and
+self-filing would mask whatever the agent was about to do wrong.
 
 If you find yourself about to ask the user something: pick the better
 default and ship it. Decision is cheaper than deliberation; deliberation

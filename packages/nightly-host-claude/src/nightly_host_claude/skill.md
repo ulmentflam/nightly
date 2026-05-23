@@ -42,17 +42,25 @@ this repo are unaffected). With it, the hook re-injects a "continue on
 X" prompt whenever you'd otherwise end your turn. Idempotent: re-running
 just refreshes the 4-hour TTL.
 
-The keep-alive has three off-ramps so the human can always shut you down:
+The keep-alive has three off-ramps so the human can always shut you
+down. **These are operator controls — never invoke them yourself.**
+The agent's normal wrap-up is `nightly ideate` → `nightly brief` →
+end turn (and let the Stop hook decide whether to release or
+force-continue):
 
-- **`nightly conclude`** — graceful drain: you finish the current task,
-  render the briefing, and exit. This is the "morning, I'd like to
-  inspect the work now" path.
-- **`nightly stop`** — hard stop: the Stop hook allows the next turn
-  boundary to actually end the session. Use when the human walked over
-  and wants Nightly off **now** but is OK letting the current response
-  finish printing.
-- **Ctrl-C / `/quit`** — interrupt: bypasses the Stop hook entirely.
-  The session ends immediately. Always available.
+- **`nightly conclude`** — graceful drain: the *human* runs this when
+  they're back in the morning and want to inspect the work. The
+  current task finishes, the briefing renders, the session exits.
+  The agent never runs `nightly conclude` — running it yourself
+  freezes the cascade at `concluded` and ends the session with
+  unblocked work on disk.
+- **`nightly stop`** — hard stop: the *human* writes a STOP sentinel;
+  the Stop hook allows the next turn boundary to end the session.
+  The agent never runs this either.
+- **Ctrl-C / `/quit`** — interrupt: human-only. Bypasses the Stop
+  hook entirely; the session ends immediately. Always available.
+- **`nightly bug`** — file an issue against Nightly itself when the
+  agent's behavior looks broken. Human-only by the same rule.
 
 ## Toolkit
 
@@ -308,14 +316,29 @@ nightly brief
 Tell the user the highlights in chat — what landed, what needs review,
 what needs approval. Link them to the briefing.
 
-## Conclude
+## Conclude — human-only off-ramp
 
-If the user says "conclude," "wrap up," runs `nightly conclude`, or you
-find `.nightly/runs/<run-id>/CONCLUDE` on disk, finish the current task
-only (no new cascade picks). If the task can land cleanly, land it. If
-not, stash WIP commits to `nightly/wip-<run-id>/<slug>` with a structured
-`WIP.md` and set `status: parked` on the plan. Then write narrative and
-`nightly brief`. **Never SIGKILL. Never abandon mid-task.**
+**You never invoke `nightly conclude` (or `/nightly-conclude`,
+`nightly stop`, `/nightly-stop`, `nightly bug`, `/nightly-bug`)
+yourself.** These exist for the human operator. The agent's wrap-up
+is `nightly ideate` → `nightly brief` → end turn, then let the Stop
+hook decide whether to force-continue or release. Running `nightly
+conclude` on your own initiative freezes the cascade at the
+`concluded` short-circuit and ends the session with unblocked work
+still on disk (RFC items, parked tasks, fresh issues) — a regression
+the human has to clean up. If you can recommend more work, execute
+it. Decision over deliberation; deliberation over asking; asking is
+forbidden; self-concluding is asking *the disk*.
+
+Conclude is triggered **only** by the human: they type "conclude" /
+"wrap up," run `nightly conclude` themselves, or the CONCLUDE marker
+appears under `.nightly/runs/<run-id>/` (placed by them or another
+shell). When that happens, finish the current task only (no new
+cascade picks). If the task can land cleanly, land it. If not, stash
+WIP commits to `nightly/wip-<run-id>/<slug>` with a structured
+`WIP.md` and set `status: parked` on the plan. Then write narrative
+and `nightly brief`. **Never SIGKILL. Never abandon mid-task. Never
+self-invoke conclude.**
 
 ## Not yet (Phase 6+)
 

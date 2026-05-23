@@ -386,3 +386,61 @@ async def test_uninstall_claude_removes_update_skill(
     upd = integration.update_skill_path("project")
     assert upd is not None
     assert not upd.exists()
+
+
+# ── Phase 9n: /nightly-bug skill + repulsion language ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_claude_writes_bug_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    bug = integration.bug_skill_path("project")
+    assert bug is not None
+    assert bug.is_file()
+    body = bug.read_text(encoding="utf-8")
+    assert "name: nightly-bug" in body
+    assert integration.is_bug_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_uninstall_claude_removes_bug_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    await integration.uninstall("project")
+    bug = integration.bug_skill_path("project")
+    assert bug is not None
+    assert not bug.exists()
+
+
+def test_conclude_skill_repels_the_agent() -> None:
+    """The CONCLUDE_SKILL_MD description and body must explicitly say
+    this is HUMAN-only — the failure mode it guards against is the agent
+    pattern-matching a generic 'wind down the session' description."""
+    from nightly_core import CONCLUDE_SKILL_MD
+
+    text = CONCLUDE_SKILL_MD
+    # Description / frontmatter must read as human-only at a glance.
+    assert "HUMAN-ONLY" in text or "human-only" in text.lower()
+    assert "NEVER call this skill" in text or "never invoke" in text.lower()
+    # The body must point the agent at the correct end-of-cascade flow
+    # so a re-read recovers from the antipattern.
+    assert "nightly ideate" in text
+    assert "nightly brief" in text
+
+
+def test_bug_skill_repels_the_agent() -> None:
+    """Same guard as conclude — the bug skill description is even more
+    sensitive because self-filing would mask the very bug the operator
+    needs to triage."""
+    from nightly_core import BUG_SKILL_MD
+
+    text = BUG_SKILL_MD
+    assert "HUMAN-ONLY" in text or "human-only" in text.lower()
+    assert "NEVER call this skill" in text or "never invoke" in text.lower()
+    assert "nightly bug" in text
+    # Reasoning citation — keeps future edits from softening the
+    # repulsion without realising why it exists.
+    assert "self-filing" in text.lower() or "mask" in text.lower()

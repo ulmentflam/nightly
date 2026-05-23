@@ -176,6 +176,22 @@ class NightlyHostIntegration(ABC):
         path = self.update_skill_path(scope)
         return path is not None and path.is_file()
 
+    # ── bug skill (Phase 9n) ─────────────────────────────────────────────
+    def bug_skill_path(self, scope: InstallScope) -> Path | None:
+        """Per-host path to the `/nightly-bug` skill file.
+
+        Default returns None — opt-in. Hosts that override return the
+        absolute path where the bug skill should be written. The bug
+        skill mirrors `/nightly-conclude`'s lifecycle and is also a
+        HUMAN-ONLY off-ramp (see `nightly_core.bug` and rules.py
+        rule 10).
+        """
+        return None
+
+    def is_bug_installed(self, scope: InstallScope) -> bool:
+        path = self.bug_skill_path(scope)
+        return path is not None and path.is_file()
+
     # ── keep-alive hook (Phase 9h+) ──────────────────────────────────────
     def install_keepalive_hook(self, scope: InstallScope) -> None:
         """Idempotent: write the Stop-hook entry into the host's config.
