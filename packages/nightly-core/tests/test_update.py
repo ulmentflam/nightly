@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from nightly_core.update import (
+    REEXEC_BEFORE_ENV,
+    REEXEC_SENTINEL_ENV,
     InstallMethod,
     detect_install_method,
     detect_install_root,
@@ -154,3 +156,154 @@ def test_update_install_propagates_git_errors(
     monkeypatch.setattr("nightly_core.update._git", failing_git)
     with pytest.raises(subprocess.CalledProcessError):
         update_install(version="main")
+
+
+# ── Phase 9o: re-exec after self-upgrade ──────────────────────────────────
+
+
+class _FakeReexec:
+    """Recording stand-in for `os.execvpe`. Stores the `before` SHA the
+    caller would have passed through the env var and raises a sentinel
+    exception so the test process doesn't actually replace itself."""
+
+    class _Reexeced(BaseException):
+        """Raised by the fake re-exec — `BaseException` so a stray
+        `except Exception:` further up the stack can't accidentally
+        swallow the simulated process-replacement."""
+
+    def __init__(self) -> None:
+        self.called_with: str | None = None
+        self.call_count = 0
+
+    def __call__(self, before: str) -> _FakeReexec._Reexeced:
+        self.called_with = before
+        self.call_count += 1
+        raise _FakeReexec._Reexeced
+
+
+def _stub_update_machinery(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tmp_path: Path,
+    head_sequence: list[str],
+) -> InstallMethod:
+    """Wire up the standard fakes for git/uv so update_install runs end-to-end.
+
+    `head_sequence` is consumed by `git_head_commit` calls in order —
+    use `["before_sha", "after_sha"]` to simulate a real update, or
+    `["sha", "sha"]` to simulate an already-current install.
+    """
+    method = InstallMethod(kind="git", root=tmp_path)
+    monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
+    seq = list(head_sequence)
+    monkeypatch.setattr(
+        "nightly_core.update.git_head_commit",
+        lambda _root: seq.pop(0) if seq else "",
+    )
+    monkeypatch.setattr("nightly_core.update._git", lambda _args, *, cwd: None)
+    monkeypatch.setattr("nightly_core.update._uv_sync", lambda _cwd: None)
+    return method
+
+
+def test_update_install_reexecs_when_source_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the on-disk source actually changes, `update_install` must
+    re-exec so downstream lazy imports see the new modules.
+
+    Regression guard for the 2026-05 corpus-forge ImportError where
+    `BUG_SKILL_MD` was added to `nightly_core` but the running
+    `nightly update` process still held the pre-update `nightly_core`
+    in `sys.modules`, causing `refresh_repo_install` to fail with
+    `cannot import name 'BUG_SKILL_MD'`.
+    """
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["before", "after"])
+    fake = _FakeReexec()
+    with pytest.raises(_FakeReexec._Reexeced):
+        update_install(version="main", reexec=fake)
+    assert fake.call_count == 1
+    assert fake.called_with == "before"
+
+
+def test_update_install_no_reexec_when_source_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idempotent re-runs (same SHA before/after) skip the re-exec —
+    no module content changed, so the parent process's namespace is
+    still correct."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["same", "same"])
+    fake = _FakeReexec()
+    result = update_install(version="main", reexec=fake)
+    assert fake.call_count == 0
+    assert result[1] == "same"
+    assert result[2] == "same"
+
+
+def test_update_install_no_reexec_in_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dry-run preview never re-execs — there's no on-disk change to
+    propagate to a fresh process."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["before"])
+    fake = _FakeReexec()
+    result = update_install(version="main", dry_run=True, reexec=fake)
+    assert fake.call_count == 0
+    assert result[1] == result[2]  # before == after on dry-run
+
+
+def test_update_install_post_reexec_skips_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the sentinel env var is set (post-re-exec second pass),
+    `update_install` returns immediately with the before SHA from the
+    env and the current HEAD — no fetch, no checkout, no uv sync."""
+    monkeypatch.setenv(REEXEC_SENTINEL_ENV, "1")
+    monkeypatch.setenv(REEXEC_BEFORE_ENV, "parent_before_sha")
+
+    method = InstallMethod(kind="git", root=tmp_path)
+    monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "current_head")
+
+    sentinel_called = {"git": False, "uv_sync": False}
+
+    def fail_git(_args: list[str], *, cwd: Path) -> None:
+        sentinel_called["git"] = True
+        pytest.fail("git should not run in post-re-exec pass")
+
+    def fail_sync(_cwd: Path) -> None:
+        sentinel_called["uv_sync"] = True
+        pytest.fail("uv_sync should not run in post-re-exec pass")
+
+    monkeypatch.setattr("nightly_core.update._git", fail_git)
+    monkeypatch.setattr("nightly_core.update._uv_sync", fail_sync)
+
+    fake = _FakeReexec()
+    result_method, before, after = update_install(version="main", reexec=fake)
+    assert result_method is method
+    assert before == "parent_before_sha"
+    assert after == "current_head"
+    assert fake.call_count == 0
+    assert sentinel_called == {"git": False, "uv_sync": False}
+
+
+def test_reexec_helper_sets_sentinel_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default reexec helper passes the sentinel + before SHA via
+    env so the post-re-exec process can pick up where the parent left
+    off. We can't actually exec in a test, so we patch os.execvpe."""
+    from nightly_core.update import _reexec_into_new_source
+
+    captured: dict[str, object] = {}
+
+    def fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        captured["file"] = file
+        captured["args"] = list(args)
+        captured["env"] = dict(env)
+        # Don't actually exec — just simulate "would have replaced process".
+
+    monkeypatch.setattr("os.execvpe", fake_execvpe)
+    # The function raises after the (faked) execvpe returns; that's a
+    # defensive guardrail in production.
+    with pytest.raises(RuntimeError, match="execvpe returned unexpectedly"):
+        _reexec_into_new_source("before_sha")
+    assert captured["env"][REEXEC_SENTINEL_ENV] == "1"  # type: ignore[index]
+    assert captured["env"][REEXEC_BEFORE_ENV] == "before_sha"  # type: ignore[index]

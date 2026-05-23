@@ -27,15 +27,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shutil
 import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from nightly_core._version import __version__
 from nightly_core.rules import seed_rules
 
 __all__ = [
+    "REEXEC_BEFORE_ENV",
+    "REEXEC_SENTINEL_ENV",
     "InstallMethod",
     "UpdateReport",
     "detect_install_method",
@@ -44,6 +50,19 @@ __all__ = [
     "refresh_repo_install",
     "update_install",
 ]
+
+
+REEXEC_SENTINEL_ENV = "NIGHTLY_UPDATE_REEXEC"
+"""When set, `update_install` skips the fetch/checkout/sync work — the
+current process is the post-re-exec fresh-modules pass and the source
+already moved during the parent process. Lets `refresh_repo_install`
+see new symbols (e.g. BUG_SKILL_MD) that the parent process's cached
+`nightly_core` namespace did not have."""
+
+REEXEC_BEFORE_ENV = "NIGHTLY_UPDATE_BEFORE"
+"""When set with `REEXEC_SENTINEL_ENV`, carries the parent process's
+`before` SHA across the re-exec so the final UpdateReport can show
+the full delta."""
 
 
 @dataclass(frozen=True)
@@ -158,6 +177,7 @@ def update_install(
     *,
     version: str = "main",
     dry_run: bool = False,
+    reexec: Callable[[str], NoReturn] | None = None,
 ) -> tuple[InstallMethod, str, str]:
     """Update Nightly's source to `version`. Returns (method, before_sha, after_sha).
 
@@ -167,6 +187,23 @@ def update_install(
 
     `dry_run=True` performs the fetch but doesn't check out or sync —
     useful for previewing the upgrade.
+
+    `reexec` is an injection point for tests; production callers leave
+    it `None` and get `_reexec_into_new_source`, which replaces the
+    current process so the downstream `refresh_repo_install` step
+    runs with the freshly-synced modules loaded. The re-exec only
+    fires when the source actually moved — same-SHA syncs reuse the
+    current process to avoid pointless fork/exec overhead.
+
+    Re-exec is the load-bearing piece: after `uv sync` swaps the
+    nightly-core source on disk, the current process still holds the
+    *old* `nightly_core` in `sys.modules`. Any lazy import after this
+    point (`refresh_repo_install` does several, walking each host
+    integration) resolves against the cached old namespace and fails
+    with `ImportError` on any symbol added in the new version (most
+    recently: `BUG_SKILL_MD` in Phase 9n). Re-exec is the standard
+    fix — Python self-upgrade tools (`pip`, `uv tool upgrade`) all
+    rely on it.
     """
     method = detect_install_method()
     if not method.is_git or method.root is None:
@@ -178,6 +215,15 @@ def update_install(
             "`curl -fsSL https://raw.githubusercontent.com/ulmentflam/nightly/main/install.sh | bash`."
         )
         raise RuntimeError(msg)
+
+    # Post-re-exec fast path: the parent process already did the
+    # fetch + checkout + uv sync work. Skip back to reporting so the
+    # CLI can render the delta and the refresh step (which is what
+    # actually needed the new modules) runs in this fresh process.
+    if os.environ.get(REEXEC_SENTINEL_ENV):
+        before = os.environ.get(REEXEC_BEFORE_ENV, "")
+        after = git_head_commit(method.root)
+        return method, before, after
 
     before = git_head_commit(method.root)
 
@@ -202,7 +248,41 @@ def update_install(
 
     _uv_sync(method.root)
     after = git_head_commit(method.root)
+
+    # Re-exec only when the source moved — same-SHA syncs (idempotent
+    # re-runs) reuse the current process. The downstream refresh step
+    # imports host integrations lazily and would otherwise read
+    # `nightly_core` from `sys.modules` (stale namespace from before
+    # the swap), so the re-exec lets the next pass see new symbols.
+    if before != after:
+        do_reexec = reexec or _reexec_into_new_source
+        do_reexec(before)  # never returns under normal os.execvpe
+
     return method, before, after
+
+
+def _reexec_into_new_source(before: str) -> NoReturn:
+    """Replace the current process so `nightly update` reloads modules.
+
+    Preserves argv exactly so the second pass takes the same flags
+    (`--version`, `--refresh-repo`, etc.) the user originally invoked.
+    The sentinel env var tells the new process to skip the upgrade work
+    and jump straight to reporting + refresh.
+
+    Never returns. Wrapped in `_reexec_into_new_source` (rather than a
+    direct `os.execvpe` call inline) so tests can inject a fake.
+    """
+    env = os.environ.copy()
+    env[REEXEC_SENTINEL_ENV] = "1"
+    env[REEXEC_BEFORE_ENV] = before
+    # `sys.argv[0]` is the entry-point script (e.g. `.venv/bin/nightly`)
+    # under the `uv run` shim install path. PATH lookup via execvpe
+    # handles the case where it's a bare program name.
+    os.execvpe(sys.argv[0], sys.argv, env)
+    # execvpe never returns under POSIX; this raise is defensive so
+    # static analyzers don't think the function returns None.
+    msg = "os.execvpe returned unexpectedly"  # pragma: no cover
+    raise RuntimeError(msg)  # pragma: no cover
 
 
 # ── per-repo refresh ──────────────────────────────────────────────────────
