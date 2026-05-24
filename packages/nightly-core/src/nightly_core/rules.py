@@ -126,15 +126,27 @@ recommendation, execute it.** Everything below is consequences.
    has nothing left, run `nightly ideate` to surface proposals and
    `nightly brief` to render the report — then end your turn and let
    the Stop hook decide whether to force-continue (armed) or release
-   (CONCLUDE / STOP / stale marker / max turns). The only signals that
-   wind a session down are disk markers placed by the human (CONCLUDE,
-   STOP) or by the hook's own safety caps. The agent's wrap-up is
-   `nightly ideate` → `nightly brief` → end turn. Concluding is an
-   intervention, not a workflow step. Past failure: agents have
-   self-concluded — running `nightly conclude` after `nightly brief`
-   on their own to "tidy up" — which freezes the cascade short-circuit
-   at `concluded` and ends the session with unblocked RFC items still
-   on disk.
+   (CONCLUDE / STOP / stale marker / max turns / PR backlog). The only
+   signals that wind a session down are disk markers placed by the
+   human (CONCLUDE, STOP) or by the hook's own safety caps. The
+   agent's wrap-up is `nightly ideate` → `nightly brief` → end turn.
+   Concluding is an intervention, not a workflow step. Past failure:
+   agents have self-concluded — running `nightly conclude` after
+   `nightly brief` on their own to "tidy up" — which freezes the
+   cascade short-circuit at `concluded` and ends the session with
+   unblocked RFC items still on disk.
+11. **PR-backlog backpressure is a host-level concern, not yours.**
+   The Stop hook independently watches the count of open Nightly PRs
+   and allows the session to end when the operator already has a
+   queue waiting for review — unless the cascade has resume-priority
+   work (in-flight task, unblocked approval, PR rescue with blocking
+   feedback). You don't read this count, don't measure it, and don't
+   change behavior because of it. Keep running the cascade and ending
+   the turn after `nightly brief`; the hook decides whether to
+   release or force-continue. Past failure: agent shipped a 6th
+   stacked paperwork PR while PRs #54-#58 were still unreviewed
+   because the cascade kept finding RFC-checkbox / lint-fallback work
+   and the hook had no signal for operator saturation.
 
 ### Human shutdown intervention
 
@@ -152,6 +164,15 @@ are commands the agent runs** — they are human controls (see Rule 10):
 - **Ctrl-C / `/quit`** — interrupt. Bypasses the Stop hook entirely
   and kills the session immediately. Always available as the
   emergency stop.
+- **Open-PR backlog cap** — when the count of open Nightly-authored
+  PRs reaches the cap (default 5), the Stop hook treats human review
+  as the bottleneck and allows the next turn boundary to end the
+  session (`reason_code=pr_backlog` in `keepalive.log`). Resume-
+  priority cascade picks (in-flight task, unblocked approval, PR
+  rescue with blocking feedback) override the cap and keep the
+  session running, because that's *finishing* shipped work rather
+  than adding more to the queue. No operator action needed — this
+  fires automatically when the queue saturates.
 
 ### Filing a bug against Nightly itself
 

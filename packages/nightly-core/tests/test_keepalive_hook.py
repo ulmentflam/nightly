@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from nightly_core.cascade import CascadeChoice
 from nightly_core.keepalive_hook import (
+    MAX_OPEN_PRS,
     MAX_TURNS,
     SESSION_ACTIVE_FILENAME,
     SESSION_TTL_SECONDS,
@@ -20,6 +22,7 @@ from nightly_core.keepalive_hook import (
     parse_hook_input,
     request_stop,
 )
+from nightly_core.pr_feedback import PRFeedback, PRReference
 from nightly_core.runs import start_run
 
 
@@ -169,6 +172,203 @@ def test_session_ttl_constant_is_4_hours() -> None:
 def test_max_turns_constant_is_500() -> None:
     """Lock in the safety cap — changing this changes the runaway-loop behavior."""
     assert MAX_TURNS == 500
+
+
+def test_max_open_prs_constant_is_5() -> None:
+    """Lock in the PR-backlog cap — changing this changes when the hook releases."""
+    assert MAX_OPEN_PRS == 5
+
+
+# ── Phase 9p: PR-backlog backpressure off-ramp ───────────────────────────
+
+
+def _patch_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    open_prs: int,
+    choice: CascadeChoice | None,
+) -> None:
+    """Stub the cascade primitives the Stop hook consults for backpressure."""
+    monkeypatch.setattr(
+        "nightly_core.keepalive_hook.count_open_nightly_prs",
+        lambda _root=None: open_prs,
+    )
+    if choice is not None:
+        monkeypatch.setattr(
+            "nightly_core.keepalive_hook.next_task",
+            lambda _root=None: choice,
+        )
+
+
+def _blocking_pr_feedback() -> PRFeedback:
+    """Construct a single CHANGES_REQUESTED review for the blocking-rescue test."""
+    pr = PRReference(
+        branch="nightly/example-20260524",
+        number=99,
+        url="https://github.com/org/repo/pull/99",
+        state="OPEN",
+        title="example",
+    )
+    return PRFeedback(
+        pr=pr,
+        kind="review",
+        author_login="reviewer",
+        author_is_bot=False,
+        body="please change X",
+        state="CHANGES_REQUESTED",
+        file_ref=None,
+        line_ref=None,
+        created_at=datetime.now(UTC),
+        url="https://github.com/org/repo/pull/99#pullrequestreview-1",
+    )
+
+
+def _non_blocking_pr_feedback() -> PRFeedback:
+    """A non-blocking COMMENTED review (e.g. a Greptile nit)."""
+    pr = PRReference(
+        branch="nightly/example-20260524",
+        number=99,
+        url="https://github.com/org/repo/pull/99",
+        state="OPEN",
+        title="example",
+    )
+    return PRFeedback(
+        pr=pr,
+        kind="review",
+        author_login="greptile-apps[bot]",
+        author_is_bot=True,
+        body="consider renaming",
+        state="COMMENTED",
+        file_ref=None,
+        line_ref=None,
+        created_at=datetime.now(UTC),
+        url="https://github.com/org/repo/pull/99#pullrequestreview-2",
+    )
+
+
+def test_pr_backlog_saturated_allows_stop(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When 5+ Nightly PRs are open and the pick is paperwork, the hook releases."""
+    arm_session(initialized_repo)
+    _patch_backlog(
+        monkeypatch,
+        open_prs=MAX_OPEN_PRS,
+        choice=CascadeChoice(
+            source="ideate_fallback",
+            summary="ship lint cleanup",
+            rationale="armed-session fallback",
+        ),
+    )
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert not decision.should_block
+    assert decision.reason_code == "pr_backlog"
+    assert "5 open Nightly PR" in decision.message
+    assert "operator review is the bottleneck" in decision.message
+
+
+def test_pr_backlog_overridden_by_in_flight(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resume-priority cascade picks keep the session running even at cap."""
+    arm_session(initialized_repo)
+    _patch_backlog(
+        monkeypatch,
+        open_prs=MAX_OPEN_PRS + 2,
+        choice=CascadeChoice(
+            source="resume_in_flight",
+            summary="resume 0003-retry-plan",
+            target_path=initialized_repo / "plan.md",
+            rationale="finishing what's started",
+        ),
+    )
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+
+
+def test_pr_backlog_overridden_by_blocking_pr_rescue(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pr_rescue pick with at least one blocking feedback item overrides backpressure."""
+    arm_session(initialized_repo)
+    _patch_backlog(
+        monkeypatch,
+        open_prs=MAX_OPEN_PRS,
+        choice=CascadeChoice(
+            source="pr_rescue",
+            summary="rescue #42 — CHANGES_REQUESTED",
+            rationale="reviewer asked for changes",
+            pr_feedback=(_blocking_pr_feedback(),),
+        ),
+    )
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+
+
+def test_pr_backlog_non_blocking_rescue_allows_stop(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pr_rescue pick with only non-blocking feedback does NOT override backpressure."""
+    arm_session(initialized_repo)
+    _patch_backlog(
+        monkeypatch,
+        open_prs=MAX_OPEN_PRS,
+        choice=CascadeChoice(
+            source="pr_rescue",
+            summary="rescue #99 — Greptile nit",
+            rationale="non-blocking review comment",
+            pr_feedback=(_non_blocking_pr_feedback(),),
+        ),
+    )
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert not decision.should_block
+    assert decision.reason_code == "pr_backlog"
+
+
+def test_pr_backlog_below_cap_force_continues(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Below the cap, the backpressure branch doesn't fire — normal force-continue."""
+    arm_session(initialized_repo)
+    _patch_backlog(
+        monkeypatch,
+        open_prs=MAX_OPEN_PRS - 1,
+        choice=CascadeChoice(
+            source="ideate_fallback",
+            summary="ship lint cleanup",
+            rationale="armed-session fallback",
+        ),
+    )
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+
+
+def test_pr_backlog_with_cascade_exception_still_releases(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If next_task raises while backlog is saturated, the hook releases anyway.
+
+    The hook must never crash, and a cascade exception is not evidence of
+    resume-priority work — so the backpressure should still allow stop.
+    """
+    arm_session(initialized_repo)
+    monkeypatch.setattr(
+        "nightly_core.keepalive_hook.count_open_nightly_prs",
+        lambda _root=None: MAX_OPEN_PRS,
+    )
+
+    def _boom(_root: Path | None = None) -> CascadeChoice:
+        msg = "synthetic cascade failure"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("nightly_core.keepalive_hook.next_task", _boom)
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert not decision.should_block
+    assert decision.reason_code == "pr_backlog"
+    assert "`unknown`" in decision.message
 
 
 def test_decision_payload_is_valid_json() -> None:

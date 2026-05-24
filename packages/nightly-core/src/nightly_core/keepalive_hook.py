@@ -22,6 +22,12 @@ Off-ramps (any one of these lets the session stop):
   graceful drain.
 - `.nightly/runs/<id>/STOP` exists — `nightly stop` requested immediate
   hard stop.
+- The repo has `MAX_OPEN_PRS` or more open `nightly/*` PRs and the next
+  cascade pick isn't resume-priority — operator review throughput is
+  the bottleneck, so producing PR N+1 is anti-helpful. Resume-priority
+  picks (in-flight task, unblocked approval, PR rescue with blocking
+  feedback) override the backpressure so already-shipped work still
+  gets finished.
 - Turn count has exceeded `MAX_TURNS` (default 500) — safety cap so a
   runaway loop can't burn through the credentialed account forever.
 
@@ -41,11 +47,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from nightly_core.cascade import next_task
+from nightly_core.cascade import CascadeChoice, count_open_nightly_prs, next_task
 from nightly_core.runs import current_run
 
 __all__ = [
     "HOOK_FORMATS",
+    "MAX_OPEN_PRS",
     "MAX_TURNS",
     "SESSION_ACTIVE_FILENAME",
     "SESSION_TTL_SECONDS",
@@ -92,6 +99,37 @@ SESSION_TTL_SECONDS = 4 * 60 * 60
 
 MAX_TURNS = 500
 """Safety cap on how many times the Stop hook will force-continue per run."""
+
+MAX_OPEN_PRS = 5
+"""Operator-review-throughput cap: when the repo has this many open `nightly/*`
+PRs, the Stop hook treats human review as the bottleneck and allows the
+session to end at the next turn boundary — unless the cascade still has
+resume-priority work (see ``_BACKLOG_OVERRIDE_SOURCES``).
+
+The agent never reads this constant; it's a host-level backpressure signal
+the hook exercises on its own, so the no-self-conclude rule stays intact.
+"""
+
+_BACKLOG_OVERRIDE_SOURCES: frozenset[str] = frozenset(
+    {
+        "resume_in_flight",
+        "unblocked_approval",
+    }
+)
+"""Cascade sources that keep force-continuing even when PR backlog is at cap.
+
+`pr_rescue` is *conditionally* an override — only when the rescue feedback is
+blocking (failed CI, CHANGES_REQUESTED review). That decision is made in
+``_pr_rescue_is_blocking`` rather than the static set, because the cascade
+choice carries the feedback details we need to consult.
+"""
+
+
+def _pr_rescue_is_blocking(choice: CascadeChoice) -> bool:
+    """True iff this is a `pr_rescue` pick with at least one blocking item."""
+    if choice.source != "pr_rescue" or not choice.pr_feedback:
+        return False
+    return any(f.is_blocking for f in choice.pr_feedback)
 
 
 @dataclass(frozen=True)
@@ -160,6 +198,37 @@ def compute_stop_hook_decision(  # noqa: PLR0911 — one return per off-ramp is 
             reason_code="stop",
             message=f"run {run.id} has STOP sentinel; allowing stop (hard).",
         )
+
+    # PR-backlog backpressure. When the operator already has MAX_OPEN_PRS
+    # or more Nightly-authored PRs awaiting review, human review throughput
+    # is the bottleneck — producing another paperwork PR makes the queue
+    # worse, not better. We compute the cascade choice once and check it
+    # against the override set so resume-priority work (in-flight task,
+    # unblocked approval, blocking PR rescue) still keeps the session
+    # moving. Anything else (accepted_rfc, github_issue, ideate,
+    # ideate_fallback, nothing) lets us release. Past failure: 5 stacked
+    # paperwork PRs on top of an unblock PR while the operator slept.
+    open_prs = count_open_nightly_prs(root)
+    if open_prs >= MAX_OPEN_PRS:
+        try:
+            choice = next_task(root)
+        except Exception:  # cascade must never crash the hook
+            choice = None
+        is_override = choice is not None and (
+            choice.source in _BACKLOG_OVERRIDE_SOURCES or _pr_rescue_is_blocking(choice)
+        )
+        if not is_override:
+            source = choice.source if choice is not None else "unknown"
+            return StopHookDecision(
+                payload={},
+                reason_code="pr_backlog",
+                message=(
+                    f"run {run.id}: {open_prs} open Nightly PR(s) awaiting "
+                    f"review (cap {MAX_OPEN_PRS}); next cascade pick "
+                    f"`{source}` is not resume-priority — allowing stop "
+                    "(operator review is the bottleneck)."
+                ),
+            )
 
     turn_count = _bump_and_read_turn_count(run.path)
     if turn_count >= MAX_TURNS:

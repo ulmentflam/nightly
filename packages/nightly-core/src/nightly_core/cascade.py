@@ -34,6 +34,7 @@ __all__ = [
     "CascadeChoice",
     "CascadeSource",
     "PRRescueCandidate",
+    "count_open_nightly_prs",
     "next_task",
     "pick_accepted_rfc",
     "pick_github_issue",
@@ -290,6 +291,17 @@ def _nightly_open_pr_branches(
             continue
         out.append((branch, num, str(entry.get("url") or "")))
     return out
+
+
+def count_open_nightly_prs(root: Path | None = None) -> int:
+    """Count open `nightly/*` PRs against the current repo.
+
+    Best-effort: returns 0 when `gh` is missing, the remote has no PRs,
+    or the listing fails. Wraps `_nightly_open_pr_branches` so callers
+    outside the cascade module (e.g. the Stop hook) don't have to reach
+    for an underscore-prefixed helper.
+    """
+    return len(_nightly_open_pr_branches(root))
 
 
 def _match_plan_to_branch(branch: str, root: Path | None = None) -> PlanRecord | None:

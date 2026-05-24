@@ -42,11 +42,12 @@ this repo are unaffected). With it, the hook re-injects a "continue on
 X" prompt whenever you'd otherwise end your turn. Idempotent: re-running
 just refreshes the 4-hour TTL.
 
-The keep-alive has three off-ramps so the human can always shut you
-down. **These are operator controls — never invoke them yourself.**
-The agent's normal wrap-up is `nightly ideate` → `nightly brief` →
-end turn (and let the Stop hook decide whether to release or
-force-continue):
+The keep-alive has three operator-driven off-ramps so the human can
+always shut you down, plus one host-level off-ramp the hook fires on
+its own (PR-backlog cap). **The operator-driven off-ramps are
+operator controls — never invoke them yourself.** The agent's normal
+wrap-up is `nightly ideate` → `nightly brief` → end turn (and let
+the Stop hook decide whether to release or force-continue):
 
 - **`nightly conclude`** — graceful drain: the *human* runs this when
   they're back in the morning and want to inspect the work. The
@@ -61,6 +62,12 @@ force-continue):
   hook entirely; the session ends immediately. Always available.
 - **`nightly bug`** — file an issue against Nightly itself when the
   agent's behavior looks broken. Human-only by the same rule.
+- **PR-backlog cap** (automatic, not a command) — when 5+ open
+  Nightly PRs are awaiting review, the Stop hook allows the session
+  to end at the next turn boundary unless the cascade has resume-
+  priority work (in-flight task, unblocked approval, PR rescue with
+  blocking feedback). You don't read or react to this — keep
+  running the cascade normally. The hook handles it.
 
 ## Toolkit
 

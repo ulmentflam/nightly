@@ -138,3 +138,12 @@ def test_skill_md_off_ramp_list_is_marked_human_only() -> None:
     text = SKILL_MD
     # The phrase that disambiguates operator-vs-agent intent.
     assert "operator controls" in text.lower() or "never invoke them yourself" in text.lower()
+
+
+def test_skill_md_documents_pr_backlog_cap() -> None:
+    """Skill must mirror rules.py rule 11: PR-backlog cap is an
+    automatic host-level off-ramp the agent doesn't operate."""
+    text = SKILL_MD
+    assert "PR-backlog cap" in text or "backlog cap" in text.lower()
+    # The skill must clarify this is automatic, not an agent command.
+    assert "automatic" in text.lower() or "not a command" in text.lower()

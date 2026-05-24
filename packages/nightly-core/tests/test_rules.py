@@ -145,8 +145,10 @@ def test_rules_body_forbids_self_conclude() -> None:
     assert "nightly brief" in body
     # Past failure citation — keeps future edits from softening the rule
     # without realising why it exists.
-    assert "self-conclude" in body.lower() or "self-invoke" in body.lower() or (
-        "freeze" in body.lower() and "concluded" in body
+    assert (
+        "self-conclude" in body.lower()
+        or "self-invoke" in body.lower()
+        or ("freeze" in body.lower() and "concluded" in body)
     )
 
 
@@ -167,3 +169,22 @@ def test_rules_body_documents_nightly_bug_off_ramp() -> None:
     body = NIGHTLY_RULES_BODY
     assert "nightly bug" in body
     assert "Filing a bug" in body or "file a bug" in body.lower()
+
+
+# ── Phase 9p: PR-backlog backpressure rule ────────────────────────────────
+
+
+def test_rules_body_documents_pr_backlog_backpressure() -> None:
+    """Rule 11: PR-backlog backpressure is a host-level concern.
+
+    Regression guard for the 2026-05 stacked-paperwork-PR incident: 5
+    open Nightly PRs sat unreviewed while the agent shipped a 6th
+    paperwork PR because the cascade kept finding RFC-checkbox /
+    lint-fallback work and the hook had no signal for operator
+    saturation.
+    """
+    body = NIGHTLY_RULES_BODY
+    assert "PR-backlog backpressure" in body or "backlog backpressure" in body
+    assert "host-level" in body.lower()
+    # The operator-facing off-ramp list must also mention the cap.
+    assert "Open-PR backlog cap" in body or "backlog cap" in body.lower()
