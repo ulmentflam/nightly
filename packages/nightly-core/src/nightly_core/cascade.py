@@ -374,6 +374,51 @@ def pick_pr_rescue(
     return candidates[0]
 
 
+_DEDUPED_STATUSES: frozenset[str] = frozenset(
+    {"done", "in_progress", "blocked: approval"}
+)
+"""Plan statuses that signal "this proposal's work is already in flight
+or shipped" — the dedupe filter excludes future proposals matching their
+fingerprint. `parked` is intentionally OUT (re-proposing makes sense),
+as is `dispatching` (transient sentinel — the next-step plan it claims
+will land at `in_progress` immediately). See issue #2."""
+
+
+def _proposed_fingerprints_in_use(root: Path | None = None) -> set[str]:
+    """Fingerprints of every plan whose work the cascade should not re-propose.
+
+    Walks every plan across every run (cheap — frontmatter only), keeping
+    those whose status is in `_DEDUPED_STATUSES` and which carry a
+    `proposer_fingerprint`. Hand-authored plans (no fingerprint) and
+    `parked` / `ready` plans don't contribute. Returning a set means
+    membership checks are O(1) inside the cascade hot path.
+    """
+    out: set[str] = set()
+    for plan in list_plans(root):
+        if plan.status not in _DEDUPED_STATUSES:
+            continue
+        fp = plan.proposer_fingerprint
+        if fp is not None:
+            out.add(fp)
+    return out
+
+
+def _dedupe_proposals(
+    proposals: list[Proposal], root: Path | None = None
+) -> list[Proposal]:
+    """Filter out proposals whose fingerprint matches a `done` /
+    `in_progress` / `blocked: approval` plan from any run.
+
+    Preserves the input ordering. Proposals without a fingerprint
+    (theoretically impossible — every Proposal has the property — but
+    defensive against future shape drift) are always kept.
+    """
+    blocked = _proposed_fingerprints_in_use(root)
+    if not blocked:
+        return proposals
+    return [p for p in proposals if p.fingerprint not in blocked]
+
+
 def pick_ideated(root: Path | None = None) -> Proposal | None:
     """Run the proposer suite and return an auto-PR-eligible proposal, if any.
 
@@ -382,8 +427,13 @@ def pick_ideated(root: Path | None = None) -> Proposal | None:
     execute autonomously and land as a real PR. If no, the cascade either
     falls through to `pick_ideated_fallback` (armed sessions) or to
     `nothing` (disarmed sessions).
+
+    Re-proposals are filtered out before the autonomy bar runs — a
+    proposal whose fingerprint matches a `done` plan from this or a
+    prior run is skipped (see issue #2 — `type_holes` re-detected the
+    same `Any` usages because nothing landed on `main`).
     """
-    proposals = run_proposers(root or repo_root())
+    proposals = _dedupe_proposals(run_proposers(root or repo_root()), root)
     return top_auto_pr(proposals)
 
 
@@ -396,8 +446,11 @@ def pick_ideated_fallback(root: Path | None = None) -> Proposal | None:
     into "ship the best idea, even if it's a local proposal branch
     rather than an auto-PR." The driver downgrades non-eligible
     proposals to a local proposal branch automatically.
+
+    Same dedupe as `pick_ideated`: a re-proposal of already-landed work
+    returns None instead of re-dispatching the duplicate.
     """
-    proposals = run_proposers(root or repo_root())
+    proposals = _dedupe_proposals(run_proposers(root or repo_root()), root)
     if not proposals:
         return None
     return proposals[0]  # already score-sorted desc by run_proposers

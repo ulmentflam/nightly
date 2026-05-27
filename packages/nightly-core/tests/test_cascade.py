@@ -653,3 +653,184 @@ def test_next_task_strict_ideate_outranks_fallback(
     choice = next_task(tmp_path)
     assert choice.source == "ideate"
     assert choice.score == 3.0  # strict path wins over higher-scoring fallback
+
+
+# ── proposal-fingerprint dedupe — issue #2 ────────────────────────────────
+
+
+def _stamp_fingerprint(plan_path: Path, fingerprint: str) -> None:
+    """Helper: rewrite a plan's frontmatter with a `proposer_fingerprint` entry."""
+    from nightly_core.plans import (
+        PROPOSER_FINGERPRINT_KEY,
+        read_plan,
+        render_frontmatter,
+    )
+
+    plan = read_plan(plan_path)
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = fingerprint
+    plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
+
+
+def test_pick_ideated_skips_proposal_whose_fingerprint_is_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original corpus-forge bug (issue #2): a proposal whose work
+    already landed as `done` in this run should not be re-proposed even
+    when the proposer re-detects the same source signal."""
+    run = start_run(tmp_path)
+    # Create a plan that recorded the proposal fingerprint and is `done`.
+    landed = new_task(run, slug="landed-task")
+    update_plan_status(landed.path / "plan.md", "done")
+    _stamp_fingerprint(landed.path / "plan.md", "lint_debt:lint_debt:src/a.py")
+
+    # The proposer keeps emitting the same proposal — fingerprint matches.
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+
+    assert pick_ideated(tmp_path) is None
+
+
+def test_pick_ideated_skips_in_progress_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-flight plan also blocks re-proposal — we don't want two
+    plans racing on the same source signal."""
+    run = start_run(tmp_path)
+    in_flight = new_task(run, slug="in-flight")
+    update_plan_status(in_flight.path / "plan.md", "in_progress")
+    _stamp_fingerprint(in_flight.path / "plan.md", "lint_debt:lint_debt:src/a.py")
+
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+
+    assert pick_ideated(tmp_path) is None
+
+
+def test_pick_ideated_skips_blocked_approval_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `blocked: approval` plan is also "the same work in motion" —
+    re-proposing it would create a competing duplicate."""
+    run = start_run(tmp_path)
+    blocked = new_task(run, slug="blocked")
+    update_plan_status(blocked.path / "plan.md", "blocked: approval")
+    _stamp_fingerprint(blocked.path / "plan.md", "lint_debt:lint_debt:src/a.py")
+
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+
+    assert pick_ideated(tmp_path) is None
+
+
+def test_pick_ideated_does_not_skip_parked_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `parked` plan is incomplete — re-proposing the same signal IS
+    desired (the proposal becomes the "pick this back up" hint)."""
+    run = start_run(tmp_path)
+    parked = new_task(run, slug="parked")
+    update_plan_status(parked.path / "plan.md", "parked")
+    _stamp_fingerprint(parked.path / "plan.md", "lint_debt:lint_debt:src/a.py")
+
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+
+    chosen = pick_ideated(tmp_path)
+    assert chosen is not None
+    assert chosen.title == "apply autofixable F401"
+
+
+def test_pick_ideated_returns_next_candidate_when_top_is_deduped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dedupe filter shouldn't *block* ideate — it should let the
+    second-ranked proposal through when the top one is a duplicate."""
+    run = start_run(tmp_path)
+    landed = new_task(run, slug="landed")
+    update_plan_status(landed.path / "plan.md", "done")
+    _stamp_fingerprint(landed.path / "plan.md", "lint_debt:lint_debt:src/a.py")
+
+    fresh = _eligible_proposal(score=2.0)
+    # Same proposer + category, but different scope file — fingerprint differs.
+    fresh = Proposal(
+        proposer=fresh.proposer,
+        category=fresh.category,
+        title="apply autofixable F401 in b.py",
+        body=fresh.body,
+        score=fresh.score,
+        file_scope=("src/b.py",),
+        estimated_loc=fresh.estimated_loc,
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0), fresh],
+    )
+
+    chosen = pick_ideated(tmp_path)
+    assert chosen is not None
+    assert chosen.title == "apply autofixable F401 in b.py"  # the un-deduped one
+
+
+def test_pick_ideated_fallback_also_dedupes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback step (armed sessions, no auto-PR-eligible work) must
+    apply the same dedupe — otherwise issue #2 still fires through the
+    fallback path even after we fix the strict step."""
+    _arm_session(tmp_path)
+    run = start_run(tmp_path)
+    landed = new_task(run, slug="landed-ineligible")
+    update_plan_status(landed.path / "plan.md", "done")
+    _stamp_fingerprint(landed.path / "plan.md", "todo_fixme:todo_audit:src/a.py")
+
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_ineligible_proposal(score=4.0)],
+    )
+
+    assert pick_ideated_fallback(tmp_path) is None
+
+
+def test_dedupe_ignores_plans_without_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hand-authored plans (no `proposer_fingerprint` field) shouldn't
+    accidentally block proposers — backwards compat for pre-fingerprint
+    runs and for tasks created via `nightly task`."""
+    run = start_run(tmp_path)
+    plain = new_task(run, slug="plain")
+    update_plan_status(plain.path / "plan.md", "done")
+    # NOT stamped with a fingerprint — frontmatter has no proposer_fingerprint key.
+
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+
+    assert pick_ideated(tmp_path) is not None
+
+
+def test_proposal_fingerprint_property() -> None:
+    """Lock the fingerprint shape — callers depend on the format."""
+    p = _eligible_proposal()
+    assert p.fingerprint == "lint_debt:lint_debt:src/a.py"
+
+    no_scope = Proposal(
+        proposer="x",
+        category="lint_debt",
+        title="No scope here",
+        body="",
+        score=1.0,
+        file_scope=(),
+    )
+    # Empty scope falls back to the slug — better than empty string.
+    assert no_scope.fingerprint == "x:lint_debt:no-scope-here"

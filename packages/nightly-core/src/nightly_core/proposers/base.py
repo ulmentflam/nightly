@@ -69,6 +69,27 @@ class Proposal:
         """Filesystem-safe slug derived from the title."""
         return slugify(self.title)
 
+    @property
+    def fingerprint(self) -> str:
+        """Stable identity used by the cascade to dedupe re-detected work.
+
+        Two proposals from the same proposer, targeting the same category
+        and primary scope file, refer to the same underlying signal —
+        even if the title or LOC count drifts as the source mutates.
+        Picked deliberately narrow (proposer + category + primary scope)
+        so the dedupe doesn't over-trigger: different files = different
+        fingerprints = both get proposed.
+
+        Empty `file_scope` falls back to the title slug — better than
+        nothing for proposers that don't carry scope yet (todo_audit
+        once it gains file context). Past failure (issue #2): without
+        this, `type_holes` re-detected the same `Any` usages in the same
+        file every cascade pass because the prior proposal's local
+        branch never reached `main`.
+        """
+        primary_scope = self.file_scope[0] if self.file_scope else self.slug
+        return f"{self.proposer}:{self.category}:{primary_scope}"
+
 
 class Proposer(ABC):
     """A proposer scans a repository and yields zero or more `Proposal`s."""

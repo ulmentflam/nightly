@@ -394,3 +394,34 @@ async def test_run_loop_stamps_cascade_source(tmp_path: Path) -> None:
     )
     assert len(outcomes) == 1
     assert outcomes[0].cascade_source == "resume_in_flight"
+
+
+# ── Fix 2: materialize_proposal_as_plan stamps the fingerprint ────────────
+
+
+def test_materialize_proposal_as_plan_writes_fingerprint(tmp_path: Path) -> None:
+    """When the driver materializes a proposal into a plan, the plan
+    must carry the proposal's fingerprint in its frontmatter — otherwise
+    the cascade dedupe (issue #2) has no signal to skip duplicates on
+    the next pass."""
+    from nightly_core.driver import _materialize_proposal_as_plan
+    from nightly_core.plans import PROPOSER_FINGERPRINT_KEY, read_plan
+    from nightly_core.proposers.base import Proposal
+
+    start_run(tmp_path)
+    proposal = Proposal(
+        proposer="lint_debt",
+        category="lint_debt",
+        title="Apply autofixable F401",
+        body="# body",
+        score=4.0,
+        file_scope=("src/x.py",),
+        estimated_loc=4,
+    )
+    plan = _materialize_proposal_as_plan(
+        root=tmp_path, proposal=proposal, source="ideate"
+    )
+    assert plan is not None
+    fresh = read_plan(plan.path)
+    assert fresh.metadata.get(PROPOSER_FINGERPRINT_KEY) == proposal.fingerprint
+    assert fresh.proposer_fingerprint == "lint_debt:lint_debt:src/x.py"

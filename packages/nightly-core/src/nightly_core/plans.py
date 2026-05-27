@@ -29,6 +29,7 @@ from nightly_core.paths import runs_dir
 
 __all__ = [
     "PLAN_STATUSES",
+    "PROPOSER_FINGERPRINT_KEY",
     "PR_LAST_RECONCILED_KEY",
     "PlanRecord",
     "PlanStatus",
@@ -45,6 +46,13 @@ PR_LAST_RECONCILED_KEY = "pr_last_reconciled_at"
 """Frontmatter key recording the most recent PR-feedback reconciliation.
 Used by the cascade's `pick_pr_rescue` to skip plans whose PR has had
 no new feedback since the timestamp."""
+
+PROPOSER_FINGERPRINT_KEY = "proposer_fingerprint"
+"""Frontmatter key recording the originating proposal's stable identity.
+Populated by the driver when a plan is materialized from `ideate` or
+`ideate_fallback`. The cascade dedupes future proposals by matching
+against this value — see `Proposal.fingerprint` (proposers/base.py) and
+issue #2 for the failure mode this addresses."""
 
 
 PlanStatus = Literal[
@@ -107,6 +115,18 @@ class PlanRecord:
     def approval_granted(self) -> bool:
         """True if a previously-blocked plan has had its approval recorded."""
         return self.metadata.get("approval_granted", "").lower() in {"true", "yes", "1"}
+
+    @property
+    def proposer_fingerprint(self) -> str | None:
+        """The proposal fingerprint that originated this plan, if any.
+
+        Hand-authored plans (created via `nightly task` rather than the
+        ideation cascade) leave this field empty — returning None lets
+        the cascade-dedupe filter treat them as "not from a proposer,
+        not eligible for dedupe."
+        """
+        value = self.metadata.get(PROPOSER_FINGERPRINT_KEY, "").strip()
+        return value or None
 
 
 # ── frontmatter parsing ───────────────────────────────────────────────────

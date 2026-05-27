@@ -319,17 +319,25 @@ def _materialize_proposal_as_plan(
     plan_path = task.path / "plan.md"
     plan = read_plan(plan_path)
     # Replace the placeholder body with the proposal content, prefixed
-    # with a one-line provenance note. Frontmatter is left intact.
+    # with a one-line provenance note. Stamp the proposal fingerprint
+    # into the frontmatter so the cascade can dedupe re-detected work
+    # next pass (issue #2).
     provenance = (
         f"_Proposal materialized from cascade source `{source}` — "
         f"proposer={proposal.proposer}, category={proposal.category}, "
         f"score={proposal.score:.2f}, estimated_loc={proposal.estimated_loc}._\n\n"
     )
     new_body = f"\n{provenance}{proposal.body.rstrip()}\n"
-    from nightly_core.plans import render_frontmatter  # noqa: PLC0415 - local
+    from nightly_core.plans import (  # noqa: PLC0415 - local
+        PROPOSER_FINGERPRINT_KEY,
+        render_frontmatter,
+    )
+
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = proposal.fingerprint
 
     plan_path.write_text(
-        render_frontmatter(plan.metadata, new_body),
+        render_frontmatter(metadata, new_body),
         encoding="utf-8",
     )
     return read_plan(plan_path)

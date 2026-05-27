@@ -173,3 +173,52 @@ def test_new_task_writes_frontmatter(tmp_path: Path) -> None:
     # Body still contains the human-readable sections
     assert "Add retry budget" in plan.body
     assert "Success criteria" in plan.body
+
+
+# ── proposer_fingerprint accessor — issue #2 ──────────────────────────────
+
+
+def test_plan_record_proposer_fingerprint_missing_returns_none(
+    tmp_path: Path,
+) -> None:
+    """Hand-authored plans have no `proposer_fingerprint` field — the
+    accessor must return None so the cascade-dedupe filter (issue #2)
+    treats them as ineligible for dedupe rather than crashing."""
+    run = start_run(tmp_path)
+    task = new_task(run, slug="hand-authored")
+    plan = read_plan(task.path / "plan.md")
+    assert plan.proposer_fingerprint is None
+
+
+def test_plan_record_proposer_fingerprint_present(tmp_path: Path) -> None:
+    """When `proposer_fingerprint` is in the frontmatter, surface it."""
+    from nightly_core.plans import PROPOSER_FINGERPRINT_KEY
+
+    run = start_run(tmp_path)
+    task = new_task(run, slug="from-proposer")
+    plan_path = task.path / "plan.md"
+    plan = read_plan(plan_path)
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = "lint_debt:lint_debt:src/x.py"
+    plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
+
+    fresh = read_plan(plan_path)
+    assert fresh.proposer_fingerprint == "lint_debt:lint_debt:src/x.py"
+
+
+def test_plan_record_proposer_fingerprint_empty_string_returns_none(
+    tmp_path: Path,
+) -> None:
+    """An empty-string fingerprint is equivalent to absent — be permissive
+    so a corrupted re-write doesn't accidentally dedupe every proposal."""
+    from nightly_core.plans import PROPOSER_FINGERPRINT_KEY
+
+    run = start_run(tmp_path)
+    task = new_task(run, slug="empty-fingerprint")
+    plan_path = task.path / "plan.md"
+    plan = read_plan(plan_path)
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = ""
+    plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
+
+    assert read_plan(plan_path).proposer_fingerprint is None
