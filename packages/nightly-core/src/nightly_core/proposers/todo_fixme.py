@@ -81,6 +81,18 @@ _IGNORED_DIRS = frozenset(
         "target",  # rust / java build dirs
         ".next",
         ".turbo",
+        # Host-internal worktree / cache dirs (dogfooding Issue #13).
+        # Claude Code's agent-isolation worktrees live under
+        # `.claude/worktrees/<agent-id>/`, each one a full duplicate
+        # of the repo. Scanning them double-counts every finding and
+        # leaks host plumbing into the proposer's output. The same
+        # applies to other hosts that mirror state into their dotdirs.
+        ".claude",
+        ".codex",
+        ".cursor",
+        ".gemini",
+        ".opencode",
+        ".nightly",
     }
 )
 

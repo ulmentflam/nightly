@@ -46,6 +46,16 @@ _IGNORED_DIRS = frozenset(
         ".pytest_cache",
         ".ruff_cache",
         ".pyrefly_cache",
+        # Host-internal worktree / cache dirs (dogfooding Issue #13).
+        # Claude Code's agent-isolation worktrees live under
+        # `.claude/worktrees/<id>/`, full repo duplicates; scanning
+        # them double-counts every finding. Same for other hosts.
+        ".claude",
+        ".codex",
+        ".cursor",
+        ".gemini",
+        ".opencode",
+        ".nightly",
     }
 )
 

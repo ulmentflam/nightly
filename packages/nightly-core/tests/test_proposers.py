@@ -272,3 +272,29 @@ def test_todo_proposer_skips_its_own_tests(tmp_path: Path) -> None:
     )
     proposals = list(TodoFixmeProposer().propose(tmp_path))
     assert proposals == []
+
+
+def test_todo_proposer_skips_host_internal_dirs(tmp_path: Path) -> None:
+    """Issue #13: Claude Code's agent-isolation worktrees live under
+    `.claude/worktrees/<id>/` and are full repo duplicates. Without
+    this skip, the proposer double-counts every finding across the
+    main tree and every leftover agent worktree."""
+    # Real code with a real TODO in the main tree
+    (tmp_path / "src.py").write_text("# TODO: real one\n", encoding="utf-8")
+    # Duplicate copy living under .claude/worktrees/
+    leftover = tmp_path / ".claude" / "worktrees" / "agent-1234"
+    leftover.mkdir(parents=True)
+    (leftover / "src.py").write_text(
+        "# TODO: would have been double-counted\n",
+        encoding="utf-8",
+    )
+    # Also test other host-internal dirs
+    (tmp_path / ".gemini" / "commands").mkdir(parents=True)
+    (tmp_path / ".gemini" / "commands" / "x.py").write_text(
+        "# TODO: gemini cache\n", encoding="utf-8"
+    )
+
+    proposals = list(TodoFixmeProposer().propose(tmp_path))
+    assert len(proposals) == 1
+    # The hit count should match the main tree only — 1 marker.
+    assert "1 TODO/FIXME" in proposals[0].title
