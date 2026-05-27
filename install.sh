@@ -136,12 +136,12 @@ cat <<EOF
 
 ${_b}${_g}Next steps:${_z}
 
-  ${_d}# initialize Nightly's Skill in the host you use${_z}
-  nightly init                  ${_d}# default = claude${_z}
-  nightly init --host codex     ${_d}# or codex / opencode / cursor / antigravity${_z}
+  ${_d}# install the host skill globally, then bootstrap each repo with /nightly-init${_z}
+  nightly init --scope user                       ${_d}# default host = claude${_z}
+  nightly init --host codex --scope user          ${_d}# or codex / opencode / cursor / antigravity / gemini${_z}
 
   ${_d}# explore${_z}
-  nightly --help                ${_d}# all 17 commands${_z}
+  nightly --help                ${_d}# full command surface${_z}
   nightly status                ${_d}# repo state, installed hosts, current run${_z}
 
 ${_b}Source:${_z}  $NIGHTLY_HOME

@@ -14,8 +14,9 @@ and degrades to placeholder copy when absent. The agent never authors the
 HTML directly — that's the Python template's job — so the briefing always
 has a consistent shape even if the agent's context compacts at drain.
 
-Phase 3+ extends with event-log replay, atlas deltas, and richer task
-metadata.
+Future extensions documented in the brainstorm: event-log replay,
+`.nightly/atlas/` deltas, and richer per-task metadata. The current
+template degrades cleanly when those slots are absent.
 """
 
 from __future__ import annotations

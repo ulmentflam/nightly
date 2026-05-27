@@ -11,7 +11,11 @@ Phase 2 ships the minimum needed for the interactive Skill loop:
 - `list_runs` returns all runs chronologically
 - `new_task` creates a per-task folder in the current run
 
-Phase 3+ will extend with rolling memory, atlas refresh, and event logging.
+`.nightly/memory/` and `.nightly/atlas/` are scaffolded by `nightly init`
+but not yet populated — rolling cross-session memory (e.g. `lessons.md`
+carryover) and a Devin-style per-repo wiki refreshed on cold start are
+documented in `.planning/brainstorm.html` §§"Memory is local" and "Steal
+01 · Wiki-as-memory" and remain on the roadmap.
 """
 
 from __future__ import annotations
