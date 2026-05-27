@@ -85,9 +85,13 @@ Do the following, in order, and **do not** pick up new cascade work:
 ## Off-ramps if `nightly-conclude` isn't what you wanted
 
 - For an **immediate hard stop** (don't wait for the current task to
-  drain), use `/nightly-stop` instead, or run `nightly stop` in the
-  shell. That writes a `STOP` sentinel; the next Stop-hook firing
-  allows the model to end its turn without starting new work.
+  drain), run `nightly stop` in the shell. That writes a `STOP`
+  sentinel; the next Stop-hook firing allows the model to end its
+  turn without starting new work. (There is no `/nightly-stop`
+  slash command — the shell verb is the canonical surface.)
+- For a **soft disarm** (don't end the turn, just stop force-
+  continuing the next time the agent naturally stops), run `nightly
+  session stop`. Less abrupt than `nightly stop`.
 - For an **emergency stop** (kills the session immediately, bypasses
   the hook), press Ctrl-C or use the host's `/quit` command. Always
   available.
@@ -126,8 +130,9 @@ following, in order:
    - Re-runs `uv sync` to update Python dependencies.
    - Walks the current repo and re-runs `nightly init` for every
      host already installed — refreshing SKILL.md, the Stop-hook
-     entry, the `/nightly-conclude` and `/nightly-update` skills,
-     and the AGENTS.md / CLAUDE.md rules block.
+     entry, all four companion skills (`/nightly-init`,
+     `/nightly-conclude`, `/nightly-update`, `/nightly-bug`), and
+     the AGENTS.md / CLAUDE.md rules block.
 2. **Report what changed.** The command prints a structured summary:
    - Source commit before / after (so the human sees the version
      bump).
@@ -206,11 +211,16 @@ Do the following, in order:
 ## Flags worth knowing
 
 - `nightly init --host codex` — install for a different host than the
-  default (claude).
-- `nightly init --scope user` — install at user-global scope instead
-  of project-local. Rarely what `/nightly-init` should do (the whole
-  point of this command is to bootstrap *this repo*), but mention it
-  if the operator asks how to install elsewhere.
+  default (claude). Valid hosts: `claude`, `codex`, `opencode`,
+  `cursor`, `antigravity`, `gemini`.
+- `nightly init --scope user` — **pure global install**: writes the
+  host skill files into the user-global skill directory
+  (`~/.claude/skills/`, `~/.gemini/commands/`, etc.) and exits
+  without touching the current repo. Does NOT create `.nightly/`,
+  write `config.yml`, or seed `AGENTS.md` / `CLAUDE.md`. This is the
+  install path the README's two-step recipe uses; `/nightly-init`
+  itself should keep the default `--scope project` so the current
+  repo gets bootstrapped.
 - `nightly init --no-rules` — skip seeding the AGENTS.md / CLAUDE.md
   block. Useful when the repo has its own conventions and the operator
   wants to merge the rules manually.

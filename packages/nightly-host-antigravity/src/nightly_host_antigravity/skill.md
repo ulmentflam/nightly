@@ -56,6 +56,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly next`                           | Walk the cascade; print the next task + rationale.        |
 | `nightly start "<seed>"`                 | Create a new run; optionally seed `tasks/0001-<slug>/`.   |
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
+| `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
