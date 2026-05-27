@@ -249,50 +249,91 @@ def _write_cache(result: UpdateCheckResult) -> None:
 
 
 def _fetch_latest_tag() -> str | None:
-    """Try `gh api` first, fall back to urllib; return the tag name or None.
+    """Probe GitHub for the latest version. Returns a tag name or None.
 
-    `gh` uses the operator's GitHub auth, which:
-    - Avoids the 60/hr anonymous rate limit.
-    - Works behind enterprise proxies that block raw github.com but
-      allow `gh` through.
+    Strategy chain (each step fails silent → next):
+    1. `gh api repos/<repo>/releases/latest` — uses operator's auth.
+    2. `gh api repos/<repo>/tags` (first entry) — tags-only fallback
+       for repos that ship git tags but no published Releases.
+    3. Anonymous urllib hit on `releases/latest`.
+    4. Anonymous urllib hit on `tags`.
 
-    The urllib fallback hits the public API anonymously — fine for
-    individual operators, less reliable for fleet usage.
+    The tags fallback exists because GitHub's `releases/latest`
+    endpoint returns 404 when a repo has git tags but no Releases
+    backing them. Forks/mirrors commonly ship tags-only; without
+    this fallback they'd silently never see update notices. Tags
+    are returned by the API in commit-date order so the first
+    entry is the newest tag — but we apply a stricter v-prefix
+    filter (the proposer wants release-shaped tags, not arbitrary
+    branches mirrored to refs/tags/*).
     """
     if shutil.which("gh") is not None:
-        try:
-            result = subprocess.run(
-                [
-                    "gh",
-                    "api",
-                    f"repos/{GITHUB_REPO}/releases/latest",
-                    "--jq",
-                    ".tag_name",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=_FETCH_TIMEOUT_SECONDS,
-            )
-            tag = result.stdout.strip()
-            if tag:
-                return tag
-        except (
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-            OSError,
-        ):
-            pass
+        # Try releases/latest first.
+        tag = _gh_api(f"repos/{GITHUB_REPO}/releases/latest", jq=".tag_name")
+        if tag:
+            return tag
+        # Then tags fallback — first release-shaped entry wins.
+        tags_raw = _gh_api(f"repos/{GITHUB_REPO}/tags", jq=".[].name")
+        if tags_raw:
+            for line in tags_raw.splitlines():
+                candidate = line.strip()
+                if candidate.startswith("v") and len(candidate) > 1:
+                    return candidate
 
+    # No gh, or gh failed both calls — try anonymous urllib paths.
+    latest = _urllib_get_json(f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
+    if isinstance(latest, dict):
+        tag = latest.get("tag_name")
+        if isinstance(tag, str) and tag:
+            return tag
+
+    tags = _urllib_get_json(f"https://api.github.com/repos/{GITHUB_REPO}/tags")
+    if isinstance(tags, list):
+        for entry in tags:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if isinstance(name, str) and name.startswith("v") and len(name) > 1:
+                return name
+
+    return None
+
+
+def _gh_api(path: str, *, jq: str | None = None) -> str | None:
+    """Invoke `gh api <path>` (optionally with --jq), return stdout or None.
+
+    Wraps `subprocess.run` with a uniform exception handler so the
+    fetcher chain stays readable.
+    """
+    argv = ["gh", "api", path]
+    if jq is not None:
+        argv += ["--jq", jq]
+    try:
+        result = subprocess.run(
+            argv,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+        return result.stdout.strip() or None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _urllib_get_json(url: str) -> object | None:
+    """GET `url`, parse the body as JSON, return the parsed object or None.
+
+    Best-effort: any network or parse error returns None. Used as the
+    anonymous-HTTP arm of the fetcher chain.
+    """
     try:
         req = urllib.request.Request(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            url,
             headers={"Accept": "application/vnd.github+json"},
         )
         with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
-            data = json.load(resp)
-            tag = data.get("tag_name")
-            return tag if isinstance(tag, str) and tag else None
+            return json.load(resp)
     except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError):
         return None
 

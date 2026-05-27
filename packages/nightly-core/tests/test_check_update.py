@@ -417,3 +417,91 @@ def test_cli_check_update_emits_recommendation_when_outdated(
     assert result.exit_code == 0
     assert "upgrade available" in result.stdout
     assert "/nightly-update" in result.stdout
+
+
+# ── tags-API fallback (releases/latest 404 → tags) ───────────────────────
+
+
+def test_fetch_latest_tag_falls_back_to_tags_when_no_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `releases/latest` returns nothing (404) but `tags` lists
+    release-shaped names, the fetcher picks the first `v…` tag.
+
+    Real-world trigger: forks that ship git tags but never publish
+    Releases. Or the canonical repo between tagging and creating the
+    Release (the window we hit during this very session)."""
+    monkeypatch.setattr(cu.shutil, "which", lambda name: "/usr/bin/gh" if name == "gh" else None)
+
+    calls: list[str] = []
+
+    def fake_gh_api(path: str, *, jq: str | None = None) -> str | None:
+        calls.append(path)
+        if "releases/latest" in path:
+            return None  # 404 / no release
+        if path.endswith("/tags"):
+            return "v0.7.0\nv0.6.0\nv0.5.0"
+        return None
+
+    monkeypatch.setattr(cu, "_gh_api", fake_gh_api)
+    assert cu._fetch_latest_tag() == "v0.7.0"
+    # Both endpoints consulted in order.
+    assert any("releases/latest" in c for c in calls)
+    assert any(c.endswith("/tags") for c in calls)
+
+
+def test_fetch_latest_tag_tags_fallback_skips_non_release_shaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tags that don't start with `v` (branches mirrored to refs/tags/*,
+    arbitrary release-track names) are skipped. The first v-prefixed
+    entry wins."""
+    monkeypatch.setattr(cu.shutil, "which", lambda name: "/usr/bin/gh" if name == "gh" else None)
+
+    def fake_gh_api(path: str, *, jq: str | None = None) -> str | None:
+        if "releases/latest" in path:
+            return None
+        if path.endswith("/tags"):
+            # First two are noise; third is the release tag we want.
+            return "experimental\nmain-mirror\nv0.0.1"
+        return None
+
+    monkeypatch.setattr(cu, "_gh_api", fake_gh_api)
+    assert cu._fetch_latest_tag() == "v0.0.1"
+
+
+def test_fetch_latest_tag_urllib_falls_back_to_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When gh is absent AND releases/latest urllib returns no data
+    (or returns a dict without tag_name), the tags-via-urllib path
+    still resolves a value."""
+    monkeypatch.setattr(cu.shutil, "which", lambda _: None)  # no gh
+
+    calls: list[str] = []
+
+    def fake_urllib_get_json(url: str) -> object | None:
+        calls.append(url)
+        if "releases/latest" in url:
+            return None  # API 404 / network error
+        if url.endswith("/tags"):
+            return [
+                {"name": "experimental"},
+                {"name": "v0.9.0"},
+                {"name": "v0.8.0"},
+            ]
+        return None
+
+    monkeypatch.setattr(cu, "_urllib_get_json", fake_urllib_get_json)
+    assert cu._fetch_latest_tag() == "v0.9.0"
+    assert len(calls) == 2  # both endpoints tried
+
+
+def test_fetch_latest_tag_returns_none_when_tags_also_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No release AND no v-shaped tags AND no urllib data → None."""
+    monkeypatch.setattr(cu.shutil, "which", lambda name: "/usr/bin/gh" if name == "gh" else None)
+    monkeypatch.setattr(cu, "_gh_api", lambda _path, *, jq=None: None)
+    monkeypatch.setattr(cu, "_urllib_get_json", lambda _url: None)
+    assert cu._fetch_latest_tag() is None
