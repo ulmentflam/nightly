@@ -1,0 +1,240 @@
+# On `v*` tag push: compute the tarball's SHA-256 and bump both
+# Nightly's source-of-truth Formula (`packaging/distribution/nightly.rb`)
+# AND the deployed Formula in `ulmentflam/homebrew-tap`. Two commits,
+# two repos, one workflow.
+#
+# Prerequisites:
+#   - `HOMEBREW_TAP_TOKEN` secret (fine-grained PAT, scoped to
+#     ulmentflam/homebrew-tap with `contents: write`). Required to push
+#     the Formula bump to the tap. Configure under Settings → Secrets →
+#     Actions.
+#   - The default `GITHUB_TOKEN` is used for the same-repo bump
+#     (requires `contents: write` permission below).
+#
+# Usage:
+#   git tag v0.0.1
+#   git push --tags
+#   # …workflow runs automatically. Two minutes later both formulas
+#   # carry the new url + sha256, and `brew upgrade nightly` works.
+#
+# Manual dispatch (recovery):
+#   gh workflow run release-bump-tap.yml -f tag=v0.0.1
+#
+# Inspiration: corpus-forge's release flow lives in homebrew-tap's
+# direct-commit history (`corpus-forge v0.1.0bN` commits). This
+# workflow automates the same shape.
+
+name: Release → bump tap
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to bump (e.g. v0.0.1). Must already exist on origin."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  # Serialize bumps so two simultaneous tag pushes don't race the same
+  # Formula file. The group is per-tag, not per-ref, because manual
+  # dispatch and `push:tags` can fire on the same ref.
+  group: bump-tap-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump nightly + homebrew-tap to ${{ github.event.inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target tag
+        id: tag
+        run: |
+          # `push:tags` populates github.ref_name (e.g. "v0.0.1"); manual
+          # dispatch passes it via inputs. Sanity-check the shape.
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$tag" =~ ^v[0-9] ]]; then
+            echo "::error::Tag '$tag' doesn't look like a release tag (expected v<number>…)."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Target tag: $tag"
+
+      - name: Check out Nightly (the just-tagged ref)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # Need a token that can push back to nightly main for the
+          # source-of-truth Formula bump. GITHUB_TOKEN suffices because
+          # both repos are owned by the workflow's repo.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Fetch full history so we can push back to main.
+          fetch-depth: 0
+
+      - name: Compute tarball SHA-256
+        id: tarball
+        run: |
+          # GitHub's archive endpoint produces a deterministic tarball
+          # for a tagged commit — same bytes on every download.
+          # `shasum` is BSD/macOS-style; ubuntu-latest has it too.
+          tag="${{ steps.tag.outputs.tag }}"
+          url="https://github.com/${{ github.repository }}/archive/refs/tags/${tag}.tar.gz"
+          echo "Downloading $url"
+          curl -fsSL -o release.tar.gz "$url"
+          sha256=$(shasum -a 256 release.tar.gz | awk '{print $1}')
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Tarball SHA-256: $sha256"
+
+      - name: Bump source-of-truth Formula in Nightly
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          URL: ${{ steps.tarball.outputs.url }}
+          SHA: ${{ steps.tarball.outputs.sha256 }}
+        run: |
+          formula="packaging/distribution/nightly.rb"
+          if [[ ! -f "$formula" ]]; then
+            echo "::error::$formula not found at tag $TAG."
+            exit 1
+          fi
+          # Replace the `url "…"` and `sha256 "…"` lines. Match the
+          # whole `url` line by anchoring on the leading `  url`
+          # (two-space indent, Ruby Formula convention).
+          python3 - "$formula" <<'PY'
+          import re, sys
+          import os
+          path = sys.argv[1]
+          tag = os.environ["TAG"]
+          url = os.environ["URL"]
+          sha = os.environ["SHA"]
+          text = open(path, encoding="utf-8").read()
+          text = re.sub(
+              r'^( {2}url\s+)"[^"]*"',
+              rf'\1"{url}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          text = re.sub(
+              r'^( {2}sha256\s+)"[^"]*"',
+              rf'\1"{sha}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          open(path, "w", encoding="utf-8").write(text)
+          print(f"Bumped {path} to {tag} (sha256={sha[:12]}…)")
+          PY
+
+      - name: Check out main, replay the bump, push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The previous checkout was at the tag (detached HEAD). To
+          # push the bump to `main`, we need to fast-forward main and
+          # cherry-apply the modified formula. Easiest: stash the
+          # modified file, switch to main, restore, commit, push.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp packaging/distribution/nightly.rb /tmp/nightly.rb.bumped
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          cp /tmp/nightly.rb.bumped packaging/distribution/nightly.rb
+          if git diff --quiet packaging/distribution/nightly.rb; then
+            echo "Formula on main already matches the bump — nothing to commit."
+          else
+            git add packaging/distribution/nightly.rb
+            git commit -m "chore(release): bump Formula to ${TAG} [skip ci]" \
+              -m "Updates packaging/distribution/nightly.rb with the tag tarball's url + sha256." \
+              -m "Auto-generated by .github/workflows/release-bump-tap.yml on tag push."
+            git push origin main
+          fi
+
+      - name: Check out homebrew-tap
+        uses: actions/checkout@v5
+        with:
+          repository: ulmentflam/homebrew-tap
+          # Fine-grained PAT scoped to the tap repo with contents:write.
+          # See the file header for setup instructions.
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          fetch-depth: 0
+
+      - name: Bump deployed Formula in homebrew-tap
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          URL: ${{ steps.tarball.outputs.url }}
+          SHA: ${{ steps.tarball.outputs.sha256 }}
+        run: |
+          cd tap
+          formula="Formula/nightly.rb"
+          if [[ ! -f "$formula" ]]; then
+            echo "::error::$formula not found in tap. Did you run the initial bootstrap commit?"
+            exit 1
+          fi
+          python3 - "$formula" <<'PY'
+          import re, sys
+          import os
+          path = sys.argv[1]
+          tag = os.environ["TAG"]
+          url = os.environ["URL"]
+          sha = os.environ["SHA"]
+          text = open(path, encoding="utf-8").read()
+          text = re.sub(
+              r'^( {2}url\s+)"[^"]*"',
+              rf'\1"{url}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          text = re.sub(
+              r'^( {2}sha256\s+)"[^"]*"',
+              rf'\1"{sha}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          open(path, "w", encoding="utf-8").write(text)
+          print(f"Bumped {path} to {tag} (sha256={sha[:12]}…)")
+          PY
+
+          # Match the existing tap's commit style ("corpus-forge v0.1.0bN")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet Formula/nightly.rb; then
+            echo "Formula already at $TAG — nothing to push."
+          else
+            git add Formula/nightly.rb
+            git commit -m "nightly ${TAG}"
+            git push origin main
+          fi
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          SHA: ${{ steps.tarball.outputs.sha256 }}
+        run: |
+          {
+            echo "## Bumped to ${TAG}"
+            echo ""
+            echo "**SHA-256:** \`${SHA}\`"
+            echo ""
+            echo "**Updated:**"
+            echo "- \`ulmentflam/nightly\` ← \`packaging/distribution/nightly.rb\`"
+            echo "- \`ulmentflam/homebrew-tap\` ← \`Formula/nightly.rb\`"
+            echo ""
+            echo "Operators can now run:"
+            echo ""
+            echo "\`\`\`bash"
+            echo "brew upgrade nightly"
+            echo "# or, for a fresh install:"
+            echo "brew install ulmentflam/tap/nightly"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
