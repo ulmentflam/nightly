@@ -53,9 +53,12 @@ def test_skill_md_points_at_on_disk_state() -> None:
         assert path in SKILL_MD, f"skill should reference {path}"
 
 
-def test_skill_md_marks_current_phase_boundaries() -> None:
-    # Skill should always declare its current phase and what's still pending.
-    assert "Phase" in SKILL_MD
+def test_skill_md_declares_what_is_still_pending() -> None:
+    # Skill should always carry a "Not yet" section so the agent knows
+    # which features are deferred (native UI approval prompts, outer
+    # container sandbox, etc.). Used to also assert `"Phase" in SKILL_MD`
+    # but per dogfood Issue #3 the phase-number references were removed
+    # — the section header (`Not yet`) is the durable contract.
     assert "Not yet" in SKILL_MD
 
 

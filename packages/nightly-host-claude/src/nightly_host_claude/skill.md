@@ -1,6 +1,6 @@
 ---
 name: nightly
-description: Run Nightly inside Claude Code — pick the next task from the priority cascade (resumed plans, unblocked tasks, accepted RFCs, ranked GitHub issues), execute on an isolated worktree, delegate to specialist sub-agents via the Task tool, land as a PR or local proposal, disclose uncertainty, render briefing. Phase 3 — autonomous-for-a-bounded-backlog.
+description: Run Nightly inside Claude Code — pick the next task from the priority cascade (resumed plans, unblocked tasks, accepted RFCs, ranked GitHub issues), execute on an isolated worktree, delegate to specialist sub-agents via the Task tool, land as a PR or local proposal, disclose uncertainty, render briefing.
 ---
 
 # Nightly — Claude Code host
@@ -184,7 +184,16 @@ skeleton). Fill in:
   the scope-creep refusal category)
 - Known risks and uncertainties up front
 
-Set `status: in_progress` in the plan's frontmatter.
+Set `status: in_progress` in the plan's frontmatter (`nightly task
+<slug> --status in_progress` is the one-liner; or edit the YAML
+directly).
+
+**Note on seed tasks:** `nightly start "<seed>"` creates a plan at
+status `ready`, not `in_progress` — the cascade's `pick_in_flight`
+step matches `in_progress` only, so a freshly-seeded task is not
+auto-picked on the next `nightly next`. When the operator gives you
+a seed, your first move is to read it and transition `ready →
+in_progress`. The cascade only takes over on follow-up.
 
 ### 2. ISOLATE — open a worktree
 
@@ -194,6 +203,15 @@ git worktree add ../nightly-<slug>-<short-ts> -b nightly/<slug>-<short-ts>
 
 Work only inside the worktree. Never modify the user's primary worktree.
 Never push to `main` / `master` / `release/*`.
+
+**Audit-only / read-only task carveout.** Some `ideate_fallback` picks
+(e.g. `todo_audit` proposals) produce only a markdown deliverable —
+the work is reading sources and writing `proposal.md`. For these:
+*skip the worktree*, do the reads + writes inside
+`.nightly/runs/<id>/tasks/<n>-<slug>/` directly, and document the
+choice in `notes.md`. Worktree isolation buys nothing when the diff
+is zero. The mandate above applies to *code-modifying* tasks; an
+audit that writes only to its own task dir doesn't qualify.
 
 ### 3. IMPLEMENT — dispatch the implementer specialist
 
@@ -207,16 +225,25 @@ nightly specialist implementer
 Pass it the worktree path and the relevant slice of `plan.md`. The
 implementer returns a unified diff and a one-paragraph report.
 
+**Audit-only carveout (same as step 2).** When the task produces no
+code — only an audit report, a research summary, or a documentation
+deliverable — do the work inline rather than dispatching a sub-agent.
+Sub-agent dispatch adds 3–5× latency that buys nothing when the
+deliverable is a markdown file in the task's own directory. Note the
+inline choice in `notes.md`.
+
 ### 4. TEST — dispatch the tester specialist
 
 Same pattern with `nightly specialist tester`. The tester writes or
 updates tests for the implementer's diff and confirms they pass.
+**Audit-only tasks skip this step** — there's no diff to test.
 
 ### 5. REVIEW — dispatch the reviewer specialist
 
 `nightly specialist reviewer` (read-only). Returns LGTM / Needs-changes /
 Disclose. Apply Needs-changes through the implementer; move Disclose items
-into `uncertainty.md`.
+into `uncertainty.md`. **Audit-only tasks skip this step** — the
+audit *is* the review.
 
 ### 6. LAND — open PR or write proposal.md
 
@@ -347,16 +374,39 @@ WIP commits to `nightly/wip-<run-id>/<slug>` with a structured
 and `nightly brief`. **Never SIGKILL. Never abandon mid-task. Never
 self-invoke conclude.**
 
-## Not yet (Phase 6+)
+### Operator caps that conflict with the hook
 
-The following are stubs in Phase 5 and arrive in later phases:
-- **PR rescue** (cascade step in the brainstorm) — re-finishing
-  Nightly-authored PRs with red CI or maintainer review comments. Phase 6.
+The operator's invocation args may contain a hard cap that the hook
+can't see — e.g. `/nightly cap at one task, render the briefing and
+stop`. The hook will force-continue at the next turn boundary because
+the cascade still has work; the operator-given cap doesn't write
+anything to disk that the hook reads.
+
+When this happens:
+1. Do the capped work.
+2. Write narrative + `nightly brief`.
+3. End your turn cleanly.
+4. The hook will force-continue once or twice; treat each
+   force-continue as "the operator already told me the cap — restate
+   the cap to the operator briefly and end the turn again." Don't
+   start new work, don't deliberate. The cap is the contract.
+5. Eventually the operator will run `nightly conclude` or `nightly
+   stop` themselves (or hit Ctrl-C). That's the documented off-ramp;
+   you must not invoke it yourself.
+
+If the cap arrived as part of the dogfood / debug-Nightly intent,
+surface the friction this creates as part of your briefing's
+"Friction caught" section. The hook + operator-cap conflict is a
+known gap in the contract (dogfooding Issue #12); the right
+long-term fix is operator-side, not agent-side.
+
+## Not yet
+
+The following remain future work:
 - **More proposers** — dep upgrades (uv lockfile diff), coverage gaps
-  (needs a coverage loader), doc-vs-code drift (needs a parser). Phase 5
-  ships TODO/FIXME, lint debt (ruff), and `Any` type holes; the
-  framework accepts more.
-- **Cursor + Antigravity host integrations** — Phase 6 secondary hosts.
+  (needs a coverage loader), doc-vs-code drift (needs a parser). The
+  framework accepts more; `todo_fixme`, `lint_debt`, and `type_holes`
+  ship today.
 - **Native UI approval prompts** through the host — for now all refusals
-  go to disk for retro review.
-- **Multi-task parallelism** with concurrent worktrees. Phase 8.
+  go to disk for retro review at `proposed/approvals/<id>.md`.
+- **Outer container sandbox** for hosts without OS-level isolation.

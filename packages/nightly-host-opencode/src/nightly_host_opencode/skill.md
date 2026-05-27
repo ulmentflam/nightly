@@ -1,6 +1,6 @@
 ---
 name: nightly
-description: Run Nightly inside opencode — pick the next task from the priority cascade, execute on an isolated worktree, delegate to specialist sub-agents by forking sessions over opencode's HTTP/SSE API, land as a PR or local proposal, disclose uncertainty, render briefing. Phase 4 — opencode is a primary host alongside Claude Code and Codex.
+description: Run Nightly inside opencode — pick the next task from the priority cascade, execute on an isolated worktree, delegate to specialist sub-agents by forking sessions over opencode's HTTP/SSE API, land as a PR or local proposal, disclose uncertainty, render briefing.
 ---
 
 # Nightly — opencode host
@@ -86,7 +86,7 @@ All durable state lives on disk:
 
 ## The priority cascade
 
-Same as Claude Code's Phase 3 — call `nightly next` at the top of every
+Same as Claude Code's cascade — call `nightly next` at the top of every
 iteration:
 
 1. **resume_in_flight** — any plan with `status: in_progress`.
@@ -148,10 +148,10 @@ plumbing needed beyond an `httpx-sse` client.
 
 opencode has no equivalent of Codex's Seatbelt/Landlock. The agent
 relies on the refusal policy (below) and the outer worktree boundary for
-safety. When Nightly's outer container support lands (Phase 7), the
-container will provide the missing filesystem/network jail. Until then,
-trust the refusal policy and keep destructive operations out of the
-allowed-tools list.
+safety. When Nightly's outer container support lands, the container
+will provide the missing filesystem/network jail. Until then, trust the
+refusal policy and keep destructive operations out of the allowed-tools
+list.
 
 ## Status updates as the lifecycle runs
 
@@ -178,6 +178,20 @@ For each task the cascade hands you:
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.
 8. **STATUS** — `status: done` in plan frontmatter.
 9. **NEXT** — `nightly next` again.
+
+### Carveouts
+
+- **Seed tasks land at status `ready`, not `in_progress`** — the
+  cascade's `pick_in_flight` matches `in_progress` only, so a freshly-
+  seeded plan from `nightly start "<seed>"` is not auto-picked. When
+  the operator gives you a seed, your first move is `ready →
+  in_progress` (`nightly task <slug> --status in_progress`) so the
+  next `nightly next` resumes it.
+- **Audit-only / read-only tasks skip steps 2–5.** Some
+  `ideate_fallback` picks (e.g. `todo_audit`) produce only a markdown
+  deliverable. Do the reads + writes inside the task dir directly,
+  no worktree, no specialist fork. Worktree isolation buys nothing
+  when the diff is zero. Document the inline choice in `notes.md`.
 
 ## Refusal policy
 
@@ -221,12 +235,21 @@ Then `nightly brief`.
 If the user says "conclude," runs `nightly conclude`, or you find
 `.nightly/runs/<run-id>/CONCLUDE` on disk, finish the current task only.
 Write narrative, render briefing, exit. Never SIGKILL. Never abandon
-mid-task.
+mid-task. **You never invoke `nightly conclude` / `nightly stop` /
+`nightly bug` yourself** — those are operator off-ramps.
 
-## Not yet (Phase 5+)
+### Operator caps that conflict with the hook
 
-- **Ideation** — the proposer suite for empty-backlog runs (Phase 5).
-- **Cursor + Antigravity host integrations** (Phase 6).
-- **Outer container sandbox** for hosts without OS-level isolation (Phase 7).
-- **Native UI approval prompts** through opencode (Phase 5+).
-- **Multi-task parallelism** with concurrent worktrees (Phase 8).
+The operator's invocation args may contain a hard cap the hook can't
+see (e.g. "cap at one task, render the briefing and stop"). Honor
+the operator's cap: do the capped work, brief, end your turn. The
+hook re-fires once or twice — restate the cap each time and end
+again. Eventually the operator runs `nightly conclude` / `nightly
+stop` themselves. The agent never self-disarms — operator-side
+off-ramp only.
+
+## Not yet
+
+- **Outer container sandbox** for hosts without OS-level isolation.
+- **Native UI approval prompts** through opencode — for now refusals go
+  to disk at `proposed/approvals/<id>.md` for retro review.

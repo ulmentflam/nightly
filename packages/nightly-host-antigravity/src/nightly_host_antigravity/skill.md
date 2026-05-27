@@ -1,6 +1,6 @@
 ---
 name: nightly
-description: Run Nightly inside Google Antigravity — pick the next task from the priority cascade, execute on an isolated worktree, delegate to sub-agents via Antigravity's Agent Manager, mirror per-task artifacts into brain/<GUID>/ so the Agent Manager UI shows familiar walkthroughs, land as a PR or local proposal, disclose uncertainty, render briefing. Phase 6 — Antigravity is a secondary host alongside Claude Code, Codex, opencode, and Cursor.
+description: Run Nightly inside Google Antigravity — pick the next task from the priority cascade, execute on an isolated worktree, delegate to sub-agents via Antigravity's Agent Manager, mirror per-task artifacts into brain/<GUID>/ so the Agent Manager UI shows familiar walkthroughs, land as a PR or local proposal, disclose uncertainty, render briefing.
 ---
 
 # Nightly — Antigravity host
@@ -129,8 +129,8 @@ In Antigravity, that prompt is the `instructions` field of the managed
 agent registration. The Agent Manager handles scheduling, context
 isolation, and result collection.
 
-For Phase 6, dispatch is documented intent — exercise it through the
-Antigravity Agent Manager UI; the on-disk contract
+Agent Manager dispatch is currently documented intent — exercise it
+through the Antigravity Agent Manager UI; the on-disk contract
 (`<run>/tasks/<n>-<slug>/`) is identical either way.
 
 ## Antigravity-specific: brain/<GUID>/ mirroring
@@ -139,21 +139,21 @@ Antigravity stores its per-agent runtime artifacts under
 `~/.gemini/antigravity/brain/<GUID>/`. The Agent Manager UI reads from
 that path to show walkthroughs, diffs, and progress.
 
-For Phase 6, Nightly's pattern is to:
+Nightly's pattern is to:
 1. Keep Nightly's canonical state in `.nightly/runs/<run-id>/tasks/<n>-<slug>/`.
-2. When a sub-agent dispatch lands (Phase 7+), symlink (or copy) the
-   task folder into `~/.gemini/antigravity/brain/<dispatch-GUID>/`.
+2. When a sub-agent dispatch lands, symlink (or copy) the task folder
+   into `~/.gemini/antigravity/brain/<dispatch-GUID>/`.
 
 The mirroring is the bridge between Nightly's hosted-agnostic on-disk
-contract and Antigravity's native UI. Phase 6 documents this; Phase 7
-wires it.
+contract and Antigravity's native UI — the skill documents it; the
+Python wiring still goes through the Agent Manager UI.
 
 ## Antigravity-specific: no OS sandbox today
 
 Antigravity has no equivalent of Codex's Seatbelt/Landlock. The agent
 relies on the refusal policy and the outer worktree boundary for safety.
-When Nightly's outer container support lands (Phase 7), the container
-will provide the missing jail.
+When Nightly's outer container support lands, the container will provide
+the missing jail.
 
 ## Status updates as the lifecycle runs
 
@@ -180,6 +180,21 @@ For each task the cascade hands you:
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.
 8. **STATUS** — `status: done` in plan frontmatter.
 9. **NEXT** — `nightly next` again.
+
+### Carveouts
+
+- **Seed tasks land at status `ready`, not `in_progress`** — the
+  cascade's `pick_in_flight` matches `in_progress` only, so a freshly-
+  seeded plan from `nightly start "<seed>"` is not auto-picked. When
+  the operator gives you a seed, your first move is `ready →
+  in_progress` (`nightly task <slug> --status in_progress`) so the
+  next `nightly next` resumes it.
+- **Audit-only / read-only tasks skip steps 2–5.** Some
+  `ideate_fallback` picks (e.g. `todo_audit`) produce only a markdown
+  deliverable. Do the reads + writes inside the task dir directly,
+  no worktree, no Agent Manager registration. Managed-agent ceremony
+  buys nothing when the diff is zero. Document the inline choice in
+  `notes.md`.
 
 ## Refusal policy
 
@@ -222,13 +237,26 @@ Then `nightly brief`.
 If the user says "conclude," runs `nightly conclude`, or you find
 `.nightly/runs/<run-id>/CONCLUDE` on disk, finish the current task only.
 Write narrative, render briefing, exit. Never SIGKILL. Never abandon
-mid-task.
+mid-task. **You never invoke `nightly conclude` / `nightly stop` /
+`nightly bug` yourself** — those are operator off-ramps.
 
-## Not yet (Phase 7+)
+### Operator caps that conflict with the hook
+
+The operator's invocation args may contain a hard cap the hook can't
+see (e.g. "cap at one task, render the briefing and stop"). Honor
+the operator's cap: do the capped work, brief, end your turn. The
+`AfterAgent` hook re-fires once or twice — restate the cap each
+time and end again. Eventually the operator runs `nightly conclude`
+/ `nightly stop` themselves. The agent never self-disarms —
+operator-side off-ramp only.
+
+## Not yet
 
 - **Real Agent Manager dispatch from Nightly's Python core** — the
-  Antigravity API integration; Phase 6 documents the pattern, Phase 7
-  wires it.
-- **`brain/<GUID>/` mirroring** — Phase 7.
-- **Outer container sandbox** for the no-OS-sandbox path (Phase 7).
-- **Multi-task parallelism** with concurrent managed agents (Phase 8).
+  Antigravity API integration. The skill documents the pattern; the
+  Python wiring still goes through the Agent Manager UI.
+- **`brain/<GUID>/` mirroring** — same status: documented, not yet
+  wired from core.
+- **Native UI approval prompts** through Antigravity — for now refusals
+  go to disk at `proposed/approvals/<id>.md` for retro review.
+- **Outer container sandbox** for the no-OS-sandbox path.

@@ -1,6 +1,6 @@
 ---
 name: nightly
-description: Run Nightly inside Google Gemini CLI — pick the next task from the priority cascade, execute on an isolated worktree, delegate to specialists via `gemini run` sub-processes, land as a PR or local proposal, disclose uncertainty, render briefing. Phase 6 — Gemini CLI is a secondary host alongside Claude Code, Codex, opencode, Cursor, and Antigravity.
+description: Run Nightly inside Google Gemini CLI — pick the next task from the priority cascade, execute on an isolated worktree, delegate to specialists via `gemini run` sub-processes, land as a PR or local proposal, disclose uncertainty, render briefing.
 ---
 
 # Nightly — Gemini CLI host
@@ -107,9 +107,9 @@ Each sub-process has its own context window. Collect the result (diff,
 test output, review notes) and feed it back into the current session's
 `tasks/<n>-<slug>/`.
 
-For Phase 6, dispatch is documented intent — exercise it through the
-host directly; the on-disk contract (`<run>/tasks/<n>-<slug>/`) is
-identical either way.
+Headless dispatch from the Python core is currently documented intent —
+exercise it through the host directly; the on-disk contract
+(`<run>/tasks/<n>-<slug>/`) is identical either way.
 
 ## Status updates as the lifecycle runs
 
@@ -131,6 +131,20 @@ Update `plan.md` frontmatter as you transition between phases:
 7. **DISCLOSE** — write `uncertainty.md`.
 8. **STATUS** — `status: done`.
 9. **NEXT** — `nightly next` again.
+
+### Carveouts
+
+- **Seed tasks land at status `ready`, not `in_progress`** — the
+  cascade's `pick_in_flight` matches `in_progress` only, so a freshly-
+  seeded plan from `nightly start "<seed>"` is not auto-picked. When
+  the operator gives you a seed, your first move is `ready →
+  in_progress` (`nightly task <slug> --status in_progress`) so the
+  next `nightly next` resumes it.
+- **Audit-only / read-only tasks skip steps 2–5.** Some
+  `ideate_fallback` picks (e.g. `todo_audit`) produce only a markdown
+  deliverable. Do the reads + writes inside the task dir directly,
+  no worktree, no sub-process. Sub-spawn ceremony buys nothing when
+  the diff is zero. Document the inline choice in `notes.md`.
 
 ## Refusal policy
 
@@ -167,9 +181,24 @@ Then `nightly brief`.
 If the user runs `nightly conclude` or you find
 `.nightly/runs/<run-id>/CONCLUDE` on disk, finish the current task
 only. Write narrative, render briefing, exit. Never SIGKILL. Never abandon mid-task.
+**You never invoke `nightly conclude` / `nightly stop` / `nightly bug`
+yourself** — those are operator off-ramps.
 
-## Not yet (Phase 7+)
+### Operator caps that conflict with the hook
 
-- Real headless dispatch from Nightly's Python core (Phase 7).
-- Outer container sandbox for the no-OS-sandbox path (Phase 7).
-- Multi-task parallelism with concurrent sub-processes (Phase 8).
+The operator's invocation args may contain a hard cap the hook can't
+see (e.g. "cap at one task, render the briefing and stop"). Honor
+the operator's cap: do the capped work, brief, end your turn. The
+`AfterAgent` hook re-fires once or twice — restate the cap each
+time and end again. Eventually the operator runs `nightly conclude`
+/ `nightly stop` themselves. The agent never self-disarms —
+operator-side off-ramp only.
+
+## Not yet
+
+- Real headless dispatch from Nightly's Python core — the skill
+  documents the `gemini --prompt` pattern; the Python wiring still
+  goes through the host directly.
+- Native UI approval prompts through Gemini CLI — for now refusals go
+  to disk at `proposed/approvals/<id>.md` for retro review.
+- Outer container sandbox for the no-OS-sandbox path.

@@ -1,6 +1,6 @@
 ---
 name: nightly
-description: Run Nightly inside Cursor — pick the next task from the priority cascade, execute on an isolated worktree, delegate specialist sub-agents to Cursor Background Agents (cloud VMs) or inline, land as a PR or local proposal, disclose uncertainty, render briefing. Phase 6 — Cursor is a secondary host alongside Claude Code, Codex, and opencode.
+description: Run Nightly inside Cursor — pick the next task from the priority cascade, execute on an isolated worktree, delegate specialist sub-agents to Cursor Background Agents (cloud VMs) or inline, land as a PR or local proposal, disclose uncertainty, render briefing.
 ---
 
 # Nightly — Cursor host
@@ -134,9 +134,9 @@ nightly specialist <role>
 ```
 
 Either path ends with a unified diff applied to the worktree, plus a
-short report. Phase 6 leaves the Background Agent integration as
-documented intent — exercise it through the Cursor UI; the on-disk
-contract (`<run>/tasks/<n>-<slug>/`) is identical either way.
+short report. Background Agent integration is currently documented
+intent — exercise it through the Cursor UI; the on-disk contract
+(`<run>/tasks/<n>-<slug>/`) is identical either way.
 
 ## Cursor-specific: lifecycle shape
 
@@ -151,9 +151,9 @@ remote*. That means:
 - The branch-and-PR model is closest to Nightly's deliverable model out
   of any host — Cursor naturally produces branch + PR per agent run.
 
-For Phase 6, treat dispatch as synchronous (wait inline) until the cross-
-host parallelism support lands; the queue semantics are documented for
-when you're ready to use them.
+Treat dispatch as synchronous (wait inline) until the cross-host
+parallelism support lands; the queue semantics are documented for when
+you're ready to use them.
 
 ## Cursor-specific: no OS sandbox locally, isolated VMs for cloud
 
@@ -188,6 +188,21 @@ For each task the cascade hands you:
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.
 8. **STATUS** — `status: done` in plan frontmatter.
 9. **NEXT** — `nightly next` again.
+
+### Carveouts
+
+- **Seed tasks land at status `ready`, not `in_progress`** — the
+  cascade's `pick_in_flight` matches `in_progress` only, so a freshly-
+  seeded plan from `nightly start "<seed>"` is not auto-picked. When
+  the operator gives you a seed, your first move is `ready →
+  in_progress` (`nightly task <slug> --status in_progress`) so the
+  next `nightly next` resumes it.
+- **Audit-only / read-only tasks skip steps 2–5.** Some
+  `ideate_fallback` picks (e.g. `todo_audit`) produce only a markdown
+  deliverable. Do the reads + writes inside the task dir directly,
+  no worktree, no Background Agent. Worktree + cloud-VM ceremony
+  buys nothing when the diff is zero. Document the inline choice in
+  `notes.md`.
 
 ## Refusal policy
 
@@ -231,13 +246,25 @@ Then `nightly brief`.
 If the user says "conclude," runs `nightly conclude`, or you find
 `.nightly/runs/<run-id>/CONCLUDE` on disk, finish the current task only.
 Write narrative, render briefing, exit. Never SIGKILL. Never abandon
-mid-task.
+mid-task. **You never invoke `nightly conclude` / `nightly stop` /
+`nightly bug` yourself** — those are operator off-ramps.
 
-## Not yet (Phase 7+)
+### Operator caps that conflict with the hook
+
+The operator's invocation args may contain a hard cap the hook can't
+see (e.g. "cap at one task, render the briefing and stop"). Honor
+the operator's cap: do the capped work, brief, end your turn. The
+hook re-fires once or twice — restate the cap each time and end
+again. Eventually the operator runs `nightly conclude` / `nightly
+stop` themselves. The agent never self-disarms — operator-side
+off-ramp only.
+
+## Not yet
 
 - **Real Background Agent dispatch from Nightly's Python core** — the
-  Cursor REST API integration; Phase 6 documents the pattern, Phase 7
-  wires it.
-- **Multi-task parallelism via concurrent Background Agents** (Phase 8).
-- **Native UI approval prompts** through Cursor.
-- **Outer container sandbox** for the local-agent path (Phase 7).
+  Cursor REST API integration. The skill documents the pattern; the
+  Python wiring still goes through the Cursor UI.
+- **Native UI approval prompts** through Cursor — for now refusals go
+  to disk at `proposed/approvals/<id>.md` for retro review.
+- **Outer container sandbox** for the local-agent path (Background
+  Agents already run in isolated VMs).
