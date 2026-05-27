@@ -21,9 +21,7 @@ def test_detect_empty_repo_returns_nothing(tmp_path: Path) -> None:
 
 
 def test_detect_pyproject_ruff_picks_up_two_checks(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.ruff]\nline-length = 100\n", encoding="utf-8"
-    )
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n", encoding="utf-8")
     names = {c.name for c in detect_checks(tmp_path)}
     assert "ruff-check" in names
     assert "ruff-format" in names
@@ -57,9 +55,7 @@ def test_detect_go_mod_adds_gofmt_and_vet(tmp_path: Path) -> None:
 
 
 def test_detect_cargo_toml_adds_fmt_and_clippy(tmp_path: Path) -> None:
-    (tmp_path / "Cargo.toml").write_text(
-        '[package]\nname = "foo"\n', encoding="utf-8"
-    )
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "foo"\n', encoding="utf-8")
     names = {c.name for c in detect_checks(tmp_path)}
     assert "cargo-fmt" in names
     assert "cargo-clippy" in names
@@ -163,9 +159,7 @@ def test_gofmt_treats_nonempty_stdout_as_failure(
 def test_run_verify_only_filter_narrows_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.ruff]\n[tool.mypy]\n", encoding="utf-8"
-    )
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n[tool.mypy]\n", encoding="utf-8")
     monkeypatch.setattr("nightly_core.verify.shutil.which", lambda _: "/x")
     monkeypatch.setattr(
         "nightly_core.verify.subprocess.run",
@@ -175,9 +169,7 @@ def test_run_verify_only_filter_narrows_run(
     assert {c.name for c in report.checks} == {"mypy"}
 
 
-def test_run_verify_handles_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_verify_handles_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n", encoding="utf-8")
     monkeypatch.setattr("nightly_core.verify.shutil.which", lambda _: "/usr/bin/ruff")
 

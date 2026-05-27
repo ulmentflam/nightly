@@ -665,9 +665,7 @@ def test_next_task_skips_fallback_when_disarmed(
     assert choice.source == "nothing"
 
 
-def test_next_task_honors_conclude_marker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_next_task_honors_conclude_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Bug fix: when CONCLUDE is present, the cascade must NOT hand out new
     work — even when in-flight plans or ideate proposals exist."""
     run = start_run(tmp_path)

@@ -115,7 +115,7 @@ def build_report(
     else:
         sections.append(
             "## Operator summary\n\n"
-            "_No summary supplied — re-run with `--describe \"…\"` to add one._\n"
+            '_No summary supplied — re-run with `--describe "…"` to add one._\n'
         )
     sections.append(_render_markers_section(run))
     sections.append(_render_keepalive_log_section(run))
@@ -289,16 +289,9 @@ def _render_keepalive_log_section(run) -> str:
     truncated_note = ""
     if len(lines) > _MAX_LOG_LINES:
         truncated_note = (
-            f"\n_(showing last {_MAX_LOG_LINES} of {len(lines)} lines — "
-            f"full log at `{log}`)_\n"
+            f"\n_(showing last {_MAX_LOG_LINES} of {len(lines)} lines — full log at `{log}`)_\n"
         )
-    return (
-        "## Keepalive log\n\n"
-        f"{truncated_note}"
-        "```\n"
-        + "\n".join(tail)
-        + "\n```\n"
-    )
+    return f"## Keepalive log\n\n{truncated_note}```\n" + "\n".join(tail) + "\n```\n"
 
 
 def _render_plans_section(root: Path) -> str:
@@ -362,12 +355,8 @@ def _render_git_section(root: Path) -> str:
     status = _run_subprocess(["git", "status", "--short", "--branch"], cwd=root)
     return (
         "## Git\n\n"
-        "### Recent commits\n\n```\n"
-        + log
-        + "\n```\n\n"
-        "### Working tree\n\n```\n"
-        + status
-        + "\n```\n"
+        "### Recent commits\n\n```\n" + log + "\n```\n\n"
+        "### Working tree\n\n```\n" + status + "\n```\n"
     )
 
 
@@ -376,10 +365,7 @@ def _render_environment_section(root: Path) -> str:
     if rules_block is None:
         return "## Rules block (AGENTS.md / CLAUDE.md)\n\n_No marker-delimited block found._\n"
     return (
-        "## Rules block (AGENTS.md / CLAUDE.md)\n\n"
-        "```markdown\n"
-        + rules_block.rstrip()
-        + "\n```\n"
+        "## Rules block (AGENTS.md / CLAUDE.md)\n\n```markdown\n" + rules_block.rstrip() + "\n```\n"
     )
 
 

@@ -73,10 +73,7 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
             "Nightly task with `nightly task <slug>`. Start work this turn — "
             "do not write a separate plan-of-plans first."
         ),
-        applies_when=(
-            "`.planning/` exists and contains files the recent runs did not "
-            "reference."
-        ),
+        applies_when=("`.planning/` exists and contains files the recent runs did not reference."),
     ),
     KeepaliveStrategy(
         name="mine_uncertainty",
@@ -131,8 +128,7 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
             "PR + comment URL, and start executing this turn."
         ),
         applies_when=(
-            "A GitHub remote exists and Nightly has authored merged or "
-            "closed PRs in the past."
+            "A GitHub remote exists and Nightly has authored merged or closed PRs in the past."
         ),
     ),
     KeepaliveStrategy(

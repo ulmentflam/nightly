@@ -222,7 +222,10 @@ def merge_cursor_hook(hook: CursorHookFile) -> bool:
         settings = read_settings(hook.path)
     except json.JSONDecodeError:
         return False
-    if find_cursor_hook_index(settings, event_name=hook.event_name, command=hook.command) is not None:
+    if (
+        find_cursor_hook_index(settings, event_name=hook.event_name, command=hook.command)
+        is not None
+    ):
         return False
     # Cursor's hooks.json declares a top-level `version: 1` per the docs.
     # We preserve any existing version, default to 1 when absent.
