@@ -1,14 +1,20 @@
 # Nightly
 
+[![CI](https://github.com/ulmentflam/nightly/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ulmentflam/nightly/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 > A continuously-running, host-native coding agent. Picks tasks from the
 > backlog, opens isolated branches, dispatches specialist sub-agents, and
 > lands review-shaped changes by morning.
 
 Nightly is a Python-implemented orchestrator that runs *inside* the
 coding-agent CLI you already use — Claude Code, Codex, opencode, Cursor,
-or Google Antigravity — and turns it into a self-directed, drainable
-session that resumes plans across runs, dispatches specialists in
-parallel, and surfaces draft work to humans for review.
+Google Antigravity, or vanilla Gemini CLI — and turns it into a
+self-directed, drainable session that resumes plans across runs,
+dispatches specialists in parallel, and surfaces draft work to humans
+for review.
 
 **Status:** all eight planned phases implemented. The full design lives
 in [`.planning/brainstorm.html`](.planning/brainstorm.html); the README
