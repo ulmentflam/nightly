@@ -68,9 +68,7 @@ async def test_install_writes_toml_command_at_project_scope(
 
 
 @pytest.mark.asyncio
-async def test_install_is_idempotent(
-    integration: GeminiHostIntegration, project: Path
-) -> None:
+async def test_install_is_idempotent(integration: GeminiHostIntegration, project: Path) -> None:
     await integration.install("project")
     target = integration.skill_path("project")
     first = target.read_text(encoding="utf-8")
@@ -257,9 +255,7 @@ async def test_install_writes_companion_skills(
 
 
 @pytest.mark.asyncio
-async def test_init_skill_installed_flag(
-    integration: GeminiHostIntegration, project: Path
-) -> None:
+async def test_init_skill_installed_flag(integration: GeminiHostIntegration, project: Path) -> None:
     assert not integration.is_init_installed("project")
     await integration.install("project")
     assert integration.is_init_installed("project")

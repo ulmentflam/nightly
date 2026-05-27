@@ -346,11 +346,7 @@ def _run_one(check: VerifyCheck, *, cwd: Path, timeout: float) -> VerifyCheck:
     combined = _truncate((result.stdout or "") + (result.stderr or ""))
     # gofmt -l succeeds with non-empty output when files need formatting.
     # Convention: any non-empty stdout = failure.
-    if (
-        check.name == "gofmt"
-        and result.returncode == 0
-        and (result.stdout or "").strip()
-    ):
+    if check.name == "gofmt" and result.returncode == 0 and (result.stdout or "").strip():
         return VerifyCheck(
             name=check.name,
             description=check.description,
@@ -384,9 +380,7 @@ def run_verify(
     the run to just those checks; pass None to run them all.
     """
     detected = detect_checks(root)
-    selected = (
-        [c for c in detected if c.name in set(only)] if only is not None else detected
-    )
+    selected = [c for c in detected if c.name in set(only)] if only is not None else detected
     if dry_run:
         return VerifyReport(checks=tuple(selected), dry_run=True)
 

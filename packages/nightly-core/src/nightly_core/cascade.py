@@ -390,9 +390,7 @@ def pick_pr_rescue(
     return candidates[0]
 
 
-_DEDUPED_STATUSES: frozenset[str] = frozenset(
-    {"done", "in_progress", "blocked: approval"}
-)
+_DEDUPED_STATUSES: frozenset[str] = frozenset({"done", "in_progress", "blocked: approval"})
 """Plan statuses that signal "this proposal's work is already in flight
 or shipped" — the dedupe filter excludes future proposals matching their
 fingerprint. `parked` is intentionally OUT (re-proposing makes sense),
@@ -419,9 +417,7 @@ def _proposed_fingerprints_in_use(root: Path | None = None) -> set[str]:
     return out
 
 
-def _dedupe_proposals(
-    proposals: list[Proposal], root: Path | None = None
-) -> list[Proposal]:
+def _dedupe_proposals(proposals: list[Proposal], root: Path | None = None) -> list[Proposal]:
     """Filter out proposals whose fingerprint matches a `done` /
     `in_progress` / `blocked: approval` plan from any run.
 

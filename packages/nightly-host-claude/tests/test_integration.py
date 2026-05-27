@@ -433,7 +433,10 @@ async def test_install_claude_writes_init_skill(
 
 @pytest.mark.asyncio
 async def test_install_claude_writes_init_skill_at_user_scope(
-    integration: ClaudeHostIntegration, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    integration: ClaudeHostIntegration,
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """User-scope install is the primary use case for /nightly-init —
     install once globally, drop into any repo, type the command to

@@ -38,9 +38,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from nightly_core.config import load_git_config
 from nightly_core.contract import HostId, InstallScope, NightlyHostIntegration
 from nightly_core.paths import nightly_dir
 from nightly_core.rules import seed_rules
+from nightly_core.worktree import is_icloud_path
 
 __all__ = [
     "DEFAULT_NIGHTLY_SUBDIRS",
@@ -64,9 +66,16 @@ hosts:
   - claude
 
 git:
+  base_branch:   main
   branch_prefix: nightly/
   wip_prefix:    nightly/wip-
   protected:     [main, master, "release/*"]
+  # Where per-task worktrees are placed. Leave unset to nest them under a
+  # sibling `<repo>-nightly/` dir. Set an absolute/`~` path to keep trees off a
+  # synced filesystem — REQUIRED on macOS if this repo lives in iCloud Drive
+  # (~/Documents, ~/Desktop), where FileProvider silently corrupts git state.
+  # Nightly auto-relocates to ~/.cache/nightly/worktrees if it detects iCloud.
+  # worktree_root: ~/.cache/nightly/worktrees
 
 refuse:
   destructive_git:        true
@@ -89,7 +98,7 @@ pr_feedback:
 """
 
 
-CheckStatus = Literal["ok", "repaired", "missing", "skipped", "error"]
+CheckStatus = Literal["ok", "repaired", "missing", "skipped", "error", "warning"]
 
 
 @dataclass(frozen=True)
@@ -180,6 +189,38 @@ def _check_config(root: Path, *, dry_run: bool) -> DoctorCheck:
         description=".nightly/config.yml",
         status="repaired",
         detail="wrote default config",
+    )
+
+
+def _check_worktree_location(root: Path) -> DoctorCheck:
+    """Warn (non-fatally) when the repo sits under iCloud/FileProvider sync.
+
+    Worktrees default to a sibling `<repo>-nightly/`, so an iCloud repo means
+    iCloud worktrees — where `fileproviderd` silently corrupts git state.
+    Nightly auto-relocates to `~/.cache/nightly/worktrees` at runtime, but
+    pinning `git.worktree_root` to a non-synced path is clearer. This is purely
+    diagnostic (no repair), so it never writes and never fails the run; off
+    macOS / non-iCloud repos report `ok`.
+    """
+    name, desc = "worktree_location", "worktree location"
+    if not is_icloud_path(root):
+        return DoctorCheck(name=name, description=desc, status="ok")
+    git_cfg = load_git_config(root)
+    if git_cfg.worktree_root and not is_icloud_path(Path(git_cfg.worktree_root).expanduser()):
+        return DoctorCheck(
+            name=name,
+            description=desc,
+            status="ok",
+            detail=f"repo under iCloud; worktrees pinned to {git_cfg.worktree_root}",
+        )
+    return DoctorCheck(
+        name=name,
+        description=desc,
+        status="warning",
+        detail=(
+            "repo under iCloud Drive — set git.worktree_root to a non-synced path "
+            "(meanwhile Nightly auto-relocates worktrees to ~/.cache/nightly/worktrees)"
+        ),
     )
 
 
@@ -384,6 +425,7 @@ def diagnose_and_repair(
     checks: list[DoctorCheck] = []
     checks.append(_check_nightly_scaffold(root, dry_run=dry_run))
     checks.append(_check_config(root, dry_run=dry_run))
+    checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))
 
     for host_id, loader in loaders.items():
@@ -400,8 +442,6 @@ def diagnose_and_repair(
             )
             continue
         force = host_id in extra_set
-        checks.append(
-            _check_host(host_id, integration, scope=scope, dry_run=dry_run, force=force)
-        )
+        checks.append(_check_host(host_id, integration, scope=scope, dry_run=dry_run, force=force))
 
     return DoctorReport(checks=tuple(checks), dry_run=dry_run)

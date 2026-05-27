@@ -56,6 +56,7 @@ from nightly_core.bug import write_report as write_bug_report
 from nightly_core.cascade import next_task as cascade_next
 from nightly_core.cascade import pick_pr_rescue
 from nightly_core.ci_watch import PRCIStatus, list_ci_status
+from nightly_core.config import load_git_config
 from nightly_core.contract import (
     HostId,
     InstallScope,
@@ -113,9 +114,16 @@ hosts:
   - claude
 
 git:
+  base_branch:   main
   branch_prefix: nightly/
   wip_prefix:    nightly/wip-
   protected:     [main, master, "release/*"]
+  # Where per-task worktrees are placed. Leave unset to nest them under a
+  # sibling `<repo>-nightly/` dir. Set an absolute/`~` path to keep trees off a
+  # synced filesystem — REQUIRED on macOS if this repo lives in iCloud Drive
+  # (~/Documents, ~/Desktop), where FileProvider silently corrupts git state.
+  # Nightly auto-relocates to ~/.cache/nightly/worktrees if it detects iCloud.
+  # worktree_root: ~/.cache/nightly/worktrees
 
 refuse:
   destructive_git:        true
@@ -727,11 +735,15 @@ def run(
     """
     root = repo_root()
     integration = _load_host(host, root=root)
+    git_cfg = load_git_config(root)
     cfg = DriverConfig(
         host_id=host,
         max_tasks=max_tasks,
         concurrency=max(1, concurrency),
         timeout_per_task_s=timeout_per_task,
+        base_branch=git_cfg.base_branch,
+        branch_prefix=git_cfg.branch_prefix,
+        worktree_root=git_cfg.worktree_root,
     )
 
     outcomes = asyncio.run(run_loop(root=root, host=integration, config=cfg))
@@ -906,7 +918,7 @@ def feedback(
                 locator += f":{f.line_ref}"
         head = f.body.splitlines()[0] if f.body else ""
         if len(head) > _TRIAGE_TITLE_MAX:
-            head = head[: _TRIAGE_TITLE_ELIDE_AT] + "..."
+            head = head[:_TRIAGE_TITLE_ELIDE_AT] + "..."
         typer.echo(f"{flag}{f.kind:<15} {who:<28}{locator}")
         typer.echo(f"   {head}")
 
@@ -919,8 +931,7 @@ def feedback(
         if plan is None:
             typer.echo("", err=True)
             typer.echo(
-                f"✗ could not match branch '{target}' to a plan — "
-                "feedback not appended.",
+                f"✗ could not match branch '{target}' to a plan — feedback not appended.",
                 err=True,
             )
             raise typer.Exit(code=1)
@@ -959,7 +970,7 @@ def rescue() -> None:
         who = f"{f.author_login}{'  [bot]' if f.author_is_bot else ''}"
         head = f.body.splitlines()[0] if f.body else ""
         if len(head) > _TRIAGE_TITLE_MAX:
-            head = head[: _TRIAGE_TITLE_ELIDE_AT] + "..."
+            head = head[:_TRIAGE_TITLE_ELIDE_AT] + "..."
         typer.echo(f"{flag}{f.kind:<15} {who:<28}  {head}")
 
 
@@ -1169,9 +1180,7 @@ def update_cmd(
 
 def _print_update_report(report: UpdateReport) -> None:
     if report.method.is_git:
-        source = (
-            str(report.method.root) if report.method.root is not None else "(unknown)"
-        )
+        source = str(report.method.root) if report.method.root is not None else "(unknown)"
         typer.echo(f"source:   {source}")
     else:
         typer.echo(f"source:   {report.method.kind}")
@@ -1504,6 +1513,7 @@ def _print_doctor_report(report: DoctorReport, *, root: Path) -> None:
         "missing": "✗ miss",
         "skipped": "·",
         "error": "✗ err",
+        "warning": "⚠ warn",
     }
     for c in report.checks:
         mark = glyph.get(c.status, c.status)

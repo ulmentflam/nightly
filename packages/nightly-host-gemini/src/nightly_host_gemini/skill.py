@@ -43,7 +43,7 @@ def md_to_gemini_toml(md_text: str) -> str:
     if '"""' in body:
         msg = (
             "Skill body contains a triple-quoted string literal — Gemini CLI "
-            "TOML emit would break. Edit the skill markdown to avoid `\"\"\"`."
+            'TOML emit would break. Edit the skill markdown to avoid `"""`.'
         )
         raise ValueError(msg)
     escaped_desc = description.replace("\\", "\\\\").replace('"', '\\"')

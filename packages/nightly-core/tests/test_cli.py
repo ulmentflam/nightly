@@ -922,9 +922,7 @@ def _make_feedback_item(**overrides):
     return base.model_copy(update=overrides)
 
 
-def test_feedback_command_prints_when_no_items(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_feedback_command_prints_when_no_items(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nightly_core.cli._current_branch", lambda _root: "nightly/foo")
     monkeypatch.setattr("nightly_core.cli.fetch_feedback", lambda *_a, **_kw: [])
     result = runner.invoke(app, ["feedback"])
@@ -976,9 +974,7 @@ def test_feedback_command_explicit_branch_skips_git(
     assert captured["branch"] == "nightly/explicit"
 
 
-def test_feedback_command_fails_without_branch(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_feedback_command_fails_without_branch(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nightly_core.cli._current_branch", lambda _root: None)
     result = runner.invoke(app, ["feedback"])
     assert result.exit_code == 1
@@ -992,9 +988,7 @@ def test_rescue_command_no_candidate(repo: Path, monkeypatch: pytest.MonkeyPatch
     assert "no PR rescue candidate" in result.output
 
 
-def test_rescue_command_prints_candidate(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rescue_command_prints_candidate(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from nightly_core.cascade import PRRescueCandidate
 
     candidate = PRRescueCandidate(

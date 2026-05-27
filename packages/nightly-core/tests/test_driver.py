@@ -132,7 +132,9 @@ def test_build_task_prompt_fallback_says_no_pr(tmp_path: Path) -> None:
 
     prompt = build_task_prompt(plan, task.path, cascade_choice=choice)
     assert "LOCAL PROPOSAL" in prompt or "no PR" in prompt.lower()
-    assert "do **not** open a pull request" in prompt.lower() or "do not open a pr" in prompt.lower()
+    assert (
+        "do **not** open a pull request" in prompt.lower() or "do not open a pr" in prompt.lower()
+    )
     # Strict-ideate prompt (no choice) should NOT carry the downgrade
     strict_prompt = build_task_prompt(plan, task.path)
     assert "LOCAL PROPOSAL" not in strict_prompt
@@ -418,9 +420,7 @@ def test_materialize_proposal_as_plan_writes_fingerprint(tmp_path: Path) -> None
         file_scope=("src/x.py",),
         estimated_loc=4,
     )
-    plan = _materialize_proposal_as_plan(
-        root=tmp_path, proposal=proposal, source="ideate"
-    )
+    plan = _materialize_proposal_as_plan(root=tmp_path, proposal=proposal, source="ideate")
     assert plan is not None
     fresh = read_plan(plan.path)
     assert fresh.metadata.get(PROPOSER_FINGERPRINT_KEY) == proposal.fingerprint

@@ -65,9 +65,7 @@ def test_fetch_pr_checks_returns_empty_when_gh_missing(
     assert fetch_pr_checks("nightly/x", root=tmp_path) == ()
 
 
-def test_fetch_pr_checks_parses_gh_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_pr_checks_parses_gh_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nightly_core.ci_watch.shutil.which", lambda _: "/usr/bin/gh")
     fake_stdout = (
         '[{"name":"lint","state":"SUCCESS","bucket":"pass",'

@@ -369,9 +369,7 @@ def _record_and_count_repeats(run_path: Path, fingerprint: str) -> int:
     history_path = run_path / LOOP_HISTORY_FILENAME
     try:
         prior = (
-            history_path.read_text(encoding="utf-8").splitlines()
-            if history_path.is_file()
-            else []
+            history_path.read_text(encoding="utf-8").splitlines() if history_path.is_file() else []
         )
     except OSError:
         prior = []

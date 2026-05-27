@@ -615,9 +615,7 @@ def test_hook_stop_cli_honors_stop_hook_active(
     arm_session(initialized_repo)
     runner = CliRunner()
     # Force `sys.stdin.isatty()` to False inside hook_stop so it reads our payload.
-    monkeypatch.setattr(
-        "sys.stdin", io.StringIO('{"stop_hook_active": true, "session_id": "abc"}')
-    )
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"stop_hook_active": true, "session_id": "abc"}'))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
     result = runner.invoke(app, ["hook", "stop"], input='{"stop_hook_active": true}')
     assert result.exit_code == 0, result.output

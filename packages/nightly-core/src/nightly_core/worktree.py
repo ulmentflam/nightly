@@ -11,7 +11,11 @@ spawn git (they're shells with arguments + cwds we can capture).
 from __future__ import annotations
 
 import contextlib
+import logging
+import os
+import platform
 import shutil
+import subprocess
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,10 +26,12 @@ __all__ = [
     "WorktreeHandle",
     "create_worktree",
     "default_git_runner",
+    "is_icloud_path",
     "list_worktrees",
     "remove_worktree",
 ]
 
+_log = logging.getLogger(__name__)
 
 DEFAULT_BRANCH_PREFIX = "nightly/"
 
@@ -80,17 +86,141 @@ def _branch_name(slug: str, *, prefix: str, now: datetime | None = None) -> str:
     return f"{prefix}{slug}-{ts}"
 
 
-def _worktree_path(root: Path, branch: str) -> Path:
-    """Nest worktrees under a sibling ``<repo>-nightly/`` directory.
+def _worktree_path(base: Path, branch: str) -> Path:
+    """Compose the worktree path ``<base>/<leaf>``.
 
-    Keeps the workspace root uncluttered: repo ``corpus-forge`` puts its
-    worktrees in ``../corpus-forge-nightly/<leaf>``. The branch's first path
-    segment (the ``nightly/`` prefix) names the parent dir, so strip it from
-    the leaf to avoid a redundant ``nightly-`` echo.
+    ``base`` is the already-resolved parent directory (see
+    `_resolve_worktree_base`). The branch's first path segment (the ``nightly/``
+    prefix) names that parent dir, so strip it from the leaf to avoid a
+    redundant ``nightly-`` echo, and flatten any remaining slashes
+    (``nightly/fix/x`` → ``fix-x``).
     """
     _, _, leaf = branch.partition("/")
     safe = (leaf or branch).replace("/", "-")
-    return (root.parent / f"{root.name}-nightly" / safe).resolve()
+    return base / safe
+
+
+async def _main_worktree_root(root: Path, run: GitRunner) -> Path:
+    """Resolve the canonical *main* worktree root for ``root``.
+
+    ``git rev-parse --git-common-dir`` returns the shared ``.git`` directory —
+    the main worktree's, even when called from inside a linked worktree — so its
+    parent is the repo we should hang ``<repo>-nightly/`` off of. Without this,
+    running Nightly from inside a worktree would nest new trees off the worktree
+    instead of the repo.
+
+    Falls back to ``root`` whenever git is unavailable or the output isn't a
+    usable ``.git`` directory (bare repos, separate gitdirs, mock runners), so
+    callers always get a real directory.
+    """
+    try:
+        stdout, _, exit_code = await run(
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], root
+        )
+    except Exception:  # any git failure → safe fallback to `root`
+        return root
+    if exit_code != 0:
+        return root
+    common = stdout.decode("utf-8", errors="replace").strip()
+    return _main_root_from_common(root, common)
+
+
+def _main_root_from_common(root: Path, common: str) -> Path:
+    """Turn a ``git rev-parse --git-common-dir`` string into the main worktree.
+
+    Split out (sync) from `_main_worktree_root` so the path math — which touches
+    the filesystem via ``.resolve()`` — stays out of the async body.
+    """
+    if not common:
+        return root
+    git_dir = Path(common)
+    if not git_dir.is_absolute():
+        git_dir = (root / git_dir).resolve()
+    return git_dir.parent if git_dir.name == ".git" else root
+
+
+def _cloud_docs_mount_active() -> bool:
+    """True if an iCloud/CloudDocs FileProvider mount is currently active."""
+    try:
+        out = subprocess.run(  # fixed argv, no shell
+            ["mount"], capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    haystack = out.stdout.lower()
+    return "fileprovider" in haystack or "clouddocs" in haystack
+
+
+def is_icloud_path(p: Path) -> bool:
+    """Best-effort: is ``p`` under macOS iCloud Drive / FileProvider sync?
+
+    On macOS, ``fileproviderd`` silently reverts shell ``mv``/``rm``/``git mv``
+    and leaves dataless ``.icloud`` placeholders, which corrupts git worktrees.
+
+    The reliable signal is a realpath under ``~/Library/Mobile Documents/``
+    (iCloud Drive's backing store) or a ``com~apple~CloudDocs`` path component.
+    ``~/Documents`` and ``~/Desktop`` are *also* exposed when "Desktop &
+    Documents Folders" sync is on, but that's only detectable at runtime via an
+    active CloudDocs FileProvider mount, so it's a secondary heuristic. Always
+    ``False`` off macOS.
+    """
+    if platform.system() != "Darwin":
+        return False
+    try:
+        real = Path(os.path.realpath(p))
+    except OSError:
+        real = p
+    text = str(real)
+    if "/Library/Mobile Documents/" in text or "com~apple~CloudDocs" in text:
+        return True
+    home = Path.home()
+    synced = (home / "Documents", home / "Desktop")
+    if any(real == d or d in real.parents for d in synced):
+        return _cloud_docs_mount_active()
+    return False
+
+
+def _non_synced_fallback(repo_name: str) -> Path:
+    """A worktree base guaranteed off iCloud: ``$XDG_CACHE_HOME/nightly/worktrees/<repo>``."""
+    base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
+    return (Path(base).expanduser() / "nightly" / "worktrees" / repo_name).resolve()
+
+
+def _select_base(main: Path, worktree_root: str | None) -> Path:
+    """Pick the parent dir for new worktrees, relocating off iCloud if needed.
+
+    Precedence: explicit ``worktree_root`` config → default sibling
+    ``<repo>-nightly/``. Either way, if the result lands under iCloud sync we
+    warn and relocate to a non-synced fallback so tasks (and the host's session
+    spawned there) never run on a filesystem that corrupts git state. Sync (no
+    awaits) so its filesystem-touching path math stays out of the async caller.
+    """
+    if worktree_root:
+        base = (Path(worktree_root).expanduser() / main.name).resolve()
+    else:
+        base = (main.parent / f"{main.name}-nightly").resolve()
+    if is_icloud_path(base):
+        fallback = _non_synced_fallback(main.name)
+        _log.warning(
+            "worktree base %s is under iCloud/FileProvider sync; relocating to %s "
+            "to avoid silent corruption. Set git.worktree_root to a non-synced path "
+            "to silence this.",
+            base,
+            fallback,
+        )
+        base = fallback
+    return base
+
+
+async def _resolve_worktree_base(
+    root: Path,
+    *,
+    worktree_root: str | None,
+    run: GitRunner,
+) -> Path:
+    """Resolve the worktree parent dir: find the main repo, then `_select_base`."""
+    main = await _main_worktree_root(root, run)
+    return _select_base(main, worktree_root)
 
 
 async def create_worktree(  # noqa: PLR0913 - all params are real config dimensions
@@ -99,17 +229,20 @@ async def create_worktree(  # noqa: PLR0913 - all params are real config dimensi
     *,
     base_branch: str = "main",
     branch_prefix: str = DEFAULT_BRANCH_PREFIX,
+    worktree_root: str | None = None,
     runner: GitRunner | None = None,
     now: datetime | None = None,
 ) -> WorktreeHandle:
     """Create a new isolated worktree for `slug`.
 
     Spawns `git worktree add <path> -b <branch> <base>`. The base branch
-    must already exist on the repo at `root`.
+    must already exist on the repo at `root`. Placement is decided by
+    `_resolve_worktree_base` (config-overridable, iCloud-aware).
     """
     run = runner or default_git_runner
     branch = _branch_name(slug, prefix=branch_prefix, now=now)
-    path = _worktree_path(root, branch)
+    base = await _resolve_worktree_base(root, worktree_root=worktree_root, run=run)
+    path = _worktree_path(base, branch)
     path.parent.mkdir(parents=True, exist_ok=True)
     args = ["worktree", "add", str(path), "-b", branch, base_branch]
     _, stderr, exit_code = await run(args, root)

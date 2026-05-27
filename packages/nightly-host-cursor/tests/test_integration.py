@@ -151,9 +151,7 @@ async def test_install_writes_cursor_stop_hook(tmp_path: Path) -> None:
     settings = _json.loads(hooks_path.read_text(encoding="utf-8"))
     assert settings.get("version") == 1
     entries = settings["hooks"]["stop"]
-    assert any(
-        e.get("command") == "nightly hook stop --format cursor" for e in entries
-    )
+    assert any(e.get("command") == "nightly hook stop --format cursor" for e in entries)
     # loop_limit should be set high enough that Nightly's own MAX_TURNS cap fires first.
     nightly_entry = next(
         e for e in entries if e.get("command") == "nightly hook stop --format cursor"
