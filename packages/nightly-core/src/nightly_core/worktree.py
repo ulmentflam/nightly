@@ -81,10 +81,16 @@ def _branch_name(slug: str, *, prefix: str, now: datetime | None = None) -> str:
 
 
 def _worktree_path(root: Path, branch: str) -> Path:
-    """Default location: sibling of the repo, named after the branch."""
-    # Replace `/` in branch with `-` for the directory name so it stays flat.
-    safe = branch.replace("/", "-")
-    return (root.parent / safe).resolve()
+    """Nest worktrees under a sibling ``<repo>-nightly/`` directory.
+
+    Keeps the workspace root uncluttered: repo ``corpus-forge`` puts its
+    worktrees in ``../corpus-forge-nightly/<leaf>``. The branch's first path
+    segment (the ``nightly/`` prefix) names the parent dir, so strip it from
+    the leaf to avoid a redundant ``nightly-`` echo.
+    """
+    _, _, leaf = branch.partition("/")
+    safe = (leaf or branch).replace("/", "-")
+    return (root.parent / f"{root.name}-nightly" / safe).resolve()
 
 
 async def create_worktree(  # noqa: PLR0913 - all params are real config dimensions
@@ -104,6 +110,7 @@ async def create_worktree(  # noqa: PLR0913 - all params are real config dimensi
     run = runner or default_git_runner
     branch = _branch_name(slug, prefix=branch_prefix, now=now)
     path = _worktree_path(root, branch)
+    path.parent.mkdir(parents=True, exist_ok=True)
     args = ["worktree", "add", str(path), "-b", branch, base_branch]
     _, stderr, exit_code = await run(args, root)
     if exit_code != 0:

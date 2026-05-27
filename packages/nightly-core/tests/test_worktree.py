@@ -51,9 +51,10 @@ async def test_create_worktree_invokes_git_worktree_add(tmp_path: Path) -> None:
     assert handle.branch == "nightly/fix-flaky-2026-05-20T22-14-00Z"
     assert handle.base_branch == "main"
     assert handle.created_at == now
-    # Path is a sibling of root, with branch's `/` replaced by `-`
-    assert handle.path.name == "nightly-fix-flaky-2026-05-20T22-14-00Z"
-    assert handle.path.parent == tmp_path.parent
+    # Nested under a sibling `<repo>-nightly/` dir, with the branch's
+    # `nightly/` prefix stripped from the leaf name.
+    assert handle.path.name == "fix-flaky-2026-05-20T22-14-00Z"
+    assert handle.path.parent == (tmp_path.parent / f"{tmp_path.name}-nightly").resolve()
 
     # The runner saw the right `git worktree add` invocation
     assert len(captured["calls"]) == 1
