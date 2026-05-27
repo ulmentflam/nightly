@@ -27,7 +27,7 @@ class Nightly < Formula
   url "https://github.com/ulmentflam/nightly/archive/refs/tags/v0.0.1.tar.gz"
   # Update this on each tagged release. Until v0.0.1 is tagged, use
   # `brew install --HEAD ulmentflam/tap/nightly` to install from main.
-  sha256 "REPLACE_ME_ON_FIRST_TAGGED_RELEASE"
+  sha256 "bae5472f4dfdd18bac586cb28b657f9d140fb36c6b1114e9834f014ef522c71f"
   license "MIT"
   head "https://github.com/ulmentflam/nightly.git", branch: "main"
 
