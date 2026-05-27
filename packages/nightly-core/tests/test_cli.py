@@ -45,6 +45,40 @@ def test_init_bootstraps_nightly_and_installs_skill(repo: Path) -> None:
     assert "✓ installed claude skill" in result.output
 
 
+def test_init_user_scope_does_not_touch_cwd(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Dogfood Issues #1 + #2: `--scope user` is documented as a pure
+    global install. It must NOT create `.nightly/` or `.nightly/config.yml`
+    or seed `AGENTS.md` / `CLAUDE.md` in the current repo — operators
+    using the README's recommended `install once globally + /nightly-init
+    in each repo` flow get untracked side-effect files otherwise."""
+    # Point the host's user-scope path at a temp dir so we don't pollute
+    # the developer's real ~/.claude/.
+    fake_home = tmp_path / "fake-home"
+    skill_path = fake_home / ".claude/skills/nightly/SKILL.md"
+    monkeypatch.setattr(
+        "nightly_host_claude.integration.ClaudeHostIntegration.USER_SKILL_ABSOLUTE",
+        skill_path,
+    )
+    for kind in ("CONCLUDE", "UPDATE", "BUG", "INIT"):
+        monkeypatch.setattr(
+            f"nightly_host_claude.integration.ClaudeHostIntegration.USER_{kind}_ABSOLUTE",
+            fake_home / f".claude/skills/nightly-{kind.lower()}/SKILL.md",
+        )
+
+    result = runner.invoke(app, ["init", "--scope", "user"])
+    assert result.exit_code == 0, result.output
+    # User-scope skill files landed in the fake home
+    assert skill_path.is_file()
+    # Cwd is untouched
+    assert not (repo / ".nightly").exists(), ".nightly/ should not be created"
+    assert not (repo / ".nightly" / "config.yml").exists()
+    assert not (repo / "AGENTS.md").exists()
+    assert not (repo / "CLAUDE.md").exists()
+    assert not (repo / ".claude").exists()
+
+
 def test_init_is_idempotent(repo: Path) -> None:
     first = runner.invoke(app, ["init"])
     second = runner.invoke(app, ["init"])
@@ -270,6 +304,95 @@ def test_ideate_empty_when_no_proposals(repo: Path, monkeypatch: pytest.MonkeyPa
     assert "no proposals" in result.output.lower()
 
 
+def test_ideate_filters_duplicates_against_done_plans(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dogfood Issue #10: `nightly ideate` used to write proposals to
+    disk even when they duplicated already-completed work. The cascade
+    dedupe (cascade._dedupe_proposals) now applies to the CLI write
+    path too — a proposal whose fingerprint matches a `done` plan is
+    skipped before write."""
+    from nightly_core.plans import (
+        PROPOSER_FINGERPRINT_KEY,
+        read_plan,
+        render_frontmatter,
+        update_plan_status,
+    )
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    # Pretend a previous task already landed this work — stamp the
+    # fingerprint and mark it done.
+    run_id = (repo / ".nightly/runs/CURRENT").read_text(encoding="utf-8").strip()
+    run_dir = repo / ".nightly" / "runs" / run_id
+    runner.invoke(app, ["task", "prior", "-d", "prior work"])
+    plan_path = next((run_dir / "tasks").glob("*-prior")) / "plan.md"
+    plan = read_plan(plan_path)
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = "lint_debt:lint_debt:src/a.py"
+    plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
+    update_plan_status(plan_path, "done")
+
+    # Now run ideate with a proposer that returns the same fingerprint.
+    monkeypatch.setattr(
+        "nightly_core.cli.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.5, title="apply F401")],
+    )
+    result = runner.invoke(app, ["ideate"])
+    assert result.exit_code == 0
+    assert "no proposals after dedupe" in result.output.lower()
+
+    issues_dir = run_dir / "proposed" / "issues"
+    drafts = sorted(issues_dir.glob("[0-9][0-9][0-9]-*.md")) if issues_dir.exists() else []
+    assert drafts == []  # nothing written
+
+
+def test_ideate_reports_partial_dedupe(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When SOME proposals dedupe and others survive, the success line
+    must include the dedupe count so operators can see what was
+    filtered."""
+    from nightly_core.plans import (
+        PROPOSER_FINGERPRINT_KEY,
+        read_plan,
+        render_frontmatter,
+        update_plan_status,
+    )
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    run_id = (repo / ".nightly/runs/CURRENT").read_text(encoding="utf-8").strip()
+    run_dir = repo / ".nightly" / "runs" / run_id
+    runner.invoke(app, ["task", "prior", "-d", "prior work"])
+    plan_path = next((run_dir / "tasks").glob("*-prior")) / "plan.md"
+    plan = read_plan(plan_path)
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = "lint_debt:lint_debt:src/a.py"
+    plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
+    update_plan_status(plan_path, "done")
+
+    from nightly_core.proposers.base import Proposal
+
+    fresh = Proposal(
+        proposer="lint_debt",
+        category="lint_debt",
+        title="apply F401 in b.py",
+        body="# body",
+        score=2.0,
+        file_scope=("src/b.py",),  # different scope → different fingerprint
+        estimated_loc=4,
+    )
+    monkeypatch.setattr(
+        "nightly_core.cli.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.5, title="apply F401"), fresh],
+    )
+    result = runner.invoke(app, ["ideate"])
+    assert result.exit_code == 0
+    assert "wrote 1 proposal" in result.output
+    assert "1 deduped" in result.output
+
+
 def test_uninstall_removes_skill(repo: Path) -> None:
     runner.invoke(app, ["init"])
     skill = repo / ".claude" / "skills" / "nightly" / "SKILL.md"
@@ -374,6 +497,46 @@ def test_task_creates_directory(repo: Path) -> None:
     task_dir = repo / ".nightly" / "runs" / run_id / "tasks" / "0001-add-retry"
     assert task_dir.is_dir()
     assert "Add retry budget" in (task_dir / "plan.md").read_text(encoding="utf-8")
+
+
+def test_task_status_transition(repo: Path) -> None:
+    """Dogfood Issue #9: `nightly task <slug> --status <state>` transitions
+    an existing plan's frontmatter without editing the file by hand."""
+    from nightly_core.plans import read_plan
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    runner.invoke(app, ["task", "alpha", "-d", "alpha"])
+
+    result = runner.invoke(app, ["task", "alpha", "--status", "in_progress"])
+    assert result.exit_code == 0, result.output
+    assert "status: in_progress" in result.output
+
+    run_id = (repo / ".nightly/runs/CURRENT").read_text(encoding="utf-8").strip()
+    plan_path = repo / ".nightly" / "runs" / run_id / "tasks" / "0001-alpha" / "plan.md"
+    assert read_plan(plan_path).status == "in_progress"
+
+    # Now transition to done
+    result = runner.invoke(app, ["task", "alpha", "--status", "done"])
+    assert result.exit_code == 0
+    assert read_plan(plan_path).status == "done"
+
+
+def test_task_status_rejects_unknown_state(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    runner.invoke(app, ["task", "alpha"])
+    result = runner.invoke(app, ["task", "alpha", "--status", "halfway"])
+    assert result.exit_code != 0
+    assert "unknown status" in result.output.lower()
+
+
+def test_task_status_rejects_unknown_slug(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    result = runner.invoke(app, ["task", "nonexistent", "--status", "done"])
+    assert result.exit_code != 0
+    assert "no task with slug" in result.output.lower()
 
 
 def test_specialist_prints_prompt() -> None:

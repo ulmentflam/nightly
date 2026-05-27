@@ -592,7 +592,15 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
     # an automatic PR — the agent + driver decide on landing strategy.
     # This is the "if you can recommend, execute" lever expressed in the
     # cascade: the recommendation IS the top-scoring proposal.
-    if _session_armed(root):
+    #
+    # When reaching the bottom of the cascade we also need to distinguish
+    # *why* there's nothing to do, because the hook prompts the agent
+    # differently for "proposer suite returned 0" vs "every proposal was
+    # a duplicate of completed work." Without this signal the hook
+    # would falsely claim "the proposer suite is empty" when actually
+    # the dedupe filter caught every candidate (dogfooding Issue #11).
+    armed = _session_armed(root)
+    if armed:
         fallback = pick_ideated_fallback(root)
         if fallback is not None:
             return CascadeChoice(
@@ -613,14 +621,56 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
                 score=fallback.score,
             )
 
+    # Distinguish "no proposals at all" from "every proposal deduped" so
+    # the hook can prompt the agent accordingly. `run_proposers` is the
+    # raw output; `_dedupe_proposals` filters against done/in_progress
+    # plans. We recompute the count here (cheap — the proposers already
+    # ran inside `pick_ideated_fallback`; this hits cached file reads on
+    # the same turn).
+    all_proposals = run_proposers(root)
+    surviving = _dedupe_proposals(all_proposals, root)
+    if all_proposals and not surviving:
+        # Every proposal was a duplicate of completed / in-flight work.
+        nothing_rationale = (
+            f"The cascade returned `nothing` because every proposal the "
+            f"suite surfaced ({len(all_proposals)}) matched the fingerprint "
+            "of a completed or in-flight plan. Don't ask the proposers for "
+            "the same thing again — look at sources the proposers don't "
+            "cover (`.planning/` open questions, README gaps, uncertainty.md "
+            "from recent runs, closed-PR review threads). "
+            + (
+                "Session is armed."
+                if armed
+                else "Session is not armed — graceful exit is appropriate."
+            )
+        )
+    elif not all_proposals:
+        nothing_rationale = (
+            "No in-flight plans, no unblocked tasks, no accepted RFC items, "
+            "no nightly-eligible issues, no PR-rescue candidates, no "
+            "proposals at any tier — the proposer suite came up empty. "
+            + (
+                "Session is armed; the auto-ideate fallback also returned "
+                "nothing."
+                if armed
+                else "Session is not armed — graceful exit is appropriate. "
+                "Arm with `nightly session start` and re-run `nightly next` "
+                "to enable the auto-ideate fallback path."
+            )
+        )
+    else:
+        # Proposals existed but none reached fallback because session
+        # disarmed AND none cleared the strict autonomy bar.
+        nothing_rationale = (
+            f"The cascade returned `nothing` because the {len(all_proposals)} "
+            "proposal(s) surfaced by the suite didn't clear the auto-PR "
+            "autonomy bar and the session is not armed (so the fallback "
+            "path is gated off). Arm with `nightly session start` to enable "
+            "the fallback, or accept the strict-cascade-only mode."
+        )
+
     return CascadeChoice(
         source="nothing",
         summary="no work — backlog is empty",
-        rationale=(
-            "No in-flight plans, no unblocked tasks, no accepted RFC items, "
-            "no nightly-eligible issues, no PR-rescue candidates, no "
-            "proposals at any tier. Session is not armed — graceful exit is "
-            "appropriate. Arm with `nightly session start` and re-run "
-            "`nightly next` to enable the auto-ideate fallback path."
-        ),
+        rationale=nothing_rationale,
     )

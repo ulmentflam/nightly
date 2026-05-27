@@ -391,6 +391,62 @@ def test_next_task_nothing_mentions_session_start(tmp_path: Path) -> None:
     assert "session start" in (choice.rationale or "")
 
 
+def test_next_task_nothing_rationale_when_all_proposals_deduped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dogfood Issue #11: when proposers DO return work but every
+    candidate is filtered by the dedupe layer, the cascade's `nothing`
+    rationale must explicitly say so — otherwise the keepalive hook
+    falsely tells the agent the proposer suite is empty."""
+    from nightly_core.plans import (
+        PROPOSER_FINGERPRINT_KEY,
+        read_plan,
+        render_frontmatter,
+        update_plan_status,
+    )
+
+    run = start_run(tmp_path)
+    _arm_session(tmp_path)
+    # Seed a `done` plan with the fingerprint that the proposer will return.
+    landed = new_task(run, slug="landed")
+    update_plan_status(landed.path / "plan.md", "done")
+    plan = read_plan(landed.path / "plan.md")
+    metadata = dict(plan.metadata)
+    metadata[PROPOSER_FINGERPRINT_KEY] = "lint_debt:lint_debt:src/a.py"
+    (landed.path / "plan.md").write_text(
+        render_frontmatter(metadata, plan.body), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [_eligible_proposal(score=4.0)],
+    )
+
+    choice = next_task(tmp_path)
+    assert choice.source == "nothing"
+    rationale = choice.rationale or ""
+    assert "every proposal" in rationale.lower()
+    assert "deduped" in rationale.lower() or "fingerprint" in rationale.lower()
+    # And it must NOT claim "proposer suite came up empty" because that's the lie.
+    assert "came up empty" not in rationale.lower()
+
+
+def test_next_task_nothing_rationale_when_proposers_truly_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When proposers really return zero candidates, the rationale
+    should say so honestly — different prompt than the dedupe case."""
+    _arm_session(tmp_path)
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "nothing"
+    rationale = choice.rationale or ""
+    assert "proposer suite came up empty" in rationale.lower()
+
+
 def test_next_task_github_issue_outranks_ideate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

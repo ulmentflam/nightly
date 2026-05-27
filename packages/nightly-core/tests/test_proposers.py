@@ -215,3 +215,60 @@ def test_default_proposers_returns_fresh_list_each_call() -> None:
     a = default_proposers()
     b = default_proposers()
     assert a is not b
+
+
+# ── dogfood Issue #8: marker regex + self-detection guards ────────────────
+
+
+def test_todo_marker_requires_comment_prefix(tmp_path: Path) -> None:
+    """A line that mentions 'TODO' inside a regex source or string literal
+    without a comment leader must NOT match. Used to: any bare TODO in
+    code was flagged, including the marker names inside this proposer's
+    own regex literal."""
+    (tmp_path / "code.py").write_text(
+        'pattern = r"\\b(TODO|FIXME)\\b"\nname = "TODO list"\n',
+        encoding="utf-8",
+    )
+    proposals = list(TodoFixmeProposer().propose(tmp_path))
+    assert proposals == []  # no real TODO comments → no proposal
+
+
+def test_todo_marker_matches_inline_comment(tmp_path: Path) -> None:
+    """Inline comments are real TODOs — `x = 1  # TODO: ...` must still
+    match. The fix from Issue #8 requires a comment-leader, not
+    start-of-line."""
+    (tmp_path / "code.py").write_text(
+        "x = 1  # TODO: handle the edge case\n",
+        encoding="utf-8",
+    )
+    proposals = list(TodoFixmeProposer().propose(tmp_path))
+    assert len(proposals) == 1
+    assert "1 TODO/FIXME" in proposals[0].title
+
+
+def test_todo_proposer_does_not_self_detect(tmp_path: Path) -> None:
+    """Regression for Issue #8: a copy of the proposer's source named
+    `todo_fixme.py` is skipped by basename. (Before the fix, scanning
+    the Nightly source repo produced 13 hits, all in `todo_fixme.py`
+    + `test_proposers.py`.)"""
+    src = tmp_path / "packages" / "x" / "todo_fixme.py"
+    src.parent.mkdir(parents=True)
+    src.write_text(
+        '# TODO/FIXME/XXX/HACK detection\n_PATTERN = r"TODO|FIXME"\n',
+        encoding="utf-8",
+    )
+    proposals = list(TodoFixmeProposer().propose(tmp_path))
+    assert proposals == []
+
+
+def test_todo_proposer_skips_its_own_tests(tmp_path: Path) -> None:
+    """Test fixtures embed marker strings — they're not actionable items.
+    Issue #8 fix: skip `test_proposers.py` by basename."""
+    src = tmp_path / "tests" / "test_proposers.py"
+    src.parent.mkdir(parents=True)
+    src.write_text(
+        '# Test fixture\nx = "# TODO: simulated marker"\n',
+        encoding="utf-8",
+    )
+    proposals = list(TodoFixmeProposer().propose(tmp_path))
+    assert proposals == []

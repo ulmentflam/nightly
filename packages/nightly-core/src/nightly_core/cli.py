@@ -305,10 +305,42 @@ def init(
         ),
     ] = True,
 ) -> None:
-    """Bootstrap .nightly/, write default config, install the host launcher."""
+    """Bootstrap .nightly/, write default config, install the host launcher.
+
+    Scope semantics (dogfooding Issue #1 fix):
+    - `--scope project` (default): bootstrap `.nightly/`, write
+      `config.yml`, install the project-scope skill files into the
+      current repo's `.claude/skills/` (or equivalent), merge the
+      Stop-hook entry, and seed `AGENTS.md` / `CLAUDE.md`. This is
+      the per-repo init.
+    - `--scope user`: install the host's skill files into the
+      *user-global* directory (`~/.claude/skills/`, `~/.codex/skills/`,
+      `~/.gemini/commands/`, …) and **do nothing else**. No `.nightly/`
+      scaffold, no `config.yml`, no rules file in the current repo —
+      the README's "install once globally, then `/nightly-init` in
+      each repo" flow assumes user-scope is a pure global install.
+    """
     root = repo_root()
     typer.echo(f"repo: {root}")
 
+    integration = _load_host(host, root=root)
+    target = integration.skill_path(scope)  # type: ignore[attr-defined]
+
+    if scope == "user":
+        # Pure global install — touch nothing in the cwd.
+        asyncio.run(integration.install(scope))
+        typer.echo(
+            f"  ✓ installed {host} skill ({scope}) at "
+            f"{_format_path_for_display(target, root)}"
+        )
+        typer.echo("")
+        typer.echo(
+            "→ User-scope install complete. In any repo, type `/nightly-init` "
+            "inside the host to bootstrap that repo's `.nightly/` scaffold."
+        )
+        return
+
+    # Project scope: full bootstrap.
     _, created = _bootstrap_nightly_dir(root)
     for d in created:
         typer.echo(f"  ✓ created {d}/")
@@ -321,9 +353,7 @@ def init(
     else:
         typer.echo(f"  · {_format_path_for_display(nightly / 'config.yml', root)} already present")
 
-    integration = _load_host(host, root=root)
     asyncio.run(integration.install(scope))
-    target = integration.skill_path(scope)  # type: ignore[attr-defined]
     typer.echo(f"  ✓ installed {host} skill ({scope}) at {_format_path_for_display(target, root)}")
 
     if rules:
@@ -457,10 +487,68 @@ def task(
         str | None,
         typer.Option("--description", "-d", help="One-line task description for plan.md."),
     ] = None,
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            help=(
+                "Transition the named task's plan.md to this status. Skips "
+                "task creation when the slug already exists; pairs cleanly "
+                "with the seven canonical statuses (ready, in_progress, "
+                "dispatching, blocked: approval, done, parked)."
+            ),
+        ),
+    ] = None,
 ) -> None:
-    """Create a new task under the current run."""
+    """Create a new task — or transition an existing task's status — in the current run.
+
+    Dogfooding Issue #9: the interactive Skill flow previously had no
+    CLI verb for plan-status transitions. The agent had to edit the
+    plan.md frontmatter by hand (or shell into the venv and call
+    `update_plan_status` from Python). Adding `--status` here mirrors
+    the rest of the CLI's verb shape and makes the lifecycle the
+    SKILL.md describes (ready → in_progress → done/parked) callable
+    in one line.
+    """
+    from nightly_core.plans import (  # noqa: PLC0415 - local
+        PLAN_STATUSES,
+        update_plan_status,
+    )
+
     root = repo_root()
     run = _require_current_run(root)
+
+    if status is not None:
+        if status not in PLAN_STATUSES:
+            typer.echo(
+                f"unknown status '{status}'. Valid: {', '.join(PLAN_STATUSES)}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        # Find the existing task by slug suffix (`tasks/NNNN-<slug>/`).
+        tasks_dir = run.path / "tasks"
+        match = next(
+            (
+                t
+                for t in tasks_dir.iterdir()
+                if t.is_dir() and t.name.endswith(f"-{slug}")
+            ),
+            None,
+        )
+        if match is None:
+            typer.echo(
+                f"no task with slug `{slug}` in run {run.id}. "
+                "Pass `-d \"<description>\"` to create one, or fix the slug.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        plan_path = match / "plan.md"
+        record = update_plan_status(plan_path, status)  # type: ignore[arg-type]
+        typer.echo(
+            f"✓ {match.name} → status: {record.status}"
+        )
+        return
+
     created = new_task(run, slug=slug, description=description)
     typer.echo(
         f"✓ task {created.path.name} ready at {_format_path_for_display(created.path, root)}"
@@ -725,12 +813,29 @@ def ideate() -> None:
     `.nightly/runs/<id>/proposed/issues/`, ordered by score. The briefing
     surfaces them in the morning report. If any proposal clears the
     autonomy bar, the cascade will pick it on the next `nightly next`.
+
+    Proposals whose fingerprint matches a `done` / `in_progress` /
+    `blocked: approval` plan from any run are filtered out before write
+    — same dedupe the cascade applies. Without this, ideating after a
+    completed task surfaces a duplicate proposal in the morning
+    briefing for work that already shipped (see issue #2's surrounding
+    discussion and dogfooding Issue #10).
     """
+    from nightly_core.cascade import _dedupe_proposals  # noqa: PLC0415 - lazy
+
     root = repo_root()
     run = _require_current_run(root)
-    proposals = run_proposers(root)
-    if not proposals:
+    all_proposals = run_proposers(root)
+    if not all_proposals:
         typer.echo("· no proposals — every proposer came up empty")
+        return
+    proposals = _dedupe_proposals(all_proposals, root)
+    deduped = len(all_proposals) - len(proposals)
+    if not proposals:
+        typer.echo(
+            f"· no proposals after dedupe — {deduped} candidate(s) "
+            "matched fingerprints of completed or in-flight work"
+        )
         return
     paths = write_drafts(run, proposals)
     auto_eligible = sum(1 for p in proposals if can_auto_pr(p))
@@ -739,7 +844,9 @@ def ideate() -> None:
         f"{_format_path_for_display(run.path / 'proposed' / 'issues', root)}"
     )
     typer.echo(
-        f"  {auto_eligible} auto-PR-eligible · {len(proposals) - auto_eligible} for human review"
+        f"  {auto_eligible} auto-PR-eligible · "
+        f"{len(proposals) - auto_eligible} for human review"
+        + (f" · {deduped} deduped (fingerprint matched completed work)" if deduped else "")
     )
     typer.echo("→ run `nightly next` to pick the top auto-eligible one (if any).")
 

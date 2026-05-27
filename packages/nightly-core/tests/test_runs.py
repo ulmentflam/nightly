@@ -27,9 +27,18 @@ from nightly_core.runs import (
         ("UPPER CASE", "upper-case"),
         ("with/punctuation!and?", "with-punctuation-and"),
         ("   trim   me   ", "trim-me"),
-        ("a" * 80, "a" * 40),  # truncated to 40
+        ("a" * 80, "a" * 40),  # single token → hard-cut at 40
         ("", "task"),
         ("///", "task"),
+        # Dogfood Issue #5: truncate at word boundary, not mid-word.
+        # Was: "dogfood-exercise-cascade-dispatch-briefi" (mid-word cut)
+        # Now: "dogfood-exercise-cascade-dispatch" (last word boundary).
+        (
+            "dogfood exercise cascade dispatch briefing",
+            "dogfood-exercise-cascade-dispatch",
+        ),
+        # Single long token with no word boundary — hard cut at 40.
+        ("supercalifragilisticexpialidocious" + "z" * 20, "supercalifragilisticexpialidociouszzzzzz"),
     ],
 )
 def test_slugify(raw: str, expected: str) -> None:

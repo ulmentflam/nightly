@@ -62,11 +62,34 @@ class TaskDir:
     path: Path
 
 
+_SLUG_MAX_LEN = 40
+"""Conservative filesystem-safe cap for task slugs. Linux supports much
+longer, but slugs appear in `tasks/<index>-<slug>/` paths embedded in
+worktree names and logs — readable >> theoretically maximal."""
+
+
 def slugify(text: str) -> str:
-    """Reduce `text` to a filesystem-safe task slug (lowercase, dashes, ≤ 40)."""
+    """Reduce `text` to a filesystem-safe task slug (lowercase, dashes,
+    ≤ 40 chars, truncated at a word boundary).
+
+    Truncates at the last `-` before the cap rather than slicing
+    mid-word — `0001-dogfood-exercise-cascade-dispatch-briefi` is ugly
+    (dogfooding Issue #5). When no word boundary exists within the cap
+    (a single 40+ character token), we fall back to a hard cut.
+    """
     lowered = text.strip().lower()
     cleaned = _TASK_SLUG_RE.sub("-", lowered).strip("-")
-    return cleaned[:40] or "task"
+    if not cleaned:
+        return "task"
+    if len(cleaned) <= _SLUG_MAX_LEN:
+        return cleaned
+    # Find the last word boundary at-or-before the cap.
+    head = cleaned[:_SLUG_MAX_LEN]
+    last_dash = head.rfind("-")
+    if last_dash > 0:
+        return head[:last_dash]
+    # No boundary — single long token; hard cut.
+    return head
 
 
 def _ensure_run_layout(path: Path) -> None:

@@ -20,9 +20,21 @@ from nightly_core.proposers.base import Proposal, Proposer
 
 __all__ = ["TodoFixmeProposer"]
 
-# Recognise TODO/FIXME/XXX/HACK in a comment context. The marker may be
-# followed by `(author)`, `:`, or whitespace before the actual message.
+# Recognise TODO/FIXME/XXX/HACK only when preceded by a comment leader
+# (`#`, `//`, `/*`, `*`, `--`, `<!--`). Without this the proposer would
+# self-detect on its own regex literal here (`TODO|FIXME|XXX|HACK` is
+# a substring of this very file) plus every test fixture that embeds
+# a comment string. Dogfooding Issue #8 — the proposer ran against the
+# Nightly source repo and surfaced 13 hits, zero of them actionable.
+#
+# The comment-leader alternation covers the languages in
+# `_DEFAULT_EXTENSIONS` below: `#` for python/bash/ruby/yaml,
+# `//` and `/*` and `*` for C-family, `--` for SQL, `<!--` for HTML.
+# A leader must appear *somewhere in the same line* before the marker
+# — anchoring `^` is too restrictive (real comments can follow code:
+# `x = 1  # TODO: explain`).
 _MARKER_RE = re.compile(
+    r"(?:#|//|/\*|\*|--|<!--)[^\n]*?"
     r"\b(?P<marker>TODO|FIXME|XXX|HACK)(?:\([^)]*\))?\s*[:\-]?\s+(?P<text>.+?)$",
     re.MULTILINE,
 )
@@ -72,6 +84,21 @@ _IGNORED_DIRS = frozenset(
     }
 )
 
+# Files to skip by basename. The proposer's own source and its tests
+# contain marker strings *as fixtures*, not actionable items — without
+# this carveout the proposer self-detects with a 100% false-positive
+# rate on the Nightly source repo (dogfooding Issue #8). The regex
+# itself can't tell a comment from a string literal containing a
+# `#`-prefixed marker; AST-aware filtering would close the gap fully
+# but adds complexity. This narrow basename skip is sufficient until
+# the AST pass lands.
+_IGNORED_FILENAMES = frozenset(
+    {
+        "todo_fixme.py",     # this proposer's own source
+        "test_proposers.py", # this proposer's own tests
+    }
+)
+
 # Score cap to keep the proposer from dominating the ranking when a repo
 # has thousands of TODOs.
 _SCORE_CAP = 5.0
@@ -92,6 +119,8 @@ def _walk_source_files(root: Path, *, extensions: frozenset[str]) -> Iterable[Pa
         if path.suffix not in extensions:
             continue
         if any(part in _IGNORED_DIRS for part in path.relative_to(root).parts):
+            continue
+        if path.name in _IGNORED_FILENAMES:
             continue
         yield path
 

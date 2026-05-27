@@ -450,20 +450,24 @@ def _build_continue_reason_from(
     header = f"[Nightly keepalive · run {run_id} · turn {turn}]"
 
     if choice.source == "nothing":
-        # The auto-ideate fallback should have caught this when the session
-        # is armed — reaching this branch with an armed session means the
-        # proposer suite returned literally zero candidates. Tell the model
-        # to *make* a recommendation, not to deliberate.
+        # The cascade's `rationale` distinguishes the three reasons the
+        # cascade can return `nothing` (proposers empty / all deduped /
+        # session disarmed) — pre-Issue-#11 the hook hardcoded "the
+        # proposer suite is empty" which was misleading whenever the
+        # dedupe filter caught every proposal. Surface the rationale
+        # verbatim so the agent sees the actual cause.
+        rationale = choice.rationale or "The cascade returned `nothing`."
         return (
             f"{header}\n"
-            "The cascade returned `nothing` and the proposer suite is empty. "
-            "Do NOT render the briefing and exit. Make a recommendation right "
-            "now and execute it:\n"
-            "  1. Pick the most consequential open question you can name from "
-            ".planning/, README.md, AGENTS.md, or a recent uncertainty.md.\n"
+            f"{rationale}\n"
+            "Do NOT render the briefing and exit. Make a recommendation "
+            "right now and execute it:\n"
+            "  1. Pick the most consequential open question you can name "
+            "from `.planning/`, README.md, AGENTS.md, or a recent "
+            "uncertainty.md. Prefer sources the proposers don't cover.\n"
             "  2. Scope it as a new task with `nightly task <slug>`.\n"
-            "  3. Start executing — do not write a plan first, do not ask, do "
-            "not park.\n"
+            "  3. Start executing — do not write a plan first, do not ask, "
+            "do not park.\n"
             "If you can articulate a 'here's what I'd do', that IS the "
             "recommendation. Ship it."
         )
