@@ -23,7 +23,7 @@ from typing import Literal
 
 from nightly_core.ideation import run_proposers, top_auto_pr
 from nightly_core.paths import planning_dir, repo_root
-from nightly_core.plans import PlanRecord, list_plans
+from nightly_core.plans import PlanRecord, list_plans, parse_frontmatter
 from nightly_core.pr_feedback import FeedbackFetcher, PRFeedback, fetch_feedback
 from nightly_core.proposers.base import Proposal
 from nightly_core.runs import current_run
@@ -175,6 +175,17 @@ class _RFCMatch:
 
 
 def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
+    """Return the first unchecked task-list item from an `accepted` RFC.
+
+    Uses `parse_frontmatter` to read the `status:` field exactly —
+    earlier versions did a substring match against `"status: accepted"`
+    anywhere in the file body, which mis-picked draft RFCs whose prose
+    or checklist *discussed* the accepted status (e.g. RFC 002's
+    sizing checkbox `[ ] Promote RFC frontmatter to status: accepted`
+    matched the substring even though the frontmatter was draft).
+    Frontmatter parsing makes the contract exact: only an RFC whose
+    *parsed* `status` field equals `accepted` is eligible.
+    """
     planning = planning_dir(root)
     rfcs = planning / "rfcs"
     if not rfcs.is_dir():
@@ -183,9 +194,14 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
         if not entry.is_file() or entry.suffix != ".md":
             continue
         text = entry.read_text(encoding="utf-8")
-        if "status: accepted" not in text.lower():
+        metadata, body = parse_frontmatter(text)
+        if metadata.get("status", "").strip().lower() != "accepted":
             continue
-        match = _RFC_UNCHECKED_RE.search(text)
+        # Only search the body for unchecked items — checkboxes inside
+        # the frontmatter (or in front of the first `---` fence) don't
+        # count. Matches the brainstorm's intent: the RFC's *task list*
+        # is the scope, not its YAML metadata.
+        match = _RFC_UNCHECKED_RE.search(body)
         if match:
             return _RFCMatch(rfc_path=entry, item_text=match.group(1).strip())
     return None

@@ -134,6 +134,57 @@ def test_pick_accepted_rfc_skips_rfc_with_no_unchecked_items(tmp_path: Path) -> 
     assert pick_accepted_rfc(tmp_path) is None
 
 
+def test_pick_accepted_rfc_ignores_draft_rfc_that_mentions_accepted_in_body(
+    tmp_path: Path,
+) -> None:
+    """Regression for the dogfooding-session bug: `_find_accepted_rfc`
+    used to substring-match `"status: accepted"` anywhere in the file,
+    so a draft RFC whose prose or checklist *discussed* the accepted
+    status (e.g. `[ ] Promote RFC frontmatter to status: accepted`) was
+    mis-picked. The picker must read the frontmatter `status:` field
+    exactly."""
+    _seed_rfc(
+        tmp_path,
+        body=(
+            "---\nstatus: draft\n---\n# RFC\n\n"
+            "## Status\n\n`draft (sized)` — ready for promotion to "
+            "`status: accepted` once the human author reviews this.\n\n"
+            "- [ ] Promote RFC frontmatter to `status: accepted`\n"
+        ),
+    )
+    assert pick_accepted_rfc(tmp_path) is None
+
+
+def test_pick_accepted_rfc_does_not_match_unchecked_inside_frontmatter(
+    tmp_path: Path,
+) -> None:
+    """An unchecked `[ ]` item that lives inside the YAML frontmatter
+    (e.g. a mis-formatted list value) shouldn't count as a task. The
+    picker searches the body only."""
+    _seed_rfc(
+        tmp_path,
+        body=(
+            "---\nstatus: accepted\n"
+            "checklist: - [ ] this should not count\n---\n# RFC\n\n"
+            "## Status\n\nNothing actionable yet.\n"
+        ),
+    )
+    assert pick_accepted_rfc(tmp_path) is None
+
+
+def test_pick_accepted_rfc_normalizes_whitespace_and_case(tmp_path: Path) -> None:
+    """Frontmatter status compared case-insensitively + trim. Different
+    operator capitalization (`Accepted`, `ACCEPTED`, `accepted  `) all
+    qualify — we shouldn't reject an RFC because of a stylistic choice."""
+    _seed_rfc(
+        tmp_path,
+        body="---\nstatus:  Accepted  \n---\n# RFC\n\n- [ ] do it\n",
+    )
+    match = pick_accepted_rfc(tmp_path)
+    assert match is not None
+    assert match.item_text == "do it"
+
+
 # ── pick_github_issue ─────────────────────────────────────────────────────
 
 
