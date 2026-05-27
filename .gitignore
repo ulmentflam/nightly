@@ -39,3 +39,8 @@ htmlcov/
 .nightly/runs/
 .nightly/atlas/
 .nightly/memory/
+
+# Document-orchestrator intermediate drafts. Useful as an audit trail
+# locally; not worth versioning. Final artifact is the committed file
+# (e.g. README.md), not the iteration snapshots.
+.planning/drafts/
