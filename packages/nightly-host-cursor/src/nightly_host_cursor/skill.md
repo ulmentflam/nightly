@@ -46,6 +46,13 @@ Three off-ramps stop the session at any time:
 - **`nightly stop`** — hard stop.
 - **Esc / `/quit`** — interrupt; bypasses the hook.
 
+## Check for updates
+
+After arming the keep-alive, run `nightly check-update`. If it
+prints a non-empty line, surface it to the operator at the top of
+your first response, then proceed with the cascade. Empty stdout
+means the binary is current. Best-effort, 24h-cached, never blocks.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -69,6 +76,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
 | `nightly session start`                  | Arm the Cursor stop-hook keep-alive.                      |
+| `nightly check-update`                   | Probe latest release; print recommendation if outdated.   |
 | `nightly session stop`                   | Disarm keep-alive without writing a STOP sentinel.        |
 | `nightly stop`                           | Hard-stop request — stop hook allows the next turn to end. |
 

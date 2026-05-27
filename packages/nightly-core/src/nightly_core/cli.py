@@ -1204,6 +1204,67 @@ def _print_update_report(report: UpdateReport) -> None:
         typer.echo(f"  · {note}")
 
 
+@app.command(name="check-update")
+def check_update_cmd(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Bypass the 24h cache and refetch the latest release "
+                "from GitHub now."
+            ),
+        ),
+    ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help=(
+                "Print a status line even when up-to-date or when the "
+                "check is suppressed (dev install). Default: silent on "
+                "success so the agent can detect 'something to surface' "
+                "by stdout emptiness."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Check whether a newer Nightly release is available.
+
+    Designed to be called at session start by every host's SKILL.md.
+    Prints ONE line when an upgrade is available (the recommendation
+    text), then exits 0. Stays silent when up-to-date or when the
+    check is suppressed — that way the agent can detect "there's news"
+    simply by checking whether stdout is empty.
+
+    Network paths: `gh api repos/<repo>/releases/latest` first (uses
+    operator's auth, no rate limit), then anonymous urllib fallback.
+    Both failures yield a silent exit, never a crash. Cache lives at
+    `~/.cache/nightly/update-check.json` with a 24h TTL.
+    """
+    from nightly_core.check_update import check_for_update  # noqa: PLC0415
+
+    result = check_for_update(force=force)
+
+    if result is None:
+        if verbose:
+            typer.echo("· check skipped (dev install — pull manually)")
+        return
+
+    rec = result.recommendation()
+    if rec is None:
+        if verbose:
+            latest = result.latest or "(unknown)"
+            typer.echo(
+                f"· up to date — Nightly {result.current} "
+                f"(latest: {latest}, channel: {result.channel})"
+            )
+        return
+
+    typer.echo(rec)
+
+
 @app.command(name="verify")
 def verify_cmd(
     only: Annotated[

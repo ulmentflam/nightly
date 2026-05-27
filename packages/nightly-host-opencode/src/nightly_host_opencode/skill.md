@@ -46,6 +46,13 @@ Three off-ramps stop the session at any time:
   your turn cleanly without picking new work.
 - **Ctrl-C / `/exit`** — interrupt.
 
+## Check for updates
+
+After arming the keep-alive, run `nightly check-update`. If it
+prints a non-empty line, surface it to the operator at the top of
+your first response, then proceed with the cascade. Empty stdout
+means the binary is current. Best-effort, 24h-cached, never blocks.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -69,6 +76,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
 | `nightly session start`                  | Record SESSION_ACTIVE marker (soft keep-alive on opencode).|
+| `nightly check-update`                   | Probe latest release; print recommendation if outdated.   |
 | `nightly session stop`                   | Disarm the marker; no STOP sentinel written.              |
 | `nightly stop`                           | Hard-stop request — honor it by ending the turn cleanly.   |
 

@@ -69,6 +69,21 @@ the Stop hook decide whether to release or force-continue):
   blocking feedback). You don't read or react to this — keep
   running the cascade normally. The hook handles it.
 
+## Check for updates
+
+After arming the keep-alive, run `nightly check-update`. If it
+prints a non-empty line (the upgrade recommendation), surface that
+line to the operator at the top of your first response *before*
+walking the cascade — once, briefly, then continue. If the command
+prints nothing, do not mention updates: empty stdout means the
+binary is current. The check is best-effort, cached for 24h, and
+never blocks the session.
+
+Inspired by [open-gsd/get-shit-done-redux](https://github.com/open-gsd/get-shit-done-redux)'s
+idempotent-installer pattern — Nightly is self-aware about the
+version drift between the host's installed binary and the latest
+release.
+
 ## Toolkit
 
 Read this once at the start of each iteration; your context can compact.
@@ -92,6 +107,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly rescue`                         | Preview the next `pr_rescue` cascade candidate.           |
 | `nightly keepalive [--name <slug>]`      | Think-harder strategies when cascade is empty (don't stop).|
 | `nightly session start`                  | Arm the Stop-hook keep-alive (run this at /nightly start). |
+| `nightly check-update`                   | Probe latest release; print recommendation if outdated.   |
 | `nightly session stop`                   | Disarm keep-alive without writing a STOP sentinel.        |
 | `nightly stop`                           | Hard-stop request — Stop hook allows the next turn to end. |
 
