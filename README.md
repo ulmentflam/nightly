@@ -69,6 +69,17 @@ with `NIGHTLY_HOME` (clone target, default `~/.local/share/nightly`),
 (shim location, default `~/.local/bin`), or `NIGHTLY_REPO` (git URL —
 for forks).
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install --HEAD ulmentflam/tap/nightly
+```
+
+Same shim shape as `install.sh`: the formula puts a `uv`-driven
+binary on PATH. `--HEAD` installs from `main` (the only channel
+until a tagged release lands); drop the flag once `v0.0.1` ships.
+After install, run `nightly init --scope user` as above.
+
 ### From source (development)
 
 ```bash
