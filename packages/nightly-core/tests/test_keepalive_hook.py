@@ -427,3 +427,91 @@ def test_hook_formats_exhaustive() -> None:
     from nightly_core.keepalive_hook import HOOK_FORMATS
 
     assert set(HOOK_FORMATS) == {"claude_code", "cursor", "gemini_cli"}
+
+
+# ── stop_hook_active — yield to the host's consecutive-block cap ──────────
+
+
+def test_stop_hook_active_short_circuits_when_session_armed(
+    initialized_repo: Path,
+) -> None:
+    """When the host signals it's about to override us, emit `{}` even if
+    we *would have* force-continued. Past failure: Claude Code logged
+    `A hook blocked the turn from ending 9 consecutive times — overriding`
+    because Nightly's hook kept returning `block` regardless."""
+    arm_session(initialized_repo)
+    # Sanity: without the signal, we'd force-continue
+    baseline = compute_stop_hook_decision(initialized_repo)
+    assert baseline.should_block
+
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert decision.payload == {}
+    assert decision.reason_code == "host_cap"
+    assert "stop_hook_active" in decision.message
+
+
+def test_stop_hook_active_short_circuits_without_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The yield must work even when there's no active run — we should
+    not let the cap-yield branch trip over disk-read assumptions of
+    later branches."""
+    monkeypatch.chdir(tmp_path)
+    decision = compute_stop_hook_decision(tmp_path, stop_hook_active=True)
+    assert decision.payload == {}
+    assert decision.reason_code == "host_cap"
+
+
+def test_stop_hook_active_false_preserves_normal_decision(
+    initialized_repo: Path,
+) -> None:
+    """The default (`stop_hook_active=False`) keeps prior behavior."""
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=False)
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+
+
+def test_parse_hook_input_round_trips_stop_hook_active() -> None:
+    """parse_hook_input must surface the flag so the CLI can consult it."""
+    assert parse_hook_input('{"stop_hook_active": true}') == {"stop_hook_active": True}
+    assert parse_hook_input('{"stop_hook_active": false}') == {"stop_hook_active": False}
+    # Missing field is fine — CLI defaults to False via bool().
+    assert "stop_hook_active" not in parse_hook_input('{"session_id": "x"}')
+
+
+def test_heartbeat_log_records_host_cap_yield(initialized_repo: Path) -> None:
+    """The audit trail must show *why* we stopped force-continuing so a
+    post-mortem can distinguish a host-cap yield from a CONCLUDE drain
+    or a stale marker. They look identical on the wire (`{}`)."""
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    log_path = log_heartbeat(decision, initialized_repo, hook_input={"session_id": "abc"})
+    assert log_path is not None
+    content = log_path.read_text(encoding="utf-8")
+    assert "decision=host_cap" in content
+    assert "session=abc" in content
+
+
+def test_hook_stop_cli_honors_stop_hook_active(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end through the CLI: stdin payload with `stop_hook_active=true`
+    → stdout `{}` even when the session is armed."""
+    import io
+
+    from typer.testing import CliRunner
+
+    from nightly_core.cli import app
+
+    arm_session(initialized_repo)
+    runner = CliRunner()
+    # Force `sys.stdin.isatty()` to False inside hook_stop so it reads our payload.
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO('{"stop_hook_active": true, "session_id": "abc"}')
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    result = runner.invoke(app, ["hook", "stop"], input='{"stop_hook_active": true}')
+    assert result.exit_code == 0, result.output
+    # Stdout should be exactly `{}` (allow-stop) — no `decision: block` shape.
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {}

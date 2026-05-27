@@ -139,7 +139,8 @@ class StopHookDecision:
     `payload` is the literal JSON dict Claude Code expects on stdout
     (`{"decision": "block", "reason": ...}` to force continue, or `{}`
     to allow the stop). `reason_code` is a stable short slug for logs:
-    `no_run`, `inactive`, `conclude`, `stop`, `max_turns`, `force_continue`.
+    `host_cap`, `no_run`, `inactive`, `stale`, `conclude`, `stop`,
+    `pr_backlog`, `max_turns`, `force_continue`.
     `message` is a one-line human-readable explanation suitable for
     `keepalive.log`.
     """
@@ -157,8 +158,29 @@ def compute_stop_hook_decision(  # noqa: PLR0911 — one return per off-ramp is 
     root: Path | None = None,
     *,
     now: datetime | None = None,
+    stop_hook_active: bool = False,
 ) -> StopHookDecision:
-    """Decide whether to block-and-continue or allow the current stop."""
+    """Decide whether to block-and-continue or allow the current stop.
+
+    `stop_hook_active=True` is Claude Code's signal that *this very hook*
+    has blocked the same turn boundary 9 consecutive times and the host
+    is about to override us regardless. Bowing out cleanly (emit `{}`)
+    is the documented protocol — see
+    https://docs.anthropic.com/en/docs/claude-code/hooks#json-input.
+    Past failure: not honoring this caused Claude Code to log
+    "A hook blocked the turn from ending 9 consecutive times — overriding"
+    in a real session. We still record a heartbeat so operators can see
+    *why* we yielded.
+    """
+    if stop_hook_active:
+        return StopHookDecision(
+            payload={},
+            reason_code="host_cap",
+            message=(
+                "host signaled stop_hook_active — yielding to the host's "
+                "consecutive-block cap; will not force-continue this turn."
+            ),
+        )
     moment = now or datetime.now(UTC)
     run = current_run(root)
     if run is None:

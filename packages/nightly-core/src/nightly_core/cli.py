@@ -1447,8 +1447,15 @@ def hook_stop(
     root = repo_root()
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     hook_input = parse_hook_input(raw)
+    # Claude Code (and Codex, sharing the same shape) sets
+    # `stop_hook_active=true` once this hook has blocked the same turn
+    # boundary 9 consecutive times — the host's safety cap is about to
+    # override us regardless. Coerce defensively: the field may be
+    # missing, the wrong type, or a stringified bool depending on the
+    # host. Anything truthy yields.
+    stop_hook_active = bool(hook_input.get("stop_hook_active"))
     try:
-        decision = compute_stop_hook_decision(root)
+        decision = compute_stop_hook_decision(root, stop_hook_active=stop_hook_active)
     except Exception as exc:  # hook must never crash the session
         typer.echo(f"nightly hook error: {exc!r}", err=True)
         typer.echo(json.dumps({}))
