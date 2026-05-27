@@ -5,70 +5,71 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-> A continuously-running, host-native coding agent. Picks tasks from the
-> backlog, opens isolated branches, dispatches specialist sub-agents, and
-> lands review-shaped changes by morning.
+> A continuously-running, host-native coding agent. Drops into the
+> coding CLI you already use, picks tasks off a priority cascade, runs
+> them in isolated worktrees, and lands review-shaped PRs by morning.
 
-Nightly is a Python-implemented orchestrator that runs *inside* the
-coding-agent CLI you already use — Claude Code, Codex, opencode, Cursor,
-Google Antigravity, or vanilla Gemini CLI — and turns it into a
-self-directed, drainable session that resumes plans across runs,
-dispatches specialists in parallel, and surfaces draft work to humans
-for review.
+Nightly is a Python orchestrator that runs *inside* Claude Code, Codex,
+opencode, Cursor, Antigravity, or vanilla Gemini CLI — turning a chat
+session into a self-directed, drainable one. It picks work off a
+priority cascade (in-flight plans → approved RFCs → ranked GitHub
+issues → proposer suite), dispatches specialist sub-agents in isolated
+git worktrees, surfaces draft PRs for morning review, and stops
+cooperatively — never `SIGKILL`.
 
-**Status:** all eight planned phases implemented. The full design lives
-in [`.planning/brainstorm.html`](.planning/brainstorm.html); the README
-below is the operator's view.
+**Status:** six host integrations, headless dispatch, pre-commit hooks,
+GitHub Actions CI, type-clean tree. The full design lives in
+[`.planning/brainstorm.html`](.planning/brainstorm.html); this README is
+the operator's view.
 
 ---
 
 ## Install
 
-### One-liner (recommended)
+The recommended path is two steps: install the binary once, then drop
+into each repo with `/nightly-init` from inside the host.
 
 ```bash
+# 1. install the `nightly` binary + bootstrap uv if missing
 curl -fsSL https://raw.githubusercontent.com/ulmentflam/nightly/main/install.sh | bash
+
+# 2. install the host skill globally (default host = claude)
+nightly init --scope user
 ```
 
-The installer is idempotent (re-run it to update), bootstraps `uv` if
-it's missing, clones to `~/.local/share/nightly`, and drops a `nightly`
-shim at `~/.local/bin/nightly`. Re-running checks for updates.
-
-Honors a few env vars: `NIGHTLY_HOME` (clone target),
-`NIGHTLY_VERSION` (branch/tag/SHA), `NIGHTLY_BIN` (shim location),
-`NIGHTLY_REPO` (git URL — useful for forks).
-
-### Global install + `/nightly-init` (drop into any repo)
-
-The recommended workflow for active developers: install the skill once
-at user scope, then bootstrap each repo from inside the host with the
-`/nightly-init` slash command — no need to drop to a shell.
-
-```bash
-# one-time setup — installs the host skill at user scope
-nightly init --scope user                  # default host = claude
-# or for another host:
-nightly init --host codex --scope user
-nightly init --host gemini --scope user
-```
-
-That writes the main `/nightly` skill plus four companion commands
-(`/nightly-init`, `/nightly-conclude`, `/nightly-update`,
-`/nightly-bug`) into the host's user-scope skill directory
-(`~/.claude/skills/`, `~/.codex/skills/`,
-`~/.gemini/commands/`, etc.). From then on, in any repo:
+That writes a `nightly` shim to `~/.local/bin/nightly` and installs the
+main `/nightly` skill plus four companions (`/nightly-init`,
+`/nightly-conclude`, `/nightly-update`, `/nightly-bug`) under the host's
+user-scope skill directory (e.g. `~/.claude/skills/`,
+`~/.codex/skills/`, `~/.gemini/commands/`). From then on, in any repo:
 
 ```text
 > /nightly-init
 ```
 
-The skill shells out to `nightly init` against the current working
-directory — creates `.nightly/`, writes `config.yml`, installs the
+`/nightly-init` shells out to `nightly init` against the current
+directory: creates `.nightly/`, writes `config.yml`, installs the
 project-scope skill files, merges the Stop-hook entry, and seeds the
-autonomy contract into `AGENTS.md` / `CLAUDE.md`. Idempotent: safe to
+autonomy contract into `AGENTS.md` / `CLAUDE.md`. Idempotent — safe to
 re-run.
 
-### Or, install from source (for development)
+For other hosts, pass `--host`:
+
+```bash
+nightly init --host codex --scope user
+nightly init --host opencode --scope user
+nightly init --host cursor --scope user
+nightly init --host antigravity --scope user
+nightly init --host gemini --scope user      # vanilla Gemini CLI
+```
+
+The installer is idempotent — re-run it to update. Override defaults
+with `NIGHTLY_HOME` (clone target, default `~/.local/share/nightly`),
+`NIGHTLY_VERSION` (branch / tag / SHA, default `main`), `NIGHTLY_BIN`
+(shim location, default `~/.local/bin`), or `NIGHTLY_REPO` (git URL —
+for forks).
+
+### From source (development)
 
 ```bash
 git clone git@github.com:ulmentflam/nightly.git
@@ -78,48 +79,39 @@ make check                      # ruff + Pyrefly + pytest
 uv run nightly --help           # or `source .venv/bin/activate && nightly --help`
 ```
 
-## Quick start
+### Headless / unattended
 
-Once installed, point Nightly at the host you use:
-
-```bash
-nightly init                    # default = Claude Code, project scope
-# or:  nightly init --host codex
-# or:  nightly init --host opencode --scope user
-# or:  nightly init --host gemini       # vanilla Gemini CLI
-```
-
-Then open your host (Claude Code, Codex, etc.) in any repo and ask
-Nightly to work on a task — the Skill takes over. For unattended runs:
+For cron, CI, or "drain the backlog while I sleep" runs, skip the host
+slash command and drive the cascade directly:
 
 ```bash
 cd <some-repo>
-nightly init                    # one-time per repo (or `/nightly-init` from inside the host)
-nightly start                   # create a session
+nightly init                                  # one-time per repo
+nightly start                                 # create a session
 nightly task add-retry -d "Add retry budget to auth client"
-nightly run --concurrency 2 --max-tasks 5   # multi-task headless dispatch
-nightly brief                   # render .nightly/runs/<id>/briefing.html
+nightly run --concurrency 2 --max-tasks 5     # multi-task headless dispatch
+nightly brief                                 # render .nightly/runs/<id>/briefing.html
 ```
 
 ### Slash commands
 
-After install, five commands are available inside the host:
+Installed into every host alongside the main skill:
 
-| Command              | Purpose                                                    |
-|----------------------|------------------------------------------------------------|
-| `/nightly`           | Start (or continue) a Nightly session — walks the cascade. |
-| `/nightly-init`      | Bootstrap Nightly in the current repo — runs `nightly init`. |
-| `/nightly-conclude`  | Wind down the running session — human-only off-ramp.       |
-| `/nightly-update`    | Pull the latest Nightly release; refresh skills + hooks.   |
-| `/nightly-bug`       | Bundle run state into a debug report (file as issue).      |
+| Command              | Purpose                                                       |
+|----------------------|---------------------------------------------------------------|
+| `/nightly`           | Start (or continue) a Nightly session — walks the cascade.    |
+| `/nightly-init`      | Bootstrap Nightly in the current repo — runs `nightly init`.  |
+| `/nightly-conclude`  | Wind down the running session — human-only off-ramp.          |
+| `/nightly-update`    | Pull the latest Nightly release; refresh skills + hooks.      |
+| `/nightly-bug`       | Bundle run state into a debug report (file as issue).         |
 
 ---
 
 ## Hosts
 
-Nightly ships first-class integrations for six interactive hosts.
-Three are *primary* (full headless support); three are *secondary*
-(launcher only — their headless story is a remote queue, deferred).
+Six hosts ship with first-class integrations. The three *primary*
+hosts support full headless dispatch; the three *secondary* hosts ship
+the launcher only — their headless story is a remote queue, deferred.
 
 | Host           | Tier      | Skill installed at                        | Sub-agent dispatch                 | OS sandbox                |
 | -------------- | --------- | ----------------------------------------- | ---------------------------------- | ------------------------- |
@@ -130,19 +122,18 @@ Three are *primary* (full headless support); three are *secondary*
 | Antigravity    | secondary | `.gemini/antigravity/agents/.../SKILL.md` | Agent Manager + `brain/<GUID>/`    | none                      |
 | Gemini CLI     | secondary | `.gemini/commands/nightly.toml`           | Headless `gemini --prompt`         | none                      |
 
-Install per host: `uv run nightly init --host <name>`. Switch scopes
-with `--scope user` for a global install vs the default `--scope
-project`. Subscription auth propagates from the host's cached creds
-(`~/.claude/`, `~/.codex/`, `~/.local/share/opencode/`,
-`~/.gemini/`, etc.) — Nightly never asks for an API token.
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / etc. work
-as env-var fallbacks for sandboxed CI.
+Install per host with `nightly init --host <name>`. Switch scopes with
+`--scope user` (global) vs the default `--scope project`. Subscription
+auth propagates from the host's cached creds (`~/.claude/`,
+`~/.codex/`, `~/.local/share/opencode/`, `~/.gemini/`, …) — Nightly
+never asks for an API token. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+`GEMINI_API_KEY` etc. are env-var fallbacks for sandboxed CI.
 
 `antigravity` and `gemini` are distinct hosts sharing the `.gemini/`
 namespace: Antigravity writes managed-agent files under
-`.gemini/antigravity/agents/` (desktop IDE), while vanilla Gemini CLI
-writes custom-command TOML under `.gemini/commands/`. Both register an
-`AfterAgent` Stop-style hook against `.gemini/settings.json` — that
+`.gemini/antigravity/agents/` (desktop IDE); vanilla Gemini CLI writes
+custom-command TOML under `.gemini/commands/`. Both register an
+`AfterAgent` Stop-style hook against `.gemini/settings.json` — the
 merge is idempotent if you co-install them.
 
 ---
@@ -153,8 +144,8 @@ merge is idempotent if you co-install them.
   fixed precedence: resume in-flight plans → unblocked-by-approval plans
   → accepted RFCs in `.planning/rfcs/` → highest-ranked open GitHub
   issue (via `gh`) → ideation (proposer suite) → terminal *nothing*.
-- **Per-task isolation** — every task gets its own `git worktree`
-  forked from a base branch. Concurrent dispatches cannot stomp on
+- **Per-task isolation** — every task lives in its own `git worktree`
+  forked from a base branch, so concurrent dispatches cannot stomp on
   each other.
 - **Specialists** — four sub-agent roles (`implementer`, `tester`,
   `reviewer`, `researcher`) with their own context windows, dispatched
@@ -184,27 +175,40 @@ merge is idempotent if you co-install them.
 
 ## CLI reference
 
+`nightly --help` lists everything; this is the operator-facing subset.
+
 | Group | Command | Purpose |
 |---|---|---|
 | **Setup** | `nightly init [--host <h>] [--scope project\|user]` | Bootstrap `.nightly/` + install the host launcher. |
 | | `nightly status` | Show repo state, installed hosts, current run. |
 | | `nightly uninstall [--host <h>] [--scope ...]` | Remove the host launcher. |
+| | `nightly doctor` | Repair a drifted install (scaffold, config, rules, skills). |
+| | `nightly update [--version <ref>] [--dry-run]` | Self-upgrade Nightly's source + refresh installed hosts. |
 | | `nightly version` / `nightly info` | Identity / phase summary. |
 | **Run lifecycle** | `nightly start ["<seed task>"]` | Create a new run; optionally seed `tasks/0001-<slug>/`. |
 | | `nightly task <slug> [-d "<desc>"]` | Add a task to the current run. |
 | | `nightly conclude` | Mark the current run as concluding (non-blocking drain). |
+| | `nightly stop` | Immediate hard-stop request — the next turn boundary ends. |
+| | `nightly session start` / `session stop` | Arm / disarm the Stop-hook keep-alive marker. |
 | | `nightly brief [--run <id>]` | Render `<run>/briefing.html`. |
 | **Cascade** | `nightly next` | Walk the priority cascade; print the next pick + rationale. |
 | | `nightly triage [--top N]` | List ranked open GitHub issues (best-effort, needs `gh`). |
 | | `nightly plans` | Every plan across runs with status. |
 | | `nightly specialist <role>` | Print the system prompt for one of the 4 roles. |
+| | `nightly keepalive [--name <s>]` | Show think-harder strategies when the cascade goes empty. |
 | **Ideation** | `nightly propose [--top N]` | Dry-run the proposer suite — list candidates. |
 | | `nightly ideate` | Run proposers; write draft issues to disk. |
 | **Headless** | `nightly headless <prompt> [--host <h>] [--cwd <p>] [--timeout S]` | Single-shot host CLI invocation. |
 | | `nightly run [--host <h>] [-n N] [-j K] [--timeout-per-task S]` | Drive the cascade in headless mode; opt-in parallel. |
+| **PRs & CI** | `nightly feedback [--branch <b>] [--apply]` | Show PR review feedback; `--apply` lands it on the matching plan. |
+| | `nightly rescue` | Preview the next PR-rescue candidate (Nightly-authored, new feedback). |
+| | `nightly ci` | Print CI status across open Nightly PRs. |
+| | `nightly verify` | Detect & run the repo's linters / formatters / type checkers. |
+| | `nightly bug` | Bundle run state into a debug report; optionally file an issue. |
 
-`make help` shows the dev-loop side: `install`, `lint`, `type`, `test`,
-`check`, `brief`, `clean`, `nuke`.
+`make help` covers the dev-loop side: `install`, `sync`, `lint`, `fmt`,
+`type`, `test`, `check`, `install-hooks`, `pre-commit`, `brief`,
+`planning`, `clean`, `nuke`.
 
 ---
 
@@ -235,8 +239,8 @@ Everything Nightly writes lives in one place:
 │       ├── lessons.md      # lessons-learned slot
 │       ├── briefing.html   # rendered morning briefing
 │       └── CONCLUDE        # sentinel — drains on next loop iteration
-├── atlas/                  # repo wiki (Phase 9+)
-└── memory/                 # cross-session memory (Phase 9+)
+├── atlas/                  # repo wiki (scaffolded; rolling refresh deferred)
+└── memory/                 # cross-session memory (scaffolded; reserved)
 ```
 
 ### The `.planning/` design folder
@@ -385,9 +389,10 @@ cloning, open it with:
 make brief
 ```
 
-The brainstorm covers all twelve sections of the original design and
-includes ~40 source references (Devin · OpenHands · SWE-agent · Sweep ·
-AutoCodeRover · Copilot · Factory · Replit · Amp · Cosine and others).
+The brainstorm covers the architecture, state machine, host-comparison
+matrix, refusal policy, and prior art (Devin · OpenHands · SWE-agent ·
+Sweep · AutoCodeRover · Copilot · Factory · Replit · Amp · Cosine and
+others) with inline references throughout.
 
 ---
 
