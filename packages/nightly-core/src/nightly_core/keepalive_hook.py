@@ -1,5 +1,17 @@
 """Claude Code `Stop` hook glue — keep the interactive session alive.
 
+Loop guard (cascade_loop):
+The keepalive log is an append-only audit trail, but the hook also writes
+a per-run `keepalive.history` file containing the last N cascade-pick
+fingerprints. When the same fingerprint shows up `LOOP_THRESHOLD` times
+consecutively, the hook treats the cascade as wedged (e.g. proposer
+re-detects the same source signal because nothing landed on `main`) and
+yields with `reason_code="cascade_loop"`. Without this guard, the
+operator's only signal that the cascade is looping is the host's own
+9-consecutive-block override — which silences the model mid-task and
+leaves no clean audit marker. See `.planning/issues/2` for the failure
+mode that motivated this.
+
 Claude Code stopped my Nightly session last night despite the AGENTS.md /
 CLAUDE.md "never stop" rule (see the screenshot in PR review). The rules
 text alone isn't sufficient because Claude Code emits a Stop event at the
@@ -52,6 +64,8 @@ from nightly_core.runs import current_run
 
 __all__ = [
     "HOOK_FORMATS",
+    "LOOP_HISTORY_FILENAME",
+    "LOOP_THRESHOLD",
     "MAX_OPEN_PRS",
     "MAX_TURNS",
     "SESSION_ACTIVE_FILENAME",
@@ -99,6 +113,24 @@ SESSION_TTL_SECONDS = 4 * 60 * 60
 
 MAX_TURNS = 500
 """Safety cap on how many times the Stop hook will force-continue per run."""
+
+LOOP_THRESHOLD = 3
+"""Yield with `cascade_loop` when the cascade has returned the same pick
+this many times in a row. 3 = "twice was a coincidence, three times is a
+loop." Configurable enough to raise if a real workflow legitimately
+re-dispatches the same plan three turns in a row (rare — most rescues
+mutate the plan body, which changes the summary)."""
+
+LOOP_HISTORY_FILENAME = "keepalive.history"
+"""Per-run file of cascade-pick fingerprints, newline-delimited. Trimmed
+to the last LOOP_THRESHOLD + 4 lines so the file never grows unbounded.
+Lives next to keepalive.log; both are audit artifacts, neither is on the
+hot path."""
+
+_LOOP_HISTORY_KEEP = LOOP_THRESHOLD + 4
+"""How many lines of history to retain on disk. Keep a few extra over
+the threshold so a post-mortem can see the prior context."""
+
 
 MAX_OPEN_PRS = 5
 """Operator-review-throughput cap: when the repo has this many open `nightly/*`
@@ -154,7 +186,7 @@ class StopHookDecision:
         return self.payload.get("decision") == "block"
 
 
-def compute_stop_hook_decision(  # noqa: PLR0911 — one return per off-ramp is the whole point
+def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off-ramp is the whole point
     root: Path | None = None,
     *,
     now: datetime | None = None,
@@ -263,7 +295,44 @@ def compute_stop_hook_decision(  # noqa: PLR0911 — one return per off-ramp is 
             ),
         )
 
-    reason = _build_continue_reason(root, run_id=run.id, turn=turn_count)
+    # Compute the cascade pick once and reuse it for both the loop guard
+    # and the continuation prompt — `next_task` walks plans + proposers,
+    # not a cost we want to pay twice per hook firing.
+    try:
+        choice = next_task(root)
+    except Exception as exc:  # cascade must never crash the hook
+        choice = None
+        cascade_error: Exception | None = exc
+    else:
+        cascade_error = None
+
+    # Loop guard: if the cascade has surfaced the same pick LOOP_THRESHOLD
+    # times in a row, the proposer suite has fallen into a re-detect /
+    # re-dispatch cycle the model can't break by force-continuing. Yield
+    # so the operator sees `decision=cascade_loop` instead of hitting the
+    # host's 9-consecutive-block override mid-task.
+    if choice is not None:
+        fingerprint = _cascade_fingerprint(choice)
+        repeats = _record_and_count_repeats(run.path, fingerprint)
+        if repeats >= LOOP_THRESHOLD:
+            return StopHookDecision(
+                payload={},
+                reason_code="cascade_loop",
+                message=(
+                    f"run {run.id}: cascade pick "
+                    f"`{choice.source}/{choice.summary[:60]}` has repeated "
+                    f"{repeats} turns running — yielding to break the loop "
+                    "(landed local proposals are re-detected by the "
+                    "proposer suite; see issue #2)."
+                ),
+            )
+
+    reason = _build_continue_reason_from(
+        choice=choice,
+        cascade_error=cascade_error,
+        run_id=run.id,
+        turn=turn_count,
+    )
     return StopHookDecision(
         payload={"decision": "block", "reason": reason},
         reason_code="force_continue",
@@ -272,6 +341,54 @@ def compute_stop_hook_decision(  # noqa: PLR0911 — one return per off-ramp is 
             "injecting continuation prompt."
         ),
     )
+
+
+def _cascade_fingerprint(choice: CascadeChoice) -> str:
+    """Stable identity of a cascade pick — used by the loop guard.
+
+    `source + target_path + summary` captures "the same recommendation"
+    closely enough: target_path discriminates between different in-flight
+    plans, summary discriminates between different proposals at the same
+    cascade source. We don't include `rationale` because it can vary
+    turn-to-turn (e.g. proposer scores fluctuate) without the underlying
+    work changing — false positives in the loop guard would mask real
+    progress.
+    """
+    target = str(choice.target_path) if choice.target_path is not None else "-"
+    return f"{choice.source}|{target}|{choice.summary}"
+
+
+def _record_and_count_repeats(run_path: Path, fingerprint: str) -> int:
+    """Append `fingerprint` to the run's history file, return its current
+    consecutive-repeat count (including the new entry).
+
+    The history is trimmed to the last `_LOOP_HISTORY_KEEP` entries so the
+    file can't grow unbounded across long-running sessions. Failure to
+    persist is non-fatal — the hook always returns a decision.
+    """
+    history_path = run_path / LOOP_HISTORY_FILENAME
+    try:
+        prior = (
+            history_path.read_text(encoding="utf-8").splitlines()
+            if history_path.is_file()
+            else []
+        )
+    except OSError:
+        prior = []
+
+    new_history = [*prior, fingerprint][-_LOOP_HISTORY_KEEP:]
+    with contextlib.suppress(OSError):
+        history_path.write_text("\n".join(new_history) + "\n", encoding="utf-8")
+
+    # Count how many trailing entries match `fingerprint` (including the
+    # one we just appended).
+    repeats = 0
+    for entry in reversed(new_history):
+        if entry == fingerprint:
+            repeats += 1
+        else:
+            break
+    return repeats
 
 
 def _marker_is_stale(marker: Path, now: datetime) -> bool:
@@ -300,23 +417,34 @@ def _bump_and_read_turn_count(run_path: Path) -> int:
     return nxt
 
 
-def _build_continue_reason(root: Path | None, *, run_id: str, turn: int) -> str:
-    """Build the smart `continue on X` prompt the hook injects.
+def _build_continue_reason_from(
+    *,
+    choice: CascadeChoice | None,
+    cascade_error: Exception | None,
+    run_id: str,
+    turn: int,
+) -> str:
+    """Build the `continue on X` prompt from an already-resolved cascade pick.
 
-    Walks the cascade so the prompt names a concrete next step. Falls
-    back to the keepalive doctrine when the cascade has no work.
+    Factored out of `_build_continue_reason` so `compute_stop_hook_decision`
+    can compute the cascade choice once (for the loop guard) and reuse it
+    here. Same fallback behavior: if `cascade_error` is set or `choice` is
+    None, emit a generic nudge instead of a "continue on X" prompt.
     """
-    try:
-        choice = next_task(root)
-    except Exception as exc:  # hook must never crash the session
-        # Even if the cascade explodes (corrupt plan frontmatter, etc),
-        # the hook should still keep the session moving with a generic
-        # nudge — never crash, never block the session forever.
+    if cascade_error is not None:
+        # Cascade raised — the hook should still keep the session moving
+        # with a generic nudge. Never crash, never block forever.
         return (
             f"[Nightly keepalive · run {run_id} · turn {turn}] "
-            f"The cascade raised {type(exc).__name__}: {exc}. "
+            f"The cascade raised {type(cascade_error).__name__}: {cascade_error}. "
             "Continue per the AGENTS.md / CLAUDE.md autonomy contract: "
             "investigate the cascade error first, then resume work."
+        )
+    if choice is None:  # defensive — equivalent to a "nothing" branch
+        return (
+            f"[Nightly keepalive · run {run_id} · turn {turn}] "
+            "The cascade returned no pick. Run `nightly next` and execute "
+            "whatever it surfaces."
         )
 
     header = f"[Nightly keepalive · run {run_id} · turn {turn}]"

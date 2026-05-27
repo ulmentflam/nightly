@@ -10,6 +10,8 @@ import pytest
 
 from nightly_core.cascade import CascadeChoice
 from nightly_core.keepalive_hook import (
+    LOOP_HISTORY_FILENAME,
+    LOOP_THRESHOLD,
     MAX_OPEN_PRS,
     MAX_TURNS,
     SESSION_ACTIVE_FILENAME,
@@ -491,6 +493,112 @@ def test_heartbeat_log_records_host_cap_yield(initialized_repo: Path) -> None:
     content = log_path.read_text(encoding="utf-8")
     assert "decision=host_cap" in content
     assert "session=abc" in content
+
+
+# ── cascade-loop guard — issue #2 ────────────────────────────────────────
+
+
+def test_cascade_loop_guard_yields_after_threshold_repeats(
+    initialized_repo: Path,
+) -> None:
+    """When the cascade returns the same pick LOOP_THRESHOLD times in a
+    row, the hook yields with `cascade_loop` instead of force-continuing
+    indefinitely. Regression guard for issue #2 (corpus-forge runaway
+    ideate_fallback re-dispatch loop)."""
+    arm_session(initialized_repo)
+    # Empty repo → cascade returns `nothing` every turn. Same pick each time.
+    for i in range(LOOP_THRESHOLD - 1):
+        d = compute_stop_hook_decision(initialized_repo)
+        assert d.should_block, f"turn {i + 1} should still force-continue"
+        assert d.reason_code == "force_continue"
+
+    # Threshold-th call yields with cascade_loop
+    final = compute_stop_hook_decision(initialized_repo)
+    assert not final.should_block
+    assert final.reason_code == "cascade_loop"
+    assert "repeated" in final.message
+    assert "issue #2" in final.message
+
+
+def test_cascade_loop_guard_writes_history_file(initialized_repo: Path) -> None:
+    """The fingerprint history must be persisted so a post-mortem can
+    see what was repeating, not just that we yielded."""
+    arm_session(initialized_repo)
+    compute_stop_hook_decision(initialized_repo)
+    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
+    history = run_dir / LOOP_HISTORY_FILENAME
+    assert history.is_file()
+    lines = history.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    # Fingerprint shape: source|target|summary
+    assert lines[0].startswith("nothing|") or lines[0].startswith("ideate")
+
+
+def test_cascade_loop_guard_resets_on_different_pick(
+    initialized_repo: Path,
+) -> None:
+    """A change in the cascade pick (e.g. the operator added a task)
+    resets the loop counter — we should NOT yield just because the
+    earlier history was full."""
+    arm_session(initialized_repo)
+    # Seed the history file as if we'd already repeated 2 times.
+    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
+    (run_dir / LOOP_HISTORY_FILENAME).write_text(
+        "nothing|-|no work — backlog is empty\n" * (LOOP_THRESHOLD - 1),
+        encoding="utf-8",
+    )
+    # Inject a different cascade pick by creating an RFC with a task.
+    rfc_dir = initialized_repo / ".planning" / "rfcs"
+    rfc_dir.mkdir(parents=True, exist_ok=True)
+    (rfc_dir / "fresh.md").write_text(
+        "---\nstatus: accepted\n---\n# Fresh\n\n- [ ] new work\n",
+        encoding="utf-8",
+    )
+    decision = compute_stop_hook_decision(initialized_repo)
+    # Should still force-continue: the new pick is different from
+    # what's in history, so consecutive-repeat count resets to 1.
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+
+
+def test_cascade_loop_guard_trims_history(initialized_repo: Path) -> None:
+    """The history file must be bounded — long runs can't be allowed to
+    grow it without limit."""
+    from nightly_core.keepalive_hook import _LOOP_HISTORY_KEEP
+
+    arm_session(initialized_repo)
+    # Pre-seed with many entries — far more than we should retain.
+    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
+    (run_dir / LOOP_HISTORY_FILENAME).write_text(
+        "\n".join(f"old|-|entry {i}" for i in range(50)) + "\n",
+        encoding="utf-8",
+    )
+    compute_stop_hook_decision(initialized_repo)
+    lines = (run_dir / LOOP_HISTORY_FILENAME).read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= _LOOP_HISTORY_KEEP
+
+
+def test_cascade_loop_guard_records_log_entry(initialized_repo: Path) -> None:
+    """When we yield with `cascade_loop`, the keepalive.log audit trail
+    must record it so an operator can distinguish it from `conclude` /
+    `host_cap` (all three look the same on the wire — empty `{}`)."""
+    arm_session(initialized_repo)
+    for _ in range(LOOP_THRESHOLD):
+        compute_stop_hook_decision(initialized_repo)
+    # Last decision should be cascade_loop.
+    final = compute_stop_hook_decision(initialized_repo)
+    log_path = log_heartbeat(final, initialized_repo, hook_input={"session_id": "x"})
+    assert log_path is not None
+    content = log_path.read_text(encoding="utf-8")
+    assert "decision=cascade_loop" in content
+
+
+def test_cascade_loop_guard_constants_locked_in() -> None:
+    """The threshold lives below the host's 9-block override on purpose
+    — we yield before the host overrides us so the audit trail shows
+    `cascade_loop` rather than `host_cap`."""
+    assert LOOP_THRESHOLD < 9, "must yield before Claude Code's 9-block override"
+    assert LOOP_THRESHOLD >= 2, "<2 would make the guard fire on first repeat"
 
 
 def test_hook_stop_cli_honors_stop_hook_active(
