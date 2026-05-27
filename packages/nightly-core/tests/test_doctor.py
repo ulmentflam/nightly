@@ -138,6 +138,24 @@ def test_existing_config_is_not_overwritten(repo: Path) -> None:
     assert (repo / ".nightly" / "config.yml").read_text(encoding="utf-8") == custom
 
 
+def test_worktree_location_ok_off_icloud(repo: Path) -> None:
+    """A non-iCloud repo reports the worktree-location check as ok."""
+    report = diagnose_and_repair(repo, host_loader={})
+    by_name = {c.name: c for c in report.checks}
+    assert by_name["worktree_location"].status == "ok"
+
+
+def test_worktree_location_warns_under_icloud(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repo under iCloud → non-fatal warning (run stays healthy)."""
+    monkeypatch.setattr("nightly_core.doctor.is_icloud_path", lambda _p: True)
+    report = diagnose_and_repair(repo, host_loader={})
+    by_name = {c.name: c for c in report.checks}
+    assert by_name["worktree_location"].status == "warning"
+    assert "worktree_root" in by_name["worktree_location"].detail
+    # A warning must not flip the install to unhealthy.
+    assert report.healthy is True
+
+
 def test_rules_block_refreshed_when_present(repo: Path) -> None:
     """If AGENTS.md exists with a stale rules block, doctor refreshes it."""
     (repo / "AGENTS.md").write_text(

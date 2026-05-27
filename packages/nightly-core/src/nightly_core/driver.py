@@ -79,6 +79,10 @@ class DriverConfig:
 
     branch_prefix: str = "nightly/"
 
+    worktree_root: str | None = None
+    """Parent dir for per-task worktrees. `None` = sibling `<repo>-nightly/`.
+    Set to a non-synced path to keep trees off iCloud/Dropbox/NFS."""
+
 
 @dataclass(frozen=True)
 class TaskOutcome:
@@ -113,9 +117,7 @@ def build_task_prompt(
     auto-ideate fallback (in which case the agent lands locally rather
     than opening a PR).
     """
-    is_fallback = (
-        cascade_choice is not None and cascade_choice.source == "ideate_fallback"
-    )
+    is_fallback = cascade_choice is not None and cascade_choice.source == "ideate_fallback"
     if is_fallback:
         landing_section = f"""\
 ## Landing instructions — LOCAL PROPOSAL (no PR)
@@ -216,6 +218,7 @@ async def run_one_task(  # noqa: PLR0913 - per-task dispatch needs every dimensi
     timeout_per_task_s: float | None = None,
     base_branch: str = "main",
     branch_prefix: str = "nightly/",
+    worktree_root: str | None = None,
     git_runner: GitRunner | None = None,
     cascade_choice: CascadeChoice | None = None,
 ) -> TaskOutcome:
@@ -246,11 +249,10 @@ async def run_one_task(  # noqa: PLR0913 - per-task dispatch needs every dimensi
             slug=plan.slug,
             base_branch=base_branch,
             branch_prefix=branch_prefix,
+            worktree_root=worktree_root,
             runner=git_runner,
         )
-        prompt = build_task_prompt(
-            plan, plan.path.parent, cascade_choice=cascade_choice
-        )
+        prompt = build_task_prompt(plan, plan.path.parent, cascade_choice=cascade_choice)
         headless = await host.run_headless(
             prompt,
             cwd=worktree.path,
@@ -379,18 +381,13 @@ async def _pick_batch(
             proposal = (
                 proposals[0]
                 if choice.source == "ideate_fallback"
-                else next(
-                    (p for p in proposals if p.score == choice.score), proposals[0]
-                )
+                else next((p for p in proposals if p.score == choice.score), proposals[0])
             )
-            plan = _materialize_proposal_as_plan(
-                root=root, proposal=proposal, source=choice.source
-            )
+            plan = _materialize_proposal_as_plan(root=root, proposal=proposal, source=choice.source)
 
         if plan is None:
             _log.info(
-                "cascade returned %s but no plan available (target=%s); "
-                "skipping this batch",
+                "cascade returned %s but no plan available (target=%s); skipping this batch",
                 choice.source,
                 choice.target_path,
             )
@@ -457,6 +454,7 @@ async def run_loop(
                     timeout_per_task_s=cfg.timeout_per_task_s,
                     base_branch=cfg.base_branch,
                     branch_prefix=cfg.branch_prefix,
+                    worktree_root=cfg.worktree_root,
                     git_runner=git_runner,
                     cascade_choice=choice,
                 )
