@@ -1,28 +1,28 @@
-"""AntigravityHostIntegration — Nightly's second secondary host.
+"""GeminiHostIntegration — Nightly's vanilla Gemini CLI host.
 
-Phase 6 implements the launcher lifecycle. The Skill installs to
-`.gemini/antigravity/agents/nightly/SKILL.md` per Antigravity's per-host
-convention (Google's Gemini family puts agent and skill config under
-`~/.gemini/antigravity/`).
+Distinct from `nightly-host-antigravity`: both write under `.gemini/`,
+but Antigravity targets the desktop IDE's managed-agent surface
+(`.gemini/antigravity/agents/`), while this host targets the upstream
+Gemini CLI's custom-command surface (`.gemini/commands/`). The two
+share the same `.gemini/settings.json` hook surface (`AfterAgent`).
 
-The auth heuristic is unusual: Antigravity doesn't have a single CLI
-binary to probe (the desktop IDE owns most of the auth surface). We use
-*directory presence* of `~/.gemini/antigravity/` as the signal — if the
-user has ever opened Antigravity and gone through OAuth, that directory
-exists. Empty / absent = "unknown / not authenticated."
+Gemini CLI custom commands are TOML, not markdown — see
+`nightly_host_gemini.skill.md_to_gemini_toml` for the conversion.
 
-`dispatch_sub_agent` (Agent Manager registration over Antigravity's API)
-and `request_approval` (native UI prompts) arrive in Phase 7+, alongside
-`brain/<GUID>/` mirroring.
+Sub-agent dispatch via headless `gemini --prompt ...` and `request_approval`
+land later (Phase 7+).
 """
 
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
 from nightly_core import (
+    BUG_SKILL_MD,
     CONCLUDE_SKILL_MD,
     INIT_SKILL_MD,
     UPDATE_SKILL_MD,
@@ -42,42 +42,41 @@ from nightly_core.hook_install import (
     read_settings,
     remove_nested_hook,
 )
-from nightly_host_antigravity.skill import SKILL_MD
+from nightly_host_gemini.skill import SKILL_MD, md_to_gemini_toml
 
-__all__ = ["AntigravityHostIntegration"]
+__all__ = ["GeminiHostIntegration"]
 
-# Antigravity exposes session ids inconsistently — try both common names.
-_SESSION_ID_ENV_VARS = ("ANTIGRAVITY_SESSION_ID", "GEMINI_SESSION_ID")
+# Gemini CLI session id env var. Best-effort — the upstream CLI doesn't
+# expose this consistently yet; we accept either name.
+_SESSION_ID_ENV_VARS = ("GEMINI_SESSION_ID", "GEMINI_CLI_SESSION_ID")
 
-# User-scope home for Antigravity. Used both as the user-scope install
-# parent AND as the auth-status presence probe.
-_ANTIGRAVITY_HOME = Path.home() / ".gemini" / "antigravity"
-
-# Antigravity is built on Gemini CLI, which exposes an `AfterAgent`
-# lifecycle hook (Stop-hook equivalent) configured in `.gemini/settings.json`.
-# `decision: "deny"` with a `reason` triggers a retry with the reason text
-# fed back as the next user prompt — the same semantics as Claude Code's
-# `{"decision":"block","reason":"..."}` shape, just renamed.
-# https://geminicli.com/docs/hooks/ and the official docs at
-# github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md
+# Shared with Antigravity — both surfaces register `AfterAgent` against
+# the same settings file. `merge_nested_hook` is idempotent so co-install
+# is safe.
 _STOP_HOOK_COMMAND = "nightly hook stop --format gemini_cli"
 _GEMINI_SETTINGS_RELATIVE = Path(".gemini/settings.json")
 
+_GEMINI_HOME = Path.home() / ".gemini"
 
-class AntigravityHostIntegration(NightlyHostIntegration):
-    """Nightly host integration for Google Antigravity (secondary host)."""
 
-    host_id: HostId = "antigravity"
+class GeminiHostIntegration(NightlyHostIntegration):
+    """Nightly host integration for vanilla Google Gemini CLI."""
+
+    host_id: HostId = "gemini"
     keepalive_support: KeepaliveSupport = "forced"
 
-    PROJECT_SKILL_RELATIVE = Path(".gemini/antigravity/agents/nightly/SKILL.md")
-    USER_SKILL_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly" / "SKILL.md"
-    PROJECT_CONCLUDE_RELATIVE = Path(".gemini/antigravity/agents/nightly-conclude/SKILL.md")
-    USER_CONCLUDE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-conclude" / "SKILL.md"
-    PROJECT_UPDATE_RELATIVE = Path(".gemini/antigravity/agents/nightly-update/SKILL.md")
-    USER_UPDATE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-update" / "SKILL.md"
-    PROJECT_INIT_RELATIVE = Path(".gemini/antigravity/agents/nightly-init/SKILL.md")
-    USER_INIT_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-init" / "SKILL.md"
+    # Gemini CLI custom commands are single TOML files per command, not
+    # folders. Same shape as Cursor.
+    PROJECT_SKILL_RELATIVE = Path(".gemini/commands/nightly.toml")
+    USER_SKILL_ABSOLUTE = _GEMINI_HOME / "commands" / "nightly.toml"
+    PROJECT_CONCLUDE_RELATIVE = Path(".gemini/commands/nightly-conclude.toml")
+    USER_CONCLUDE_ABSOLUTE = _GEMINI_HOME / "commands" / "nightly-conclude.toml"
+    PROJECT_UPDATE_RELATIVE = Path(".gemini/commands/nightly-update.toml")
+    USER_UPDATE_ABSOLUTE = _GEMINI_HOME / "commands" / "nightly-update.toml"
+    PROJECT_BUG_RELATIVE = Path(".gemini/commands/nightly-bug.toml")
+    USER_BUG_ABSOLUTE = _GEMINI_HOME / "commands" / "nightly-bug.toml"
+    PROJECT_INIT_RELATIVE = Path(".gemini/commands/nightly-init.toml")
+    USER_INIT_ABSOLUTE = _GEMINI_HOME / "commands" / "nightly-init.toml"
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (root or repo_root()).resolve()
@@ -102,6 +101,11 @@ class AntigravityHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_UPDATE_RELATIVE
         return self.USER_UPDATE_ABSOLUTE
 
+    def bug_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_BUG_RELATIVE
+        return self.USER_BUG_ABSOLUTE
+
     def init_skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
             return self._root / self.PROJECT_INIT_RELATIVE
@@ -110,14 +114,15 @@ class AntigravityHostIntegration(NightlyHostIntegration):
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(SKILL_MD, encoding="utf-8")
+        target.write_text(md_to_gemini_toml(SKILL_MD), encoding="utf-8")
         for sibling_path, sibling_md in (
             (self.conclude_skill_path(scope), CONCLUDE_SKILL_MD),
             (self.update_skill_path(scope), UPDATE_SKILL_MD),
+            (self.bug_skill_path(scope), BUG_SKILL_MD),
             (self.init_skill_path(scope), INIT_SKILL_MD),
         ):
             sibling_path.parent.mkdir(parents=True, exist_ok=True)
-            sibling_path.write_text(sibling_md, encoding="utf-8")
+            sibling_path.write_text(md_to_gemini_toml(sibling_md), encoding="utf-8")
         self.install_keepalive_hook(scope)
 
     async def uninstall(self, scope: InstallScope) -> None:
@@ -126,35 +131,22 @@ class AntigravityHostIntegration(NightlyHostIntegration):
         for sibling in (
             self.conclude_skill_path(scope),
             self.update_skill_path(scope),
+            self.bug_skill_path(scope),
             self.init_skill_path(scope),
         ):
             if sibling.exists():
                 sibling.unlink()
-                self._trim_agents_parents(sibling)
-        if not target.exists():
-            return
-        target.unlink()
-        self._trim_agents_parents(target)
-
-    @staticmethod
-    def _trim_agents_parents(skill_file: Path) -> None:
-        """Trim empty parents up to `agents/`. Never touch antigravity/ —
-        that's user home and may contain unrelated state (brain/, settings)."""
-        parent = skill_file.parent
-        stop_at = "agents"
-        while parent.name and not any(parent.iterdir()):
-            removed = parent
-            parent = parent.parent
-            removed.rmdir()
-            if removed.name == stop_at:
-                break
+        if target.exists():
+            target.unlink()
+        # No parent cleanup: `.gemini/commands/` is shared with other
+        # custom commands the user may have installed (same convention
+        # as Cursor's `.cursor/commands/`).
 
     def is_installed(self, scope: InstallScope) -> bool:
         return self.skill_path(scope).is_file()
 
-    # ── Stop hook wiring (Phase 9i — Gemini CLI AfterAgent) ──────────────
+    # ── Stop hook wiring (Gemini CLI AfterAgent) ─────────────────────────
     def settings_path(self) -> Path:
-        """Where Nightly merges its AfterAgent hook entry."""
         return self._root / _GEMINI_SETTINGS_RELATIVE
 
     def _hook_file(self) -> HookFile:
@@ -196,18 +188,25 @@ class AntigravityHostIntegration(NightlyHostIntegration):
                 return value
         return f"detached-{uuid.uuid4()}"
 
-    # ── auth_status (heuristic for Phase 6) ──────────────────────────────
+    # ── auth_status (heuristic) ──────────────────────────────────────────
     async def auth_status(self) -> AuthStatus:
-        """Heuristic: `~/.gemini/antigravity/` exists.
+        """Heuristic: `gemini` binary present and `gemini --version` exits 0.
 
-        Antigravity has no canonical CLI binary to probe — auth is owned
-        by the desktop IDE going through Google OAuth. The compromise:
-        treat directory presence as evidence that the user has launched
-        Antigravity at least once. False positives are possible (a stale
-        empty directory) but real-world false negatives only happen
-        before the user has ever opened the app, which is a useful signal.
+        Gemini CLI manages OAuth state under `~/.gemini/`; a richer probe
+        can land later. Synchronous subprocess inside an async method is
+        intentional — this is a one-shot init probe, never on a hot path.
         """
-        if not _ANTIGRAVITY_HOME.is_dir():
+        binary = shutil.which("gemini")
+        if binary is None:
+            return AuthStatus(ok=False)
+        try:
+            subprocess.run(  # noqa: ASYNC221 - one-shot init probe
+                [binary, "--version"],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
             return AuthStatus(ok=False)
         return AuthStatus(ok=True, plan="unknown")
 
@@ -222,16 +221,14 @@ class AntigravityHostIntegration(NightlyHostIntegration):
         timeout_s: float | None = None,
     ) -> SubAgentResult:
         raise NotImplementedError(
-            "Sub-agent dispatch via Antigravity's Agent Manager API is "
-            "Phase 7+. Phase 6 ships only the managed-agent launcher; "
-            "the Skill orchestrates dispatch in-session for now. The "
-            "Phase 7 implementation will also mirror task artifacts into "
-            "~/.gemini/antigravity/brain/<GUID>/ for the Agent Manager UI."
+            "Sub-agent dispatch via headless `gemini --prompt` is Phase 7+. "
+            "Phase 6 ships only the custom-command launcher; the skill "
+            "orchestrates dispatch in-session for now."
         )
 
     async def request_approval(self, q: str, choices: list[str]) -> str:
         raise NotImplementedError(
-            "Native Antigravity UI approval is Phase 7+. Phase 6 records "
+            "Native Gemini CLI UI approval is Phase 7+. Phase 6 records "
             "refusals to .nightly/runs/<run-id>/proposed/approvals/ for "
             "retro review."
         )

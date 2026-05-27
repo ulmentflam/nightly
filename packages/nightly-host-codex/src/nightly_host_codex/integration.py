@@ -22,6 +22,7 @@ from pathlib import Path
 
 from nightly_core import (
     CONCLUDE_SKILL_MD,
+    INIT_SKILL_MD,
     UPDATE_SKILL_MD,
     AuthStatus,
     HeadlessResult,
@@ -71,6 +72,8 @@ class CodexHostIntegration(NightlyHostIntegration):
     USER_CONCLUDE_ABSOLUTE = Path.home() / ".codex/skills/nightly-conclude/SKILL.md"
     PROJECT_UPDATE_RELATIVE = Path(".codex/skills/nightly-update/SKILL.md")
     USER_UPDATE_ABSOLUTE = Path.home() / ".codex/skills/nightly-update/SKILL.md"
+    PROJECT_INIT_RELATIVE = Path(".codex/skills/nightly-init/SKILL.md")
+    USER_INIT_ABSOLUTE = Path.home() / ".codex/skills/nightly-init/SKILL.md"
 
     def __init__(
         self,
@@ -102,6 +105,11 @@ class CodexHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_UPDATE_RELATIVE
         return self.USER_UPDATE_ABSOLUTE
 
+    def init_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_INIT_RELATIVE
+        return self.USER_INIT_ABSOLUTE
+
     async def install(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +117,7 @@ class CodexHostIntegration(NightlyHostIntegration):
         for sibling_path, sibling_md in (
             (self.conclude_skill_path(scope), CONCLUDE_SKILL_MD),
             (self.update_skill_path(scope), UPDATE_SKILL_MD),
+            (self.init_skill_path(scope), INIT_SKILL_MD),
         ):
             sibling_path.parent.mkdir(parents=True, exist_ok=True)
             sibling_path.write_text(sibling_md, encoding="utf-8")
@@ -117,7 +126,11 @@ class CodexHostIntegration(NightlyHostIntegration):
     async def uninstall(self, scope: InstallScope) -> None:
         target = self.skill_path(scope)
         self.uninstall_keepalive_hook(scope)
-        for sibling in (self.conclude_skill_path(scope), self.update_skill_path(scope)):
+        for sibling in (
+            self.conclude_skill_path(scope),
+            self.update_skill_path(scope),
+            self.init_skill_path(scope),
+        ):
             if sibling.exists():
                 sibling.unlink()
                 self._trim_skill_parents(sibling)

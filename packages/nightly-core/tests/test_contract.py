@@ -17,8 +17,15 @@ from nightly_core import (
 )
 
 
-def test_host_id_literal_covers_five_supported_hosts() -> None:
-    assert set(get_args(HostId)) == {"claude", "codex", "cursor", "opencode", "antigravity"}
+def test_host_id_literal_covers_supported_hosts() -> None:
+    assert set(get_args(HostId)) == {
+        "claude",
+        "codex",
+        "cursor",
+        "opencode",
+        "antigravity",
+        "gemini",
+    }
 
 
 def test_specialist_role_literal() -> None:

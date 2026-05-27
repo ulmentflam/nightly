@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
@@ -11,6 +13,7 @@ from nightly_core.cli import app
 from nightly_core.doctor import (
     DEFAULT_NIGHTLY_SUBDIRS,
     DoctorReport,
+    HostLoader,
     diagnose_and_repair,
 )
 
@@ -41,7 +44,14 @@ class _FakeIntegration:
         name: str,
         *,
         keepalive_support: str = "forced",
-        installed_pieces: tuple[str, ...] = ("main", "conclude", "update", "bug", "hook"),
+        installed_pieces: tuple[str, ...] = (
+            "main",
+            "conclude",
+            "update",
+            "bug",
+            "init",
+            "hook",
+        ),
     ) -> None:
         self._root = root
         self._name = name
@@ -61,6 +71,9 @@ class _FakeIntegration:
     def bug_skill_path(self, scope: str) -> Path:
         return self._root / f".fake-{self._name}/skills/nightly-bug/SKILL.md"
 
+    def init_skill_path(self, scope: str) -> Path:
+        return self._root / f".fake-{self._name}/skills/nightly-init/SKILL.md"
+
     def is_installed(self, scope: str) -> bool:
         return self.skill_path(scope).is_file()
 
@@ -74,6 +87,7 @@ class _FakeIntegration:
             ("conclude", self.conclude_skill_path(scope)),
             ("update", self.update_skill_path(scope)),
             ("bug", self.bug_skill_path(scope)),
+            ("init", self.init_skill_path(scope)),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{kind} for {self._name}\n", encoding="utf-8")
@@ -81,9 +95,17 @@ class _FakeIntegration:
         self._installed_pieces.add("hook")
 
 
-def _make_loaders(integrations: dict[str, _FakeIntegration]):
-    """Wrap fake integrations as the `host_loader` dict diagnose_and_repair expects."""
-    return {name: (lambda _root, inst=inst: inst) for name, inst in integrations.items()}
+def _make_loaders(integrations: dict[str, _FakeIntegration]) -> Mapping[str, HostLoader]:
+    """Wrap fake integrations as the `host_loader` dict diagnose_and_repair expects.
+
+    `_FakeIntegration` is a structural shim (not a `NightlyHostIntegration`
+    subclass), so we cast at the boundary — the duck-typing surface that
+    `diagnose_and_repair` consults is documented on the class itself.
+    """
+    return cast(
+        "Mapping[str, HostLoader]",
+        {name: (lambda _root, inst=inst: inst) for name, inst in integrations.items()},
+    )
 
 
 def test_diagnose_repairs_missing_scaffold(repo: Path) -> None:
@@ -179,6 +201,7 @@ def test_host_ok_when_everything_present(repo: Path) -> None:
         claude.conclude_skill_path("project"),
         claude.update_skill_path("project"),
         claude.bug_skill_path("project"),
+        claude.init_skill_path("project"),
     ):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("present\n", encoding="utf-8")
@@ -219,6 +242,7 @@ def test_soft_host_does_not_require_stop_hook(repo: Path) -> None:
         opencode.conclude_skill_path("project"),
         opencode.update_skill_path("project"),
         opencode.bug_skill_path("project"),
+        opencode.init_skill_path("project"),
     ):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("present\n", encoding="utf-8")

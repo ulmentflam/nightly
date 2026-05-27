@@ -18,6 +18,8 @@ below is the operator's view.
 
 ## Install
 
+### One-liner (recommended)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ulmentflam/nightly/main/install.sh | bash
 ```
@@ -29,6 +31,36 @@ shim at `~/.local/bin/nightly`. Re-running checks for updates.
 Honors a few env vars: `NIGHTLY_HOME` (clone target),
 `NIGHTLY_VERSION` (branch/tag/SHA), `NIGHTLY_BIN` (shim location),
 `NIGHTLY_REPO` (git URL — useful for forks).
+
+### Global install + `/nightly-init` (drop into any repo)
+
+The recommended workflow for active developers: install the skill once
+at user scope, then bootstrap each repo from inside the host with the
+`/nightly-init` slash command — no need to drop to a shell.
+
+```bash
+# one-time setup — installs the host skill at user scope
+nightly init --scope user                  # default host = claude
+# or for another host:
+nightly init --host codex --scope user
+nightly init --host gemini --scope user
+```
+
+That writes the main `/nightly` skill plus four companion commands
+(`/nightly-init`, `/nightly-conclude`, `/nightly-update`,
+`/nightly-bug`) into the host's user-scope skill directory
+(`~/.claude/skills/`, `~/.codex/skills/`,
+`~/.gemini/commands/`, etc.). From then on, in any repo:
+
+```text
+> /nightly-init
+```
+
+The skill shells out to `nightly init` against the current working
+directory — creates `.nightly/`, writes `config.yml`, installs the
+project-scope skill files, merges the Stop-hook entry, and seeds the
+autonomy contract into `AGENTS.md` / `CLAUDE.md`. Idempotent: safe to
+re-run.
 
 ### Or, install from source (for development)
 
@@ -45,9 +77,10 @@ uv run nightly --help           # or `source .venv/bin/activate && nightly --hel
 Once installed, point Nightly at the host you use:
 
 ```bash
-nightly init                    # default = Claude Code
+nightly init                    # default = Claude Code, project scope
 # or:  nightly init --host codex
 # or:  nightly init --host opencode --scope user
+# or:  nightly init --host gemini       # vanilla Gemini CLI
 ```
 
 Then open your host (Claude Code, Codex, etc.) in any repo and ask
@@ -55,35 +88,56 @@ Nightly to work on a task — the Skill takes over. For unattended runs:
 
 ```bash
 cd <some-repo>
-nightly init                    # one-time per repo
+nightly init                    # one-time per repo (or `/nightly-init` from inside the host)
 nightly start                   # create a session
 nightly task add-retry -d "Add retry budget to auth client"
 nightly run --concurrency 2 --max-tasks 5   # multi-task headless dispatch
 nightly brief                   # render .nightly/runs/<id>/briefing.html
 ```
 
+### Slash commands
+
+After install, five commands are available inside the host:
+
+| Command              | Purpose                                                    |
+|----------------------|------------------------------------------------------------|
+| `/nightly`           | Start (or continue) a Nightly session — walks the cascade. |
+| `/nightly-init`      | Bootstrap Nightly in the current repo — runs `nightly init`. |
+| `/nightly-conclude`  | Wind down the running session — human-only off-ramp.       |
+| `/nightly-update`    | Pull the latest Nightly release; refresh skills + hooks.   |
+| `/nightly-bug`       | Bundle run state into a debug report (file as issue).      |
+
 ---
 
 ## Hosts
 
-Nightly ships first-class integrations for five interactive hosts.
-Three are *primary* (full headless support); two are *secondary*
+Nightly ships first-class integrations for six interactive hosts.
+Three are *primary* (full headless support); three are *secondary*
 (launcher only — their headless story is a remote queue, deferred).
 
-| Host           | Tier      | Skill installed at                      | Sub-agent dispatch                 | OS sandbox                |
-| -------------- | --------- | --------------------------------------- | ---------------------------------- | ------------------------- |
-| Claude Code    | primary   | `.claude/skills/nightly/SKILL.md`       | Task tool + MCP                    | none (in-proc)            |
-| Codex CLI      | primary   | `.codex/skills/nightly/SKILL.md`        | MCP / `codex exec`                 | Seatbelt + Landlock       |
-| opencode       | primary   | `.opencode/agents/nightly/SKILL.md`     | `POST /session/:id/fork` + SSE     | none                      |
-| Cursor         | secondary | `.cursor/commands/nightly.md`           | Background Agents (cloud VM)       | cloud VM (Background)     |
-| Antigravity    | secondary | `.gemini/antigravity/agents/.../SKILL.md` | Agent Manager + `brain/<GUID>/`   | none                      |
+| Host           | Tier      | Skill installed at                        | Sub-agent dispatch                 | OS sandbox                |
+| -------------- | --------- | ----------------------------------------- | ---------------------------------- | ------------------------- |
+| Claude Code    | primary   | `.claude/skills/nightly/SKILL.md`         | Task tool + MCP                    | none (in-proc)            |
+| Codex CLI      | primary   | `.codex/skills/nightly/SKILL.md`          | MCP / `codex exec`                 | Seatbelt + Landlock       |
+| opencode       | primary   | `.opencode/agents/nightly/SKILL.md`       | `POST /session/:id/fork` + SSE     | none                      |
+| Cursor         | secondary | `.cursor/commands/nightly.md`             | Background Agents (cloud VM)       | cloud VM (Background)     |
+| Antigravity    | secondary | `.gemini/antigravity/agents/.../SKILL.md` | Agent Manager + `brain/<GUID>/`    | none                      |
+| Gemini CLI     | secondary | `.gemini/commands/nightly.toml`           | Headless `gemini --prompt`         | none                      |
 
 Install per host: `uv run nightly init --host <name>`. Switch scopes
 with `--scope user` for a global install vs the default `--scope
 project`. Subscription auth propagates from the host's cached creds
-(`~/.claude/`, `~/.codex/`, `~/.local/share/opencode/`, etc.) — Nightly
-never asks for an API token. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / etc.
-work as env-var fallbacks for sandboxed CI.
+(`~/.claude/`, `~/.codex/`, `~/.local/share/opencode/`,
+`~/.gemini/`, etc.) — Nightly never asks for an API token.
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / etc. work
+as env-var fallbacks for sandboxed CI.
+
+`antigravity` and `gemini` are distinct hosts sharing the `.gemini/`
+namespace: Antigravity writes managed-agent files under
+`.gemini/antigravity/agents/` (desktop IDE), while vanilla Gemini CLI
+writes custom-command TOML under `.gemini/commands/`. Both register an
+`AfterAgent` Stop-style hook against `.gemini/settings.json` — that
+merge is idempotent if you co-install them.
 
 ---
 
@@ -242,7 +296,8 @@ against the same repo can race on plan-status updates.
 │   ├── nightly-host-codex/           # primary host
 │   ├── nightly-host-opencode/        # primary host
 │   ├── nightly-host-cursor/          # secondary host
-│   └── nightly-host-antigravity/     # secondary host
+│   ├── nightly-host-antigravity/     # secondary host (Antigravity IDE)
+│   └── nightly-host-gemini/          # secondary host (vanilla Gemini CLI)
 ├── .planning/                        # human-authored design
 │   ├── brainstorm.html               # the full design doc (open with `make brief`)
 │   ├── decisions/
@@ -255,7 +310,7 @@ Each host package implements `NightlyHostIntegration` from
 (`install` / `uninstall` / `is_installed` / `session_id` /
 `auth_status`) and three more cover runtime (`run_headless` for the
 primaries; `dispatch_sub_agent` / `request_approval` reserved for
-future work). Adding a sixth host is one new package + one entry in
+future work). Adding another host is one new package + one entry in
 `_HOST_LOADERS`.
 
 ---
@@ -263,21 +318,31 @@ future work). Adding a sixth host is one new package + one entry in
 ## Development
 
 ```bash
-make install      # uv sync --all-packages (creates .venv)
-make check        # ruff (lint) + Pyrefly (types) + pytest
-make test         # just pytest
-make lint         # ruff check
-make type         # Pyrefly type-check
-make fmt          # ruff format (write)
-make brief        # open .planning/brainstorm.html in the browser
-make clean        # remove ruff / pyrefly / pytest caches
-make nuke         # clean + drop the venv
+make install            # uv sync --all-packages (creates .venv)
+make install-hooks      # arm the pre-commit hook (ruff + pyrefly on every commit)
+make check              # ruff (lint) + Pyrefly (types) + pytest
+make test               # just pytest
+make lint               # ruff check
+make type               # Pyrefly type-check
+make fmt                # ruff format (write)
+make pre-commit         # run every pre-commit hook against every file
+make brief              # open .planning/brainstorm.html in the browser
+make clean              # remove ruff / pyrefly / pytest caches
+make nuke               # clean + drop the venv
 ```
 
 The dev loop is **Python 3.12+ · uv · ruff · Pyrefly · pytest**. Tests
-cover all five hosts plus the core (run lifecycle, cascade, proposers,
+cover all six hosts plus the core (run lifecycle, cascade, proposers,
 autonomy bar, headless, worktree, driver, CLI). The full check suite
 runs in ~3 seconds.
+
+### Pre-commit hook
+
+`make install-hooks` arms a [pre-commit](https://pre-commit.com/) hook
+that runs `ruff check` and `pyrefly check` on every `git commit`. Tests
+are deliberately off the hot path — they live in `make check` and CI.
+To bypass for an in-progress WIP commit (emergencies only — CI still
+enforces the merge gate): `git commit --no-verify`.
 
 ### Adding a host integration
 

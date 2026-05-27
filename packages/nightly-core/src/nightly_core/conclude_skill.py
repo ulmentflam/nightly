@@ -1,7 +1,7 @@
-"""Shared `/nightly-conclude` / `/nightly-update` / `/nightly-bug` skill content.
+"""Shared `/nightly-init` / `/nightly-conclude` / `/nightly-update` / `/nightly-bug` skill content.
 
-These three skills are the same across all five hosts — each just runs
-a single `nightly <verb>` shell command and ends the turn. Each host
+These four skills are the same across every host — each just runs a
+single `nightly <verb>` shell command and ends the turn. Each host
 package imports the relevant constant and writes it at its
 host-specific skill path
 (`.claude/skills/nightly-conclude/SKILL.md`,
@@ -10,7 +10,7 @@ host-specific skill path
 `/nightly-conclude` and `/nightly-bug` are **human-invoked off-ramps**
 — the agent never reaches for them (see rules.py rule 10). They live
 here because each is a thin host-portable wrapper around a shell
-action, same as `/nightly-update`.
+action, same as `/nightly-update` and `/nightly-init`.
 
 The conclude skill exists because the Stop hook would otherwise
 force-continue when the user wants to wind down — running `nightly
@@ -22,11 +22,16 @@ The bug skill exists for the same reason: when the operator sees
 Nightly misbehave (self-conclude, ignore the cascade, runaway loop),
 they need a one-keystroke way to capture state and file an issue
 against the Nightly source repo — see `nightly_core.bug`.
+
+The init skill is the global-install companion: when Nightly is
+installed at user scope (`nightly init --scope user`), the operator
+drops into any repo and types `/nightly-init` to bootstrap the
+repo-local `.nightly/` scaffold without leaving the host.
 """
 
 from __future__ import annotations
 
-__all__ = ["BUG_SKILL_MD", "CONCLUDE_SKILL_MD", "UPDATE_SKILL_MD"]
+__all__ = ["BUG_SKILL_MD", "CONCLUDE_SKILL_MD", "INIT_SKILL_MD", "UPDATE_SKILL_MD"]
 
 
 CONCLUDE_SKILL_MD = """\
@@ -149,6 +154,82 @@ re-installable-package pattern, but Nightly is git-based today. If
 the source isn't a git checkout (PyPI / pipx / `uv tool install`),
 `nightly update` prints the right upgrade command for the install
 method instead of trying to git-pull.
+"""
+
+
+INIT_SKILL_MD = """\
+---
+name: nightly-init
+description: Bootstrap Nightly inside the current repo when the operator types `/nightly-init`. Runs `nightly init` against the current working directory — installs the host skill, seeds `.nightly/`, writes the AGENTS.md / CLAUDE.md rules block. Idempotent: safe to re-run if the repo is already initialized.
+---
+
+# /nightly-init
+
+You were invoked because the human operator typed `/nightly-init` in the
+current repo. The intent is "set up Nightly here" — usually because
+Nightly was installed globally (`nightly init --scope user`) and the
+operator has just dropped into a fresh repo that isn't initialized yet.
+
+Do the following, in order:
+
+1. **Run `nightly init`** in the shell, from the current working
+   directory. By default this installs the Claude Code host; pass
+   `--host <name>` if the operator named one (codex, opencode, cursor,
+   antigravity, gemini). This single command:
+   - Creates `.nightly/` with the canonical subdirs (`runs/`, `plans/`,
+     `atlas/`, `memory/`, `prompts/`).
+   - Writes a default `.nightly/config.yml` if missing — never clobbers
+     a hand-edited one.
+   - Installs the host's project-scope skill files
+     (`.claude/skills/nightly/SKILL.md`,
+     `.codex/skills/nightly/SKILL.md`,
+     `.opencode/agents/nightly/SKILL.md`,
+     `.cursor/commands/nightly.md`,
+     `.gemini/antigravity/agents/nightly/SKILL.md`, or
+     `.gemini/commands/nightly.toml` depending on host).
+   - Merges the Stop-hook entry into the host's settings file (for
+     hosts in the `forced` keep-alive tier).
+   - Seeds the autonomy contract into `AGENTS.md` / `CLAUDE.md`.
+
+2. **Report what changed.** Print the `nightly init` output verbatim
+   so the operator sees which files got created and which were already
+   present (the command is idempotent — re-running on an
+   already-initialized repo is fine).
+
+3. **Suggest the next step.** Tell the operator they can now type
+   `/nightly` to start a session, or `nightly start "<task>"` to
+   pre-seed a first task before opening the host.
+
+4. **End your turn.** Init is its own atomic operation — don't start
+   walking the cascade. The next `/nightly` invocation handles that.
+
+## Flags worth knowing
+
+- `nightly init --host codex` — install for a different host than the
+  default (claude).
+- `nightly init --scope user` — install at user-global scope instead
+  of project-local. Rarely what `/nightly-init` should do (the whole
+  point of this command is to bootstrap *this repo*), but mention it
+  if the operator asks how to install elsewhere.
+- `nightly init --no-rules` — skip seeding the AGENTS.md / CLAUDE.md
+  block. Useful when the repo has its own conventions and the operator
+  wants to merge the rules manually.
+
+## When `nightly init` fails
+
+If `nightly` isn't on PATH, point the operator at the installer:
+
+```
+curl -fsSL https://raw.githubusercontent.com/ulmentflam/nightly/main/install.sh | bash
+```
+
+That drops a `~/.local/bin/nightly` shim and bootstraps `uv` if
+missing. After installation, re-run `/nightly-init` to bootstrap this
+repo.
+
+If the working directory isn't a git repo, suggest `git init` first —
+Nightly's worktree-per-task model and the cascade's `pr_rescue` /
+`pr_feedback` steps assume git is present.
 """
 
 

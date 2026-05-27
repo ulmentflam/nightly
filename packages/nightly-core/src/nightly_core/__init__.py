@@ -47,6 +47,7 @@ from nightly_core.ci_watch import (
 from nightly_core.conclude_skill import (
     BUG_SKILL_MD,
     CONCLUDE_SKILL_MD,
+    INIT_SKILL_MD,
     UPDATE_SKILL_MD,
 )
 from nightly_core.contract import (
@@ -128,6 +129,7 @@ __all__ = [
     "CASCADE_SOURCES",
     "CONCLUDE_SKILL_MD",
     "DEFAULT_BUG_REPO",
+    "INIT_SKILL_MD",
     "PLAN_STATUSES",
     "UPDATE_SKILL_MD",
     "AuthStatus",

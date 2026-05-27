@@ -11,7 +11,7 @@ PKGS  := packages
 BRAIN := .planning/brainstorm.html
 
 .DEFAULT_GOAL := help
-.PHONY: help install lock sync lint fmt format type test check brief planning clean nuke
+.PHONY: help install install-hooks uninstall-hooks pre-commit lock sync lint fmt format type test check brief planning clean nuke
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -82,6 +82,21 @@ test: ## pytest
 	fi
 
 check: lint type test ## lint + type + test (the merge gate)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# git hooks — pre-commit framework wires ruff + pyrefly into `git commit`
+# ────────────────────────────────────────────────────────────────────────────
+
+install-hooks: ## arm the .git/hooks/pre-commit hook (idempotent)
+	@$(UV) run --no-sync pre-commit install
+	@echo "✓ pre-commit hook installed. Bypass with: git commit --no-verify"
+
+uninstall-hooks: ## remove the pre-commit hook
+	@$(UV) run --no-sync pre-commit uninstall
+
+pre-commit: ## run every configured hook against every tracked file
+	@$(UV) run --no-sync pre-commit run --all-files
 
 
 # ────────────────────────────────────────────────────────────────────────────

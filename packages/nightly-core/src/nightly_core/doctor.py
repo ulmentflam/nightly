@@ -33,10 +33,10 @@ is for "make my install correct."
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from nightly_core.contract import HostId, InstallScope, NightlyHostIntegration
 from nightly_core.paths import nightly_dir
@@ -246,6 +246,7 @@ def _host_is_present(
     paths.append(integration.conclude_skill_path(scope))
     paths.append(integration.update_skill_path(scope))
     paths.append(integration.bug_skill_path(scope))
+    paths.append(integration.init_skill_path(scope))
     return any(p is not None and p.is_file() for p in paths)
 
 
@@ -271,6 +272,9 @@ def _host_needs_repair(
     bug = integration.bug_skill_path(scope)
     if bug is not None and not bug.is_file():
         missing.append("bug skill")
+    init = integration.init_skill_path(scope)
+    if init is not None and not init.is_file():
+        missing.append("init skill")
     if (
         scope == "project"
         and integration.keepalive_support == "forced"
@@ -348,7 +352,7 @@ def diagnose_and_repair(
     dry_run: bool = False,
     scope: InstallScope = "project",
     extra_hosts: Iterable[str] = (),
-    host_loader: dict[str, HostLoader] | None = None,
+    host_loader: Mapping[str, HostLoader] | None = None,
 ) -> DoctorReport:
     """Walk the install surface and repair (or report) drift.
 
@@ -359,11 +363,21 @@ def diagnose_and_repair(
       stick to the "repair what's already there" default.
     - `host_loader` is injected by tests; production calls leave it None
       and we lazy-import the CLI registry to avoid a top-of-module cycle.
+      Typed as `Mapping[str, HostLoader]` so callers can pass either a
+      plain dict or the CLI's `dict[HostId, HostLoader]` registry (HostId
+      is a `str` Literal — covariant via `Mapping` but not `dict`).
     """
+    loaders: Mapping[str, HostLoader]
     if host_loader is None:
         from nightly_core.cli import _HOST_LOADERS  # noqa: PLC0415 - lazy
 
-        host_loader = _HOST_LOADERS
+        # `_HOST_LOADERS` is keyed by `HostId` (a `Literal[str]`), but
+        # `Mapping` is invariant in its key type even when the runtime
+        # value is a `str`. Cast at the boundary — the iteration below
+        # treats the keys as plain strings.
+        loaders = cast("Mapping[str, HostLoader]", _HOST_LOADERS)
+    else:
+        loaders = host_loader
 
     extra_set = {h.strip() for h in extra_hosts if h and h.strip()}
 
@@ -372,7 +386,7 @@ def diagnose_and_repair(
     checks.append(_check_config(root, dry_run=dry_run))
     checks.append(_check_rules(root, dry_run=dry_run))
 
-    for host_id, loader in host_loader.items():
+    for host_id, loader in loaders.items():
         try:
             integration = loader(root)
         except Exception as exc:

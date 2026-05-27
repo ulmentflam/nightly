@@ -14,7 +14,7 @@ requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Evan Owen", email = "evan@jwo3.io" }]
-keywords = ["agent", "ai", "coding", "claude", "codex", "cursor", "opencode", "antigravity", "cli"]
+keywords = ["agent", "ai", "coding", "claude", "codex", "cursor", "opencode", "antigravity", "gemini", "cli"]
 dependencies = [
   "nightly-core",
   "nightly-host-claude",
@@ -22,6 +22,7 @@ dependencies = [
   "nightly-host-cursor",
   "nightly-host-opencode",
   "nightly-host-antigravity",
+  "nightly-host-gemini",
 ]
 
 [tool.uv]
@@ -34,6 +35,7 @@ nightly-host-codex        = { workspace = true }
 nightly-host-cursor       = { workspace = true }
 nightly-host-opencode     = { workspace = true }
 nightly-host-antigravity  = { workspace = true }
+nightly-host-gemini       = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -68,6 +70,7 @@ known-first-party = [
   "nightly_host_cursor",
   "nightly_host_opencode",
   "nightly_host_antigravity",
+  "nightly_host_gemini",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -90,6 +93,7 @@ search-path = [
   "packages/nightly-host-claude/src",
   "packages/nightly-host-codex/src",
   "packages/nightly-host-cursor/src",
+  "packages/nightly-host-gemini/src",
   "packages/nightly-host-opencode/src",
 ]
 python-version = "3.12"
@@ -112,4 +116,5 @@ dev = [
   "pyrefly>=0.16",
   "pytest>=8.0",
   "pytest-asyncio>=0.24",
+  "pre-commit>=4.0",
 ]

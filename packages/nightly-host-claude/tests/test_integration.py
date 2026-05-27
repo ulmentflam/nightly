@@ -415,6 +415,74 @@ async def test_uninstall_claude_removes_bug_skill(
     assert not bug.exists()
 
 
+# ── /nightly-init skill — global-install bootstrap ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_claude_writes_init_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    init = integration.init_skill_path("project")
+    assert init is not None
+    assert init.is_file()
+    body = init.read_text(encoding="utf-8")
+    assert "name: nightly-init" in body
+    assert integration.is_init_installed("project")
+
+
+@pytest.mark.asyncio
+async def test_install_claude_writes_init_skill_at_user_scope(
+    integration: ClaudeHostIntegration, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """User-scope install is the primary use case for /nightly-init —
+    install once globally, drop into any repo, type the command to
+    bootstrap. Verify the user-scope path lands the file."""
+    monkeypatch.setenv("HOME", str(tmp_path / "fake-home"))
+    monkeypatch.setattr(
+        ClaudeHostIntegration,
+        "USER_INIT_ABSOLUTE",
+        tmp_path / "fake-home" / ".claude/skills/nightly-init/SKILL.md",
+    )
+    monkeypatch.setattr(
+        ClaudeHostIntegration,
+        "USER_SKILL_ABSOLUTE",
+        tmp_path / "fake-home" / ".claude/skills/nightly/SKILL.md",
+    )
+    monkeypatch.setattr(
+        ClaudeHostIntegration,
+        "USER_CONCLUDE_ABSOLUTE",
+        tmp_path / "fake-home" / ".claude/skills/nightly-conclude/SKILL.md",
+    )
+    monkeypatch.setattr(
+        ClaudeHostIntegration,
+        "USER_UPDATE_ABSOLUTE",
+        tmp_path / "fake-home" / ".claude/skills/nightly-update/SKILL.md",
+    )
+    monkeypatch.setattr(
+        ClaudeHostIntegration,
+        "USER_BUG_ABSOLUTE",
+        tmp_path / "fake-home" / ".claude/skills/nightly-bug/SKILL.md",
+    )
+    inst = ClaudeHostIntegration(root=project)
+    await inst.install("user")
+    assert inst.is_init_installed("user")
+    assert inst.is_installed("user")
+    # No stop hook merged at user scope.
+    assert not inst.settings_local_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_claude_removes_init_skill(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("project")
+    await integration.uninstall("project")
+    init = integration.init_skill_path("project")
+    assert init is not None
+    assert not init.exists()
+
+
 def test_conclude_skill_repels_the_agent() -> None:
     """The CONCLUDE_SKILL_MD description and body must explicitly say
     this is HUMAN-only — the failure mode it guards against is the agent
@@ -429,6 +497,22 @@ def test_conclude_skill_repels_the_agent() -> None:
     # so a re-read recovers from the antipattern.
     assert "nightly ideate" in text
     assert "nightly brief" in text
+
+
+def test_init_skill_content() -> None:
+    """The /nightly-init skill should walk the operator through running
+    `nightly init` on the current repo — the global-install bootstrap."""
+    from nightly_core import INIT_SKILL_MD
+
+    text = INIT_SKILL_MD
+    assert "name: nightly-init" in text
+    # Body must mention the command it shells out to.
+    assert "nightly init" in text
+    # Should reference the host options so the operator knows the choices.
+    assert "--host" in text
+    # The install.sh one-liner is the documented escape hatch when the
+    # binary isn't on PATH — make sure it survives future edits.
+    assert "install.sh" in text
 
 
 def test_bug_skill_repels_the_agent() -> None:

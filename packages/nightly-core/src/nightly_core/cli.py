@@ -180,11 +180,17 @@ def _register_host_loaders() -> None:
 
         return AntigravityHostIntegration(root=root)
 
+    def _gemini(root: Path | None) -> NightlyHostIntegration:
+        from nightly_host_gemini import GeminiHostIntegration  # noqa: PLC0415
+
+        return GeminiHostIntegration(root=root)
+
     _HOST_LOADERS["claude"] = _claude
     _HOST_LOADERS["codex"] = _codex
     _HOST_LOADERS["opencode"] = _opencode
     _HOST_LOADERS["cursor"] = _cursor
     _HOST_LOADERS["antigravity"] = _antigravity
+    _HOST_LOADERS["gemini"] = _gemini
 
 
 _register_host_loaders()

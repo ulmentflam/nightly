@@ -19,8 +19,12 @@ from pydantic import BaseModel
 
 from nightly_core.headless import HeadlessResult
 
-HostId = Literal["claude", "codex", "cursor", "opencode", "antigravity"]
-"""The five supported interactive hosts."""
+HostId = Literal["claude", "codex", "cursor", "opencode", "antigravity", "gemini"]
+"""The six supported interactive hosts.
+
+`antigravity` and `gemini` both write under `.gemini/` — the former is the
+desktop IDE's managed-agent surface (`.gemini/antigravity/agents/`), the
+latter is vanilla Gemini CLI custom commands (`.gemini/commands/`)."""
 
 SpecialistRole = Literal["implementer", "tester", "reviewer", "researcher"]
 """Roles dispatched as sub-agents through the host's native primitive."""
@@ -174,6 +178,22 @@ class NightlyHostIntegration(ABC):
 
     def is_update_installed(self, scope: InstallScope) -> bool:
         path = self.update_skill_path(scope)
+        return path is not None and path.is_file()
+
+    # ── init skill (global-install bootstrap) ────────────────────────────
+    def init_skill_path(self, scope: InstallScope) -> Path | None:
+        """Per-host path to the `/nightly-init` skill file.
+
+        Default returns None — opt-in. Hosts override to return the
+        absolute path where the init skill should be written. The init
+        skill exists primarily for the user-scope install path: drop
+        Nightly into `~/.<host>/skills/` once, then bootstrap any repo
+        from inside the host by typing `/nightly-init`.
+        """
+        return None
+
+    def is_init_installed(self, scope: InstallScope) -> bool:
+        path = self.init_skill_path(scope)
         return path is not None and path.is_file()
 
     # ── bug skill (Phase 9n) ─────────────────────────────────────────────

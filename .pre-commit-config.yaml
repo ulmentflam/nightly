@@ -1,0 +1,44 @@
+# pre-commit hooks for Nightly.
+#
+# One-time install (per clone):
+#
+#   pre-commit install                  # arm .git/hooks/pre-commit
+#
+# Or via the workspace Makefile:
+#
+#   make install-hooks                  # uv tool install pre-commit + arm
+#
+# After install, every `git commit` triggers ruff (lint) and pyrefly
+# (type-check). Tests are intentionally NOT in the pre-commit hot path —
+# they run on `make check` and in CI. Latency goal: < 2s.
+#
+# To bypass for an in-progress WIP commit (emergencies only — CI still
+# enforces): `git commit --no-verify`.
+#
+# To run every hook against every file (sanity check, e.g. before opening
+# a PR): `pre-commit run --all-files`.
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        entry: uv run --no-sync ruff check
+        language: system
+        types_or: [python, pyi]
+        # ruff itself walks the repo via `pyproject.toml.tool.ruff.src`, so
+        # we don't pass the staged file list — it'd just re-check the same
+        # paths twice. `pass_filenames: false` keeps the invocation cheap.
+        pass_filenames: false
+        require_serial: true
+
+      - id: pyrefly
+        name: pyrefly (type-check)
+        entry: uv run --no-sync pyrefly check
+        language: system
+        types_or: [python, pyi]
+        # pyrefly does whole-project inference and reads `pyproject.toml.tool.pyrefly`
+        # for include/search paths; per-file invocation would miss cross-file
+        # narrowing. Same reasoning as ruff above.
+        pass_filenames: false
+        require_serial: true

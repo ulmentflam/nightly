@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -175,7 +176,7 @@ class _FakeReexec:
         self.called_with: str | None = None
         self.call_count = 0
 
-    def __call__(self, before: str) -> _FakeReexec._Reexeced:
+    def __call__(self, before: str) -> NoReturn:
         self.called_with = before
         self.call_count += 1
         raise _FakeReexec._Reexeced
