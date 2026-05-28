@@ -65,6 +65,8 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
+| `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
+| `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -185,11 +187,17 @@ For each task the cascade hands you:
    auto-relocates off iCloud / FileProvider). Do NOT use raw
    `git worktree add` — it ignores config and lands at unpredictable
    locations.
-3. **IMPLEMENT** — register the implementer specialist with the Agent
-   Manager (prompt from `nightly specialist implementer`); wait for
-   completion; collect the diff.
-4. **TEST** — register the tester specialist.
-5. **REVIEW** — register the reviewer specialist (read-only managed agent).
+3. **IMPLEMENT** — Antigravity has no headless CLI today, so the
+   default Nightly background-dispatch (`nightly dispatch start
+   <slug> --role implementer`) returns an error. Two valid paths:
+   (a) register the specialist with Antigravity's **Agent Manager**
+   (a managed agent with its own context — closest native
+   equivalent to background dispatch); (b) fall back to
+   `claude`/`codex` if those binaries are on PATH (`nightly
+   dispatch start <slug> --role implementer --host claude`).
+   Specialist prompt: `nightly specialist implementer`.
+4. **TEST** — same: Agent Manager OR backgrounded fallback.
+5. **REVIEW** — same: Agent Manager (read-only) OR backgrounded fallback.
 6. **LAND** — open PR (if GitHub remote) or write `proposal.md` locally.
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.
 8. **STATUS** — `status: done` in plan frontmatter.

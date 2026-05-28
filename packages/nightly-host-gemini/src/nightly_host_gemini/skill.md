@@ -61,6 +61,8 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
+| `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
+| `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -138,9 +140,12 @@ Update `plan.md` frontmatter as you transition between phases:
    auto-relocates off iCloud / FileProvider). Do NOT use raw
    `git worktree add` — it ignores config and lands at unpredictable
    locations.
-3. **IMPLEMENT** — sub-spawn the implementer specialist.
-4. **TEST** — sub-spawn the tester.
-5. **REVIEW** — sub-spawn the reviewer (read-only).
+3. **IMPLEMENT** — `nightly dispatch start <slug> --role implementer
+   --host gemini`. Backgrounds `gemini --prompt` in a detached
+   process so the operator's chat stays free; `dispatch.json` +
+   `dispatch.log` capture state.
+4. **TEST** — `nightly dispatch start <slug> --role tester --host gemini`.
+5. **REVIEW** — `nightly dispatch start <slug> --role reviewer --host gemini`.
 6. **LAND** — open PR (if GitHub remote) or write `proposal.md`.
 7. **DISCLOSE** — write `uncertainty.md`.
 8. **STATUS** — `status: done`.

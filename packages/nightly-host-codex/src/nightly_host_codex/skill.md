@@ -60,6 +60,8 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
+| `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
+| `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -173,10 +175,14 @@ For each task the cascade hands you:
    auto-relocates off iCloud / FileProvider). Do NOT use raw
    `git worktree add` — it ignores config and lands at unpredictable
    locations.
-3. **IMPLEMENT** — dispatch the implementer specialist via MCP with the
-   prompt from `nightly specialist implementer`.
-4. **TEST** — dispatch the tester specialist.
-5. **REVIEW** — dispatch the reviewer specialist (read-only sandbox).
+3. **IMPLEMENT** — `nightly dispatch start <slug> --role implementer
+   --host codex`. Backgrounds `codex exec` in a detached process so
+   the operator's chat stays free; `dispatch.json` + `dispatch.log`
+   capture state. MCP-based dispatch via the host's blocking
+   primitive is the fallback when an unattended `nightly run` is in
+   play.
+4. **TEST** — `nightly dispatch start <slug> --role tester --host codex`.
+5. **REVIEW** — `nightly dispatch start <slug> --role reviewer --host codex`.
 6. **LAND** — open PR (if GitHub remote) or write `proposal.md` locally.
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.
 8. **STATUS** — `status: done` in plan frontmatter.

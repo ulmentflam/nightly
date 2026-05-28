@@ -64,6 +64,8 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
+| `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
+| `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -183,11 +185,14 @@ For each task the cascade hands you:
    auto-relocates off iCloud / FileProvider). Do NOT use raw
    `git worktree add` — it ignores config and lands at unpredictable
    locations.
-3. **IMPLEMENT** — fork a session with the implementer's prompt; wait for
-   completion; collect the diff.
-4. **TEST** — fork with the tester's prompt; collect new/updated tests.
-5. **REVIEW** — fork with the reviewer's prompt; route changes back through
-   IMPLEMENT or DISCLOSE as appropriate.
+3. **IMPLEMENT** — `nightly dispatch start <slug> --role implementer
+   --host opencode`. Backgrounds `opencode run` in a detached process
+   so the operator's chat stays free; `dispatch.json` + `dispatch.log`
+   capture state. Session-forking via `POST /session/:id/fork` is the
+   fallback when an unattended `nightly run` is in play.
+4. **TEST** — `nightly dispatch start <slug> --role tester --host opencode`.
+5. **REVIEW** — `nightly dispatch start <slug> --role reviewer --host opencode`.
+   Route Needs-changes back through another implementer dispatch.
 6. **LAND** — open PR (if GitHub remote) or write `proposal.md` locally.
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.
 8. **STATUS** — `status: done` in plan frontmatter.

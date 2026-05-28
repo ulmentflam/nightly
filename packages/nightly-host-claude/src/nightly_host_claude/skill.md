@@ -95,6 +95,8 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
+| `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
+| `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -241,17 +243,39 @@ choice in `notes.md`. Worktree isolation buys nothing when the diff
 is zero. The mandate above applies to *code-modifying* tasks; an
 audit that writes only to its own task dir doesn't qualify.
 
-### 3. IMPLEMENT — dispatch the implementer specialist
+### 3. IMPLEMENT — background-dispatch the implementer specialist
 
-Use the **Task tool** to delegate code-writing to an implementer sub-agent
-with its own context window. Set the sub-agent's system prompt to:
+**Default for interactive sessions: background-dispatch every
+specialist** so the operator's chat stays free for other work. Use:
 
 ```bash
-nightly specialist implementer
+nightly dispatch start <slug> --role implementer
 ```
 
-Pass it the worktree path and the relevant slice of `plan.md`. The
-implementer returns a unified diff and a one-paragraph report.
+This spawns the host's headless CLI (`claude -p` here, with
+`--permission-mode acceptEdits` and `--session-id`) as a detached
+process. Returns immediately with `pid=<n>\nlog=<path>\nstatus=running`.
+State is recorded in `.nightly/runs/<id>/tasks/<n>-<slug>/dispatch.json`.
+
+Why not the **Task tool** by default? The Task tool blocks the
+*calling* chat until the sub-agent returns. That's correct for
+unattended overnight runs but holds the operator's session
+hostage during interactive use. `nightly dispatch start` frees
+the chat; the spawned process writes to `dispatch.log` and
+finishes on its own.
+
+**When to fall back to the Task tool:** unattended runs (`nightly
+run` headless), or when the operator explicitly says "stay
+foreground." Both cases are rare in interactive sessions.
+
+**Polling:**
+
+```bash
+nightly dispatch status        # all dispatches in this run
+nightly dispatch status <slug> # detailed view of one
+nightly dispatch tail <slug>   # last 50 lines of log
+nightly dispatch wait <slug>   # block until it finishes
+```
 
 **Audit-only carveout (same as step 2).** When the task produces no
 code — only an audit report, a research summary, or a documentation
@@ -260,18 +284,20 @@ Sub-agent dispatch adds 3–5× latency that buys nothing when the
 deliverable is a markdown file in the task's own directory. Note the
 inline choice in `notes.md`.
 
-### 4. TEST — dispatch the tester specialist
+### 4. TEST — background-dispatch the tester specialist
 
-Same pattern with `nightly specialist tester`. The tester writes or
-updates tests for the implementer's diff and confirms they pass.
-**Audit-only tasks skip this step** — there's no diff to test.
+Same pattern: `nightly dispatch start <slug> --role tester`. The
+tester writes or updates tests for the implementer's diff and
+confirms they pass. **Audit-only tasks skip this step** — there's
+no diff to test.
 
-### 5. REVIEW — dispatch the reviewer specialist
+### 5. REVIEW — background-dispatch the reviewer specialist
 
-`nightly specialist reviewer` (read-only). Returns LGTM / Needs-changes /
-Disclose. Apply Needs-changes through the implementer; move Disclose items
-into `uncertainty.md`. **Audit-only tasks skip this step** — the
-audit *is* the review.
+`nightly dispatch start <slug> --role reviewer`. Returns LGTM /
+Needs-changes / Disclose via the dispatch log. Apply Needs-changes
+through another implementer dispatch; move Disclose items into
+`uncertainty.md`. **Audit-only tasks skip this step** — the audit
+*is* the review.
 
 ### 6. LAND — open PR or write proposal.md
 

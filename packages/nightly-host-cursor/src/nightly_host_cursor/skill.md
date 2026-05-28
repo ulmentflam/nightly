@@ -64,6 +64,8 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
+| `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
+| `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -192,11 +194,17 @@ For each task the cascade hands you:
    auto-relocates off iCloud / FileProvider). Do NOT use raw
    `git worktree add` — it ignores config and lands at unpredictable
    locations.
-3. **IMPLEMENT** — dispatch the implementer specialist (Background Agent
-   preferred for isolation, inline if latency matters) with the prompt
-   from `nightly specialist implementer`.
-4. **TEST** — dispatch the tester specialist.
-5. **REVIEW** — dispatch the reviewer specialist.
+3. **IMPLEMENT** — Cursor has no headless CLI today, so the
+   default Nightly background-dispatch (`nightly dispatch start
+   <slug> --role implementer`) returns an error. Two valid paths:
+   (a) dispatch via Cursor's **Background Agents** (cloud VM,
+   non-blocking) — the closest native equivalent to background
+   dispatch; (b) fall back to `claude`/`codex` if those are on
+   PATH (`nightly dispatch start <slug> --role implementer --host
+   claude`). Specialist prompt: `nightly specialist implementer`.
+4. **TEST** — same: Background Agent OR fall back to a backgrounded
+   `claude --role tester` dispatch.
+5. **REVIEW** — same: Background Agent OR backgrounded fallback.
 6. **LAND** — open PR (Cursor's branch-and-PR flow lines up natively
    with `gh pr create --draft`).
 7. **DISCLOSE** — write `uncertainty.md` with the four required sections.

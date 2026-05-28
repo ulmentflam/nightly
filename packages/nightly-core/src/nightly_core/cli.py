@@ -1047,9 +1047,18 @@ worktree_app = typer.Typer(
     help="Create and inspect Nightly-owned git worktrees.",
     no_args_is_help=True,
 )
+dispatch_app = typer.Typer(
+    name="dispatch",
+    help=(
+        "Background-dispatch specialist sub-agents so the interactive "
+        "session stays free for the operator."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(session_app)
 app.add_typer(hook_app)
 app.add_typer(worktree_app)
+app.add_typer(dispatch_app)
 
 
 @worktree_app.command(name="create")
@@ -1176,6 +1185,252 @@ def worktree_list_cmd(
         return
     for h in handles:
         typer.echo(f"{h.branch:<60} {h.path}")
+
+
+# ── dispatch — background specialist sub-processes ────────────────────────
+
+
+@dispatch_app.command(name="start")
+def dispatch_start_cmd(
+    slug: Annotated[
+        str,
+        typer.Argument(help="Task slug. Must exist under the current run."),
+    ],
+    role: Annotated[
+        SpecialistRole,
+        typer.Option(
+            "--role",
+            "-r",
+            help="Specialist role to dispatch (implementer | tester | reviewer | researcher).",
+        ),
+    ] = "implementer",
+    host: Annotated[
+        HostId,
+        typer.Option(
+            "--host",
+            help="Host whose headless CLI to invoke. Defaults to claude.",
+        ),
+    ] = "claude",
+    prompt: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt",
+            "-p",
+            help=(
+                "Prompt body for the specialist. Defaults to the role's "
+                "system prompt from `nightly specialist <role>` plus a "
+                "pointer at the task's plan.md."
+            ),
+        ),
+    ] = None,
+    cwd: Annotated[
+        Path | None,
+        typer.Option(
+            "--cwd",
+            help="Working directory for the spawned process. Defaults to the repo root.",
+        ),
+    ] = None,
+) -> None:
+    """Spawn the host's headless CLI as a detached background process.
+
+    Default behavior for interactive Nightly sessions: every
+    IMPLEMENT / TEST / REVIEW step calls this verb instead of the
+    host's blocking sub-agent primitive (Task tool, MCP dispatch,
+    session fork). The operator's chat stays open; the spawned
+    process writes to the dispatch.log next to the task plan.
+
+    Returns `pid=<n>\\nlog=<path>\\nstatus=running` on stdout. Use
+    `nightly dispatch status` to poll, `nightly dispatch tail` to
+    follow output, `nightly dispatch wait` to block.
+    """
+    from nightly_core.dispatch import start_background  # noqa: PLC0415 - lazy
+    from nightly_core.specialists import specialist_prompt  # noqa: PLC0415 - lazy
+
+    root = repo_root()
+    body = prompt or _default_dispatch_prompt(role=role, slug=slug, specialist=specialist_prompt)
+    try:
+        result = start_background(
+            slug,
+            role=role,
+            host=host,
+            prompt=body,
+            root=root,
+            cwd=cwd,
+        )
+    except RuntimeError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"pid={result.pid}")
+    typer.echo(f"log={_format_path_for_display(result.log_path, root)}")
+    typer.echo(f"status={result.status}")
+    typer.echo(f"slug={result.slug}")
+    typer.echo(f"role={result.role}")
+    typer.echo(f"host={result.host}")
+
+
+def _default_dispatch_prompt(
+    *,
+    role: SpecialistRole,
+    slug: str,
+    specialist: Callable[[SpecialistRole], str],
+) -> str:
+    """Build the default prompt for a backgrounded specialist.
+
+    Concatenates the canonical role prompt (`nightly specialist <role>`)
+    with a one-line "advance plan <slug>" addendum so the spawned host
+    knows what to work on. Operators can override with `--prompt` to
+    inject a more specific brief.
+    """
+    role_prompt = specialist(role)
+    return (
+        f"{role_prompt}\n\n"
+        f"Advance the task `{slug}` in this repo. Read "
+        f"`.nightly/runs/<current>/tasks/<N>-{slug}/plan.md` for scope, "
+        "implement the plan, commit on the task's worktree branch, and "
+        f"update plan status to `done` (or `parked` / `blocked: approval` "
+        "if the refusal policy applies). Do not start new cascade work."
+    )
+
+
+@dispatch_app.command(name="status")
+def dispatch_status_cmd(
+    slug: Annotated[
+        str | None,
+        typer.Argument(
+            help="Specific task slug to inspect. Omit to list every dispatch.",
+        ),
+    ] = None,
+) -> None:
+    """List active + finished background dispatches in the current run.
+
+    Refreshes each result against the live PID before reporting, so a
+    `running` row reflects the current state (not a stale snapshot).
+    """
+    from nightly_core.dispatch import (  # noqa: PLC0415 - lazy
+        list_dispatches,
+        read_dispatch_state,
+        refresh,
+    )
+
+    root = repo_root()
+
+    if slug is not None:
+        state = read_dispatch_state(slug, root=root)
+        if state is None:
+            typer.echo(f"· no dispatch recorded for `{slug}`")
+            raise typer.Exit(code=1)
+        state = refresh(state, root=root)
+        _print_dispatch_row(state, root=root, verbose=True)
+        return
+
+    states = list_dispatches(root=root)
+    if not states:
+        typer.echo("· no dispatches in the current run")
+        return
+    typer.echo(f"{'status':<10} {'pid':<8} {'host':<10} {'role':<13} {'slug':<32} log")
+    typer.echo("-" * 78)
+    for state in states:
+        live = refresh(state, root=root)
+        _print_dispatch_row(live, root=root, verbose=False)
+
+
+def _print_dispatch_row(
+    state: object,  # BackgroundDispatchResult — typed via duck on the read side
+    *,
+    root: Path,
+    verbose: bool,
+) -> None:
+    """Render one dispatch as either a compact table row or a verbose block."""
+    log = _format_path_for_display(state.log_path, root)  # type: ignore[attr-defined]
+    if verbose:
+        typer.echo(f"slug:      {state.slug}")          # type: ignore[attr-defined]
+        typer.echo(f"role:      {state.role}")          # type: ignore[attr-defined]
+        typer.echo(f"host:      {state.host}")          # type: ignore[attr-defined]
+        typer.echo(f"pid:       {state.pid}")            # type: ignore[attr-defined]
+        typer.echo(f"status:    {state.status}")        # type: ignore[attr-defined]
+        if state.exit_code is not None:                  # type: ignore[attr-defined]
+            typer.echo(f"exit_code: {state.exit_code}")  # type: ignore[attr-defined]
+        typer.echo(f"started:   {state.started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
+        if state.finished_at is not None:                # type: ignore[attr-defined]
+            typer.echo(f"finished:  {state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
+        typer.echo(f"log:       {log}")
+        return
+    typer.echo(
+        f"{state.status:<10} {state.pid:<8} {state.host:<10} "                       # type: ignore[attr-defined]
+        f"{state.role:<13} {state.slug:<32} {log}"                                   # type: ignore[attr-defined]
+    )
+
+
+@dispatch_app.command(name="tail")
+def dispatch_tail_cmd(
+    slug: Annotated[str, typer.Argument(help="Task slug to tail.")],
+    lines: Annotated[
+        int,
+        typer.Option("--lines", "-n", help="Print the last N lines, then exit."),
+    ] = 50,
+) -> None:
+    """Print the last N lines of a dispatch's log.
+
+    Doesn't tail-follow — too session-disruptive in an interactive
+    chat. Operators who want a live view should `tail -f <log>` in
+    a separate terminal.
+    """
+    from nightly_core.dispatch import read_dispatch_state  # noqa: PLC0415 - lazy
+
+    root = repo_root()
+    state = read_dispatch_state(slug, root=root)
+    if state is None:
+        typer.echo(f"· no dispatch recorded for `{slug}`", err=True)
+        raise typer.Exit(code=1)
+    if not state.log_path.is_file():
+        typer.echo(f"· log file missing: {state.log_path}", err=True)
+        raise typer.Exit(code=1)
+    text = state.log_path.read_text(encoding="utf-8", errors="replace")
+    tail = text.splitlines()[-lines:]
+    for line in tail:
+        typer.echo(line)
+
+
+@dispatch_app.command(name="wait")
+def dispatch_wait_cmd(
+    slug: Annotated[str, typer.Argument(help="Task slug to wait on.")],
+    timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--timeout",
+            help="Wall-clock timeout in seconds. Default: no timeout (block forever).",
+        ),
+    ] = None,
+    poll_interval: Annotated[
+        float,
+        typer.Option(
+            "--poll-interval",
+            help="Seconds between PID-liveness polls. Default: 1.",
+        ),
+    ] = 1.0,
+) -> None:
+    """Block until the dispatched process exits (or timeout elapses).
+
+    Exit code mirrors the dispatch:
+    - 0 if it finished cleanly within the timeout (status: completed).
+    - 1 if the timeout elapsed while the process was still running.
+    - 2 if no dispatch was found for the slug.
+    """
+    from nightly_core.dispatch import wait_for  # noqa: PLC0415 - lazy
+
+    root = repo_root()
+    state = wait_for(slug, root=root, timeout_s=timeout, poll_interval_s=poll_interval)
+    if state is None:
+        typer.echo(f"· no dispatch recorded for `{slug}`", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"status={state.status}")
+    if state.exit_code is not None:
+        typer.echo(f"exit_code={state.exit_code}")
+    if state.finished_at is not None:
+        typer.echo(f"finished_at={state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+    if state.status == "running":
+        raise typer.Exit(code=1)
 
 
 @session_app.command(name="start")
