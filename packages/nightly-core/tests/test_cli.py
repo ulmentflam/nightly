@@ -1208,3 +1208,40 @@ def test_update_command_no_refresh_skips_repo_init(
     monkeypatch.setattr("nightly_core.cli.refresh_repo_install", _should_not_run)
     out = runner.invoke(app, ["update", "--no-refresh-repo"])
     assert out.exit_code == 0
+
+
+# ── worktree create (the modular-bug fix) ─────────────────────────────────
+
+
+def test_worktree_create_dry_run_prints_resolved_placement(repo: Path) -> None:
+    """`--dry-run` should print where the worktree would land + branch
+    name + base, without invoking git. The SKILL.md tells the agent to
+    use this command; without dry-run support the agent can't preview
+    placement before committing."""
+    result = runner.invoke(app, ["worktree", "create", "demo-slug", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "path=" in result.output
+    assert "branch=nightly/demo-slug-" in result.output
+    assert "base_branch=main" in result.output
+    assert "worktree_root=" in result.output
+
+
+def test_worktree_create_dry_run_honors_config_worktree_root(
+    repo: Path, tmp_path: Path
+) -> None:
+    """When `.nightly/config.yml` sets `git.worktree_root`, the
+    resolved placement nests under that path, not the default
+    `<repo>-nightly/` sibling. Regression for the modular-session
+    bug: with config unset, the agent's `git worktree add ../…`
+    landed at the wrong place; the fix is to read the config."""
+    runner.invoke(app, ["init"])
+    custom_root = tmp_path / "custom-worktrees"
+    cfg = repo / ".nightly" / "config.yml"
+    cfg.write_text(
+        f"git:\n  worktree_root: {custom_root}\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["worktree", "create", "demo-slug", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert str(custom_root) in result.output
+    assert f"worktree_root={custom_root}" in result.output

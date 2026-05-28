@@ -1042,8 +1042,140 @@ hook_app = typer.Typer(
     help="Internal — Claude Code hook handlers (invoked by .claude/settings).",
     no_args_is_help=True,
 )
+worktree_app = typer.Typer(
+    name="worktree",
+    help="Create and inspect Nightly-owned git worktrees.",
+    no_args_is_help=True,
+)
 app.add_typer(session_app)
 app.add_typer(hook_app)
+app.add_typer(worktree_app)
+
+
+@worktree_app.command(name="create")
+def worktree_create(
+    slug: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Task slug (lowercase, dashes). The created branch is "
+                "`<branch_prefix><slug>-<short-ts>`; the worktree path "
+                "is decided by `_resolve_worktree_base` (config-overridable, "
+                "iCloud-aware)."
+            ),
+        ),
+    ],
+    base_branch: Annotated[
+        str,
+        typer.Option(
+            "--base",
+            help="Branch to fork from. Default: main.",
+        ),
+    ] = "main",
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print where the worktree WOULD be created, but don't run git.",
+        ),
+    ] = False,
+) -> None:
+    """Create an isolated worktree for this task — config-aware, iCloud-safe.
+
+    This is the verb the SKILL.md tells the agent to use during the
+    ISOLATE step. Previously the SKILL prescribed a literal
+    `git worktree add ../nightly-<slug>-<ts>` which ignored the
+    `worktree_root` config knob shipped in eb4434c and the
+    nest-under-<repo>-nightly default from 5369db0. A real modular-
+    session bug surfaced: the agent created the worktree at the
+    workspace root, then on recovery deleted the operator's intended
+    `<repo>-worktrees/` directory thinking it was stray state.
+
+    Reads `worktree_root` and `branch_prefix` from `.nightly/config.yml`
+    when present; falls back to safe defaults otherwise. Always emits
+    the resolved path + branch on stdout in `path=<abs>\\nbranch=<name>`
+    shape so callers can parse without scraping `git worktree list`.
+    """
+    from nightly_core.worktree import (  # noqa: PLC0415 - lazy import
+        DEFAULT_BRANCH_PREFIX,
+        _resolve_worktree_base,
+        _worktree_path,
+        create_worktree,
+        default_git_runner,
+    )
+
+    root = repo_root()
+    cfg = load_git_config(root)
+    branch_prefix = cfg.branch_prefix or DEFAULT_BRANCH_PREFIX
+    worktree_root_cfg = cfg.worktree_root
+
+    if dry_run:
+        # Resolve placement without creating anything. Useful for the
+        # agent to confirm "where will this land" before committing.
+        try:
+            base = asyncio.run(
+                _resolve_worktree_base(
+                    root, worktree_root=worktree_root_cfg, run=default_git_runner
+                )
+            )
+        except Exception as exc:
+            typer.echo(f"could not resolve worktree base: {exc!r}", err=True)
+            raise typer.Exit(code=1) from None
+        # Compute the per-task path the way create_worktree would.
+        from nightly_core.worktree import _branch_name  # noqa: PLC0415 - lazy
+
+        branch = _branch_name(slug, prefix=branch_prefix)
+        path = _worktree_path(base, branch)
+        typer.echo(f"path={path}")
+        typer.echo(f"branch={branch}")
+        typer.echo(f"base_branch={base_branch}")
+        typer.echo(f"worktree_root={worktree_root_cfg or '(auto)'}")
+        return
+
+    try:
+        handle = asyncio.run(
+            create_worktree(
+                root,
+                slug,
+                base_branch=base_branch,
+                branch_prefix=branch_prefix,
+                worktree_root=worktree_root_cfg,
+            )
+        )
+    except RuntimeError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(f"path={handle.path}")
+    typer.echo(f"branch={handle.branch}")
+    typer.echo(f"base_branch={handle.base_branch}")
+
+
+@worktree_app.command(name="list")
+def worktree_list_cmd(
+    branch_prefix: Annotated[
+        str,
+        typer.Option(
+            "--prefix",
+            help="Only show worktrees whose branch starts with this prefix.",
+        ),
+    ] = "nightly/",
+) -> None:
+    """List Nightly-owned worktrees (branches matching `--prefix`)."""
+    from nightly_core.worktree import list_worktrees  # noqa: PLC0415 - lazy
+
+    root = repo_root()
+    try:
+        handles = asyncio.run(list_worktrees(root, branch_prefix=branch_prefix))
+    except RuntimeError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if not handles:
+        typer.echo(f"· no worktrees with branch prefix `{branch_prefix}`")
+        return
+    for h in handles:
+        typer.echo(f"{h.branch:<60} {h.path}")
 
 
 @session_app.command(name="start")

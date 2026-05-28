@@ -64,6 +64,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly start "<seed>"`                 | Create a new run; optionally seed `tasks/0001-<slug>/`.   |
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
+| `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -179,7 +180,11 @@ For each task the cascade hands you:
 
 1. **SCOPE** — read `tasks/<n>-<slug>/plan.md`, fill in success criteria,
    file scope, risks. Set `status: in_progress`.
-2. **ISOLATE** — `git worktree add ../nightly-<slug>-<short-ts> -b nightly/<slug>-<short-ts>`.
+2. **ISOLATE** — `nightly worktree create <slug>` (config-aware
+   wrapper; honors `worktree_root` from `.nightly/config.yml` and
+   auto-relocates off iCloud / FileProvider). Do NOT use raw
+   `git worktree add` — it ignores config and lands at unpredictable
+   locations.
 3. **IMPLEMENT** — register the implementer specialist with the Agent
    Manager (prompt from `nightly specialist implementer`); wait for
    completion; collect the diff.

@@ -94,6 +94,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly start "<seed>"`                 | Create a new run; optionally seed `tasks/0001-<slug>/`.   |
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
+| `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -215,11 +216,21 @@ in_progress`. The cascade only takes over on follow-up.
 ### 2. ISOLATE — open a worktree
 
 ```bash
-git worktree add ../nightly-<slug>-<short-ts> -b nightly/<slug>-<short-ts>
+nightly worktree create <slug>
 ```
 
-Work only inside the worktree. Never modify the user's primary worktree.
-Never push to `main` / `master` / `release/*`.
+This wraps `git worktree add` with config-driven placement: it reads
+`worktree_root` from `.nightly/config.yml`, falls back to a safe
+default (nest under `<repo>-nightly/`), and auto-relocates to
+`~/.cache/nightly/worktrees/` when the repo is under iCloud /
+FileProvider (which silently corrupts git state). Emits
+`path=<abs>\nbranch=<name>` on stdout; parse the path to find the
+worktree dir. **Do NOT run `git worktree add ../…` directly** —
+that ignores config and lands the worktree at unpredictable
+locations, including the operator's workspace root.
+
+Work only inside the worktree. Never modify the user's primary
+worktree. Never push to `main` / `master` / `release/*`.
 
 **Audit-only / read-only task carveout.** Some `ideate_fallback` picks
 (e.g. `todo_audit` proposals) produce only a markdown deliverable —

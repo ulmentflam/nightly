@@ -60,6 +60,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly start "<seed>"`                 | Create a new run; optionally seed `tasks/0001-<slug>/`.   |
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
+| `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
 | `nightly plans`                          | List every plan across runs with status.                  |
 | `nightly triage`                         | Print ranked open GitHub issues (best-effort).            |
 | `nightly propose [--top N]`              | Dry-run the proposer suite; list ideation candidates.     |
@@ -132,7 +133,11 @@ Update `plan.md` frontmatter as you transition between phases:
 ## The loop, per task picked
 
 1. **SCOPE** — fill in `tasks/<n>-<slug>/plan.md`. `status: in_progress`.
-2. **ISOLATE** — `git worktree add ../nightly-<slug>-<ts> -b nightly/<slug>-<ts>`.
+2. **ISOLATE** — `nightly worktree create <slug>` (config-aware
+   wrapper; honors `worktree_root` from `.nightly/config.yml` and
+   auto-relocates off iCloud / FileProvider). Do NOT use raw
+   `git worktree add` — it ignores config and lands at unpredictable
+   locations.
 3. **IMPLEMENT** — sub-spawn the implementer specialist.
 4. **TEST** — sub-spawn the tester.
 5. **REVIEW** — sub-spawn the reviewer (read-only).
