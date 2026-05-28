@@ -21,6 +21,14 @@ sub-agents are dispatched** (separate `gemini run` sub-processes via
 the headless surface) and **how authentication works** (Google OAuth +
 Gemini API).
 
+**Materializing an ideate / ideate_fallback pick.** When `nightly next`
+prints `source: ideate` or `ideate_fallback`, it also prints a
+`fingerprint: <fp>` line. Pass it to `nightly task <slug> -d "<title>"
+-f "<fp>"` so the cascade's dedupe filter catches re-detections of
+the same proposal next pass — without it the proposer suite (which is
+stateless against unmerged main) keeps surfacing the same fix until
+the loop guard yields (issue #4).
+
 ## Invocation
 
 The user invokes you by typing `/nightly` in the Gemini CLI. Custom

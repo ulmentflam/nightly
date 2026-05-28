@@ -159,6 +159,24 @@ first hit:
 Always run `nightly next` at the top of every iteration. Don't second-
 guess the cascade — it's auditable on purpose.
 
+**Materializing an ideate / ideate_fallback pick.** When the pick's
+source is `ideate` or `ideate_fallback`, `nightly next` prints a
+`fingerprint: <fp>` line in addition to the usual fields. Pass that
+fingerprint when you create the plan:
+
+```bash
+nightly task <slug> -d "<title from `summary:`>" -f "<fp>"
+```
+
+The `-f` (`--proposer-fingerprint`) flag stamps `proposer_fingerprint`
+into the plan's frontmatter, and the cascade's dedupe filter then
+skips re-detected proposals on the next pass. **Skipping this flag
+on ideate picks is the bug behind issue #4**: the lint_debt /
+type_holes / todo_fixme proposers are stateless against unmerged main,
+so without the fingerprint the same proposal re-surfaces every cycle
+until the loop guard yields. The flag is harmless on non-proposer
+picks (the field stays empty for hand-authored plans).
+
 ### When the cascade returns `nothing`
 
 **Do not render the briefing yet.** Run `nightly keepalive` first —

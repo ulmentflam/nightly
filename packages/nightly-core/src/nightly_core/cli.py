@@ -507,6 +507,20 @@ def task(
             ),
         ),
     ] = None,
+    proposer_fingerprint: Annotated[
+        str | None,
+        typer.Option(
+            "--proposer-fingerprint",
+            "-f",
+            help=(
+                "Stamp this proposer fingerprint into the new plan's "
+                "frontmatter so the cascade can dedupe re-detected work "
+                "next pass. Pass the value emitted by `nightly next` for "
+                "ideate / ideate_fallback picks. Ignored when --status is "
+                "used (no plan creation occurs)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Create a new task — or transition an existing task's status — in the current run.
 
@@ -558,6 +572,18 @@ def task(
         return
 
     created = new_task(run, slug=slug, description=description)
+    if proposer_fingerprint:
+        from nightly_core.plans import (  # noqa: PLC0415 - local
+            PROPOSER_FINGERPRINT_KEY,
+            read_plan,
+            render_frontmatter,
+        )
+
+        plan_path = created.path / "plan.md"
+        plan = read_plan(plan_path)
+        metadata = dict(plan.metadata)
+        metadata[PROPOSER_FINGERPRINT_KEY] = proposer_fingerprint
+        plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
     typer.echo(
         f"✓ task {created.path.name} ready at {_format_path_for_display(created.path, root)}"
     )
@@ -617,6 +643,13 @@ def show_next() -> None:
         typer.echo(f"target:   {_format_path_for_display(choice.target_path, root)}")
     if choice.score is not None:
         typer.echo(f"score:    {choice.score:.2f}")
+    if choice.proposer_fingerprint is not None:
+        # Surfaced for ideate / ideate_fallback picks so the agent can pass
+        # it through to `nightly task -f <fp>` when materializing the plan.
+        # Without it, the next cascade pass re-detects the same proposal
+        # (proposers are stateless against unmerged main) and the loop
+        # guard ends up yielding. See issue #4.
+        typer.echo(f"fingerprint: {choice.proposer_fingerprint}")
     if choice.rationale:
         typer.echo("")
         typer.echo(choice.rationale)

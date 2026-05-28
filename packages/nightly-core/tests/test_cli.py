@@ -539,6 +539,42 @@ def test_task_status_rejects_unknown_slug(repo: Path) -> None:
     assert "no task with slug" in result.output.lower()
 
 
+def test_task_stamps_proposer_fingerprint(repo: Path) -> None:
+    """Issue #4 fix: when the agent materializes an ideate pick by hand
+    via `nightly task <slug> -f <fp>`, the fingerprint lands in the
+    plan's frontmatter so the cascade's dedupe catches re-detections."""
+    from nightly_core.plans import PROPOSER_FINGERPRINT_KEY, read_plan
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    fp = "lint_debt:lint_debt:src/foo.py"
+    result = runner.invoke(
+        app,
+        ["task", "fix-sim910", "-d", "Apply SIM910", "-f", fp],
+    )
+    assert result.exit_code == 0, result.output
+
+    run_id = (repo / ".nightly/runs/CURRENT").read_text(encoding="utf-8").strip()
+    plan_path = repo / ".nightly" / "runs" / run_id / "tasks" / "0001-fix-sim910" / "plan.md"
+    plan = read_plan(plan_path)
+    assert plan.metadata.get(PROPOSER_FINGERPRINT_KEY) == fp
+    assert plan.proposer_fingerprint == fp
+
+
+def test_task_without_fingerprint_leaves_field_empty(repo: Path) -> None:
+    """The flag is opt-in: hand-authored plans keep `proposer_fingerprint`
+    absent so the dedupe filter doesn't claim them as proposer-derived."""
+    from nightly_core.plans import read_plan
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    runner.invoke(app, ["task", "hand-authored", "-d", "by a human"])
+
+    run_id = (repo / ".nightly/runs/CURRENT").read_text(encoding="utf-8").strip()
+    plan_path = repo / ".nightly" / "runs" / run_id / "tasks" / "0001-hand-authored" / "plan.md"
+    assert read_plan(plan_path).proposer_fingerprint is None
+
+
 def test_specialist_prints_prompt() -> None:
     for role in ("implementer", "tester", "reviewer", "researcher"):
         result = runner.invoke(app, ["specialist", role])
@@ -664,6 +700,45 @@ def test_next_picks_github_issue_when_no_local_work(
     assert result.exit_code == 0
     assert "source:   github_issue" in result.output
     assert "42" in result.output
+
+
+def test_next_emits_fingerprint_for_ideate_pick(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #4 fix: `nightly next` surfaces the proposer fingerprint for
+    ideate / ideate_fallback picks so the agent can pass it to
+    `nightly task -f <fp>` and short-circuit the re-detect loop."""
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    proposal = _eligible_proposal(score=4.5, title="apply SIM910")
+    monkeypatch.setattr(
+        "nightly_core.cascade.run_proposers",
+        lambda _root, **_: [proposal],
+    )
+    result = runner.invoke(app, ["next"])
+    assert result.exit_code == 0, result.output
+    assert "source:   ideate" in result.output
+    assert f"fingerprint: {proposal.fingerprint}" in result.output
+
+
+def test_next_omits_fingerprint_for_non_proposer_picks(repo: Path) -> None:
+    """The line only appears when the cascade pick is proposer-derived —
+    in-flight, RFC, issue, and pr_rescue picks must not emit a fingerprint
+    line (there's nothing to dedupe against)."""
+    from nightly_core.plans import update_plan_status
+    from nightly_core.runs import current_run, new_task
+
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    run = current_run(repo)
+    assert run is not None
+    task = new_task(run, slug="alpha")
+    update_plan_status(task.path / "plan.md", "in_progress")
+
+    result = runner.invoke(app, ["next"])
+    assert result.exit_code == 0
+    assert "source:   resume_in_flight" in result.output
+    assert "fingerprint:" not in result.output
 
 
 def test_triage_empty_when_no_issues(repo: Path) -> None:

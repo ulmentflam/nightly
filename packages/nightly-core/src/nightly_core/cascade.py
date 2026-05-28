@@ -137,6 +137,13 @@ class CascadeChoice:
     rationale: str | None = None
     score: float | None = None
     pr_feedback: tuple[PRFeedback, ...] | None = None
+    proposer_fingerprint: str | None = None
+    """Set when the choice originates from a Proposal (sources `ideate` /
+    `ideate_fallback`). The agent passes this to `nightly task -f <fp>`
+    when materializing the plan, so the cascade can dedupe re-detections
+    on the next pass — see issue #4. Hand-authored / RFC / issue / PR-
+    rescue picks leave this None.
+    """
 
 
 # ── individual cascade steps ──────────────────────────────────────────────
@@ -580,6 +587,7 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
                 "Cleared the autonomy bar; safe to execute without human approval."
             ),
             score=ideated.score,
+            proposer_fingerprint=ideated.fingerprint,
         )
 
     # Armed-session fallback: when nothing else is left, ship the best
@@ -615,6 +623,7 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
                     "human review."
                 ),
                 score=fallback.score,
+                proposer_fingerprint=fallback.fingerprint,
             )
 
     # Distinguish "no proposals at all" from "every proposal deduped" so
