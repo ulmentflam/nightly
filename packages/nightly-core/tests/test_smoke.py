@@ -1,4 +1,4 @@
-"""Smoke tests for nightly-core. Real coverage lands with Phase 1+."""
+"""Smoke tests for nightly-core."""
 
 from typer.testing import CliRunner
 
@@ -18,8 +18,7 @@ def test_cli_version_command() -> None:
     assert "nightly 0.0.1" in result.stdout
 
 
-def test_cli_info_command() -> None:
-    result = runner.invoke(app, ["info"])
-    assert result.exit_code == 0
-    assert "Phase" in result.stdout
-    assert "brainstorm.html" in result.stdout
+# `nightly info` is covered by
+# test_cli.py::test_info_command_mentions_version_and_design_doc,
+# which asserts on the actual `__version__` string + the design-doc
+# reference. Keeping a weaker copy here would be drift surface.

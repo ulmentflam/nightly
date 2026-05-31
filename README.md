@@ -105,42 +105,6 @@ nightly brief                                 # render briefing.html + vault
 nightly vault open                            # open the knowledge-graph dashboard
 ```
 
-### Cascade PR-awareness
-
-The cascade now skips RFC checkbox items whose text appears in an open
-Nightly PR's title or body (so the agent doesn't re-pick work that's
-already a PR awaiting review), and reports stacked-PR geometry when
-HEAD coincides with an open Nightly PR's head ref. Both signals are
-best-effort substring matches with a deliberate bias toward false
-negatives. See
-[`.planning/rfcs/001-cascade-aware-of-open-prs.md`](.planning/rfcs/001-cascade-aware-of-open-prs.md).
-
-### Worktree readiness
-
-Before any task dispatch on a fresh worktree, `nightly worktree doctor`
-probes the host repo's pre-commit infrastructure and surfaces failures
-in a small known set of categories. `missing_python_dep` and
-`missing_pre_commit_hook` are auto-remediated (`uv sync --all-extras`,
-`pre-commit install --install-hooks`); other failures surface as a
-`worktree_remediation` proposal targeting the host repo's hook config.
-The cascade gains a `worktree_blocked` source that fires before any
-plan resume, so a hostile worktree can't waste a turn on a task that
-will fail to commit. See
-[`.planning/rfcs/002-worktree-readiness.md`](.planning/rfcs/002-worktree-readiness.md).
-
-### Vault (knowledge graph)
-
-`nightly brief` also builds a navigable knowledge graph under
-`.nightly/vault/`: every run, task, lesson, and PR becomes a node;
-parent/spawned/derived_from edges form a DAG that's queried by a
-SQLite-backed dashboard and a per-node encyclopedia of static HTML
-pages. Open the dashboard with `nightly vault open` — it runs in any
-browser, no server needed (sql.js + wasm are vendored). The dashboard
-surfaces cross-run patterns (rescue chains, lesson citations, PR-stall
-clusters) the briefing alone doesn't. See
-[`.planning/rfcs/003-vault-knowledge-graph.md`](.planning/rfcs/003-vault-knowledge-graph.md)
-for the design.
-
 ### Slash commands
 
 Installed into every host alongside the main skill:
@@ -191,7 +155,8 @@ merge is idempotent if you co-install them.
 - **Priority cascade** — picks the next task automatically by walking a
   fixed precedence: resume in-flight plans → unblocked-by-approval plans
   → accepted RFCs in `.planning/rfcs/` → highest-ranked open GitHub
-  issue (via `gh`) → ideation (proposer suite) → terminal *nothing*.
+  issue (via `gh`) → PR rescue (new review feedback on open Nightly PRs)
+  → ideation (proposer suite) → terminal *nothing*.
 - **Per-task isolation** — every task lives in its own `git worktree`
   forked from a base branch, so concurrent dispatches cannot stomp on
   each other.
@@ -218,6 +183,21 @@ merge is idempotent if you co-install them.
 - **Cooperative drain** — `nightly conclude` writes a marker the loop
   honours at the next batch boundary. Never `SIGKILL`. Half-finished
   work parks as `status: parked` on a dedicated branch.
+- **Cascade PR-awareness** — the cascade skips RFC checkbox items whose
+  text appears in an open Nightly PR's title or body, so the agent
+  doesn't re-pick work that's already awaiting review. Both signals are
+  best-effort substring matches with a bias toward false negatives.
+- **Worktree readiness** — before any task dispatch, `nightly worktree
+  doctor` probes the repo's pre-commit infrastructure. `missing_python_dep`
+  and `missing_pre_commit_hook` are auto-remediated; other failures surface
+  as a `worktree_remediation` proposal so a broken worktree can't silently
+  waste a session turn.
+- **Knowledge graph (vault)** — `nightly brief` also builds a navigable
+  knowledge graph under `.nightly/vault/`: every run, task, lesson, and PR
+  becomes a node; parent/spawned/derived_from edges form a DAG. Open the
+  dashboard with `nightly vault open` — it runs in any browser, no server
+  needed (sql.js + wasm are vendored). The dashboard surfaces cross-run
+  patterns the briefing alone doesn't.
 
 ---
 
@@ -232,7 +212,8 @@ merge is idempotent if you co-install them.
 | | `nightly uninstall [--host <h>] [--scope ...]` | Remove the host launcher. |
 | | `nightly doctor` | Repair a drifted install (scaffold, config, rules, skills). |
 | | `nightly update [--version <ref>] [--dry-run]` | Self-upgrade Nightly's source + refresh installed hosts. |
-| | `nightly version` / `nightly info` | Identity / phase summary. |
+| | `nightly version` | Print the installed Nightly version. |
+| | `nightly info` | One-liner description + where to start. |
 | **Run lifecycle** | `nightly start ["<seed task>"]` | Create a new run; optionally seed `tasks/0001-<slug>/`. |
 | | `nightly task <slug> [-d "<desc>"]` | Add a task to the current run. |
 | | `nightly conclude` | Mark the current run as concluding (non-blocking drain). |
@@ -304,8 +285,10 @@ source alongside `AGENTS.md` / `CLAUDE.md`) but **never writes to it**.
 2. unblocked_approval   — plans with status: blocked: approval + approval_granted
 3. accepted_rfc         — RFCs in .planning/rfcs/ with unchecked tasks
 4. github_issue         — highest-ranked open issue via `gh`
-5. ideate               — proposer suite, top auto-PR-eligible result
-6. nothing              — terminal; write narrative + brief + exit
+5. pr_rescue            — Nightly-authored open PR has new feedback (reviews,
+                          bot comments, or failed CI) since last reconcile
+6. ideate               — proposer suite, top auto-PR-eligible result
+7. nothing              — terminal; write narrative + brief + exit
 ```
 
 Run `nightly next` at any time to see what the cascade would pick.
@@ -327,11 +310,12 @@ during multi-task parallel dispatch — the cascade explicitly skips it.
 N` in parallel) it:
 
 1. Claims the plan via `status: dispatching`.
-2. Creates `git worktree add ../nightly-<slug>-<ts> -b nightly/<slug>-<ts>`.
+2. Calls `nightly worktree create <slug>` to place an isolated git
+   worktree at the config-aware, iCloud-safe location.
 3. Spawns the host's headless CLI (`claude -p --output-format json`, etc.)
    with the task prompt + working directory set to the worktree.
 4. Reconciles: if the agent updated the plan to `done` / `parked`,
-   respect that. Otherwise infer from the headless exit code.
+   respect that. Otherwise infers from the headless exit code.
 5. Loops until the cascade returns `nothing`, `--max-tasks` is hit,
    or `<run>/CONCLUDE` appears on disk.
 

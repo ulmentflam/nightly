@@ -22,7 +22,7 @@ from .index import IndexStats
 from .index import rebuild as rebuild_index
 from .manifest import write_manifest
 from .model import Node
-from .project import ProjectionResult, project_run, vault_root_for
+from .project import ProjectionResult, backfill_feedback, project_run, vault_root_for
 from .render_dashboard import DashboardResult
 from .render_dashboard import render as render_dashboard
 from .render_encyclopedia import RenderResult
@@ -35,6 +35,7 @@ __all__ = [
     "Node",
     "ProjectionResult",
     "RenderResult",
+    "backfill_feedback",
     "build",
     "project_run",
     "rebuild_index",
@@ -58,7 +59,10 @@ class BuildResult:
 
     @property
     def total_nodes(self) -> int:
-        return sum(1 + len(p.task_nodes) + len(p.lesson_nodes) for p in self.projections)
+        return sum(
+            1 + len(p.task_nodes) + len(p.dispatch_nodes) + len(p.lesson_nodes)
+            for p in self.projections
+        )
 
 
 def build(repo_root: Path) -> BuildResult:
@@ -83,6 +87,7 @@ def build(repo_root: Path) -> BuildResult:
     for projection in projections:
         all_nodes.append(projection.run_node)
         all_nodes.extend(projection.task_nodes)
+        all_nodes.extend(projection.dispatch_nodes)
         all_nodes.extend(projection.lesson_nodes)
 
     index_stats = rebuild_index(vault_root)

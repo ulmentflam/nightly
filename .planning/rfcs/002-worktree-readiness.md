@@ -422,7 +422,7 @@ these until the RFC's frontmatter status flips to `accepted`.
 **Phase E — config + brainstorm**
 - [x] E1. `_DEFAULT_CONFIG_YML` gains `worktree:` block (both knobs default on)
 - [x] E2. `WorktreeConfig` + `load_worktree_config()` in `config.py`; cascade reads it
-- [ ] E3. Brainstorm §06 carveout text — small follow-up, the cascade logic already implements the policy (`--no-verify` never invoked; `uv sync` and `pre-commit install --install-hooks` are the only auto-fixes)
+- [x] E3. Brainstorm §06 carveout text added as a teal "RFC 002 carveout · making the test runnable" card directly under category 6, explicitly distinguishing "making the test runnable" (auto-fix declared-installer paths) from "bypassing the gate" (still forbidden)
 
 **Phase F — characterization + README**
 - [x] F1. Characterization test against the corpus-forge issue #2 failure signature (`test_corpus_forge_signature_is_remediable`)

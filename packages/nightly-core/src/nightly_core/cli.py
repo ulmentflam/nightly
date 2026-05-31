@@ -1,8 +1,8 @@
 """Nightly CLI entry point.
 
-Commands as of Phase 8:
+Full command surface:
 - `nightly version`     — print version
-- `nightly info`        — short status / phase summary
+- `nightly info`        — short identity summary
 - `nightly init`        — bootstrap .nightly/ + install host launcher
 - `nightly status`      — report what Nightly knows about this repo
 - `nightly uninstall`   — remove the host launcher
@@ -22,15 +22,16 @@ Commands as of Phase 8:
 - `nightly rescue`      — preview the next pr_rescue candidate without dispatching
 - `nightly keepalive`   — print think-harder strategies when the cascade is empty
 - `nightly session …`   — arm/disarm the SESSION_ACTIVE marker for the Stop hook
-- `nightly hook stop`   — Claude Code Stop hook glue (called by .claude/settings)
+- `nightly hook stop`   — Stop-hook handler (invoked by .claude/settings and equivalents)
 - `nightly stop`        — request immediate hard stop (next turn boundary)
 - `nightly update`      — pull latest source and refresh installed hosts in this repo
 - `nightly doctor`      — diagnose & repair a drifted nightly install (skills + scaffold)
 - `nightly verify`      — detect & run the repo's linters / formatters / type checkers
 - `nightly ci`          — print CI status across open Nightly PRs (failed = work)
 - `nightly bug`         — bundle run state into a debug report; optionally open issue
-
-This is the planned-phase CLI surface complete (Phases 0-8).
+- `nightly worktree …`  — create and inspect Nightly-owned git worktrees
+- `nightly dispatch …`  — background-dispatch specialist sub-agents
+- `nightly vault …`     — build and open the knowledge-graph dashboard
 """
 
 from __future__ import annotations
@@ -133,7 +134,7 @@ refuse:
   scope_creep:            true
   bypass_test_or_type:    true
 
-# pr_feedback governs the `pr_rescue` cascade step (Phase 9).
+# pr_feedback governs the `pr_rescue` cascade step.
 # - `enabled` flips the whole feature off without removing the block.
 # - `review_bots` extends the default bot allowlist (CodeRabbit, Cursor BugBot,
 #   Copilot reviewer, Greptile, Amp, etc.) with project-specific accounts.
@@ -168,10 +169,9 @@ _TRIAGE_TITLE_MAX = 50
 _TRIAGE_TITLE_ELIDE_AT = 47
 
 
-# Hosts implemented so far. Cursor + Antigravity land in Phase 6 and will
-# be added to this set then. Each loader is a thin lambda that lazy-imports
-# its host package so nightly-core never depends on its sub-packages at
-# load time (the sub-packages depend on nightly-core — would be a cycle).
+# Each loader is a thin lambda that lazy-imports its host package so
+# nightly-core never depends on its sub-packages at load time (the
+# sub-packages depend on nightly-core — would be a cycle).
 _HOST_LOADERS: dict[HostId, Callable[[Path | None], NightlyHostIntegration]] = {}
 
 
@@ -230,7 +230,7 @@ def _load_host(host_id: HostId, root: Path | None = None) -> NightlyHostIntegrat
     if loader is None:
         msg = (
             f"Host '{host_id}' is not yet implemented. "
-            f"Phase 6 supports {sorted(_HOST_LOADERS)}. "
+            f"Supported hosts: {sorted(_HOST_LOADERS)}. "
             "See .planning/brainstorm.html §11 for the build plan."
         )
         raise typer.BadParameter(msg)
@@ -306,11 +306,11 @@ def version() -> None:
 
 @app.command()
 def info() -> None:
-    """Brief intro and current phase."""
-    typer.echo(f"Nightly {__version__} — Phases 0-8 complete.")
-    typer.echo("Run `nightly init` to install the host skill; then ask Nightly")
-    typer.echo("in your host to run a task — or use `nightly run` for headless.")
-    typer.echo("See .planning/brainstorm.html for the design.")
+    """Print version, one-liner description, and where to go next."""
+    typer.echo(f"Nightly {__version__} — continuously-running, host-native coding agent.")
+    typer.echo("Run `nightly init` to install the host skill; then type `/nightly`")
+    typer.echo("inside your host to start a session, or use `nightly run` for headless.")
+    typer.echo("See .planning/brainstorm.html for the full design.")
 
 
 @app.command()
@@ -451,7 +451,7 @@ def status() -> None:
         typer.echo(f"    ({len(all_runs)} run(s) total)")
 
 
-# ── Phase 2 commands ──────────────────────────────────────────────────────
+# ── run lifecycle ─────────────────────────────────────────────────────────
 
 
 @app.command()
@@ -461,11 +461,13 @@ def start(
         typer.Argument(help="Optional task description; if given, seeds tasks/0001-<slug>/."),
     ] = None,
 ) -> None:
-    """Create a new run and update .nightly/runs/CURRENT.
+    """Begin a new Nightly session — creates a run dir and sets it as current.
 
-    Per the always-advance principle, starting a new run while another is
-    active is allowed — the old run remains on disk and the CURRENT pointer
-    moves. To formally end the prior run, use `nightly conclude` first.
+    Optionally seeds the first task from the positional argument so the
+    cascade's `resume_in_flight` step picks it up immediately. Starting a
+    new run while another is active is allowed — the prior run's artifacts
+    stay on disk and CURRENT advances. To formally drain the prior run
+    first, use `nightly conclude` before calling this.
     """
     root = repo_root()
     if not nightly_dir(root).is_dir():
@@ -487,7 +489,12 @@ def start(
 
 @app.command()
 def conclude() -> None:
-    """Mark the current run as concluding. Does not block — drains naturally."""
+    """Signal the agent to wrap up — finishes the current task, then renders the briefing and exits.
+
+    Writes a CONCLUDE marker the Stop hook reads at the next turn boundary.
+    The agent finishes whatever it's doing (never SIGKILL), then stops
+    picking new cascade work. Use `nightly stop` for an immediate hard stop.
+    """
     root = repo_root()
     run = current_run(root)
     if run is None:
@@ -634,7 +641,7 @@ def brief(
     target = write_briefing(run)
     typer.echo(f"✓ rendered {_format_path_for_display(target, root)}")
 
-    # Build the vault alongside the briefing (RFC 003 Phase F).
+    # Build the vault knowledge graph alongside the briefing.
     # Failures are downgraded to a warning — the briefing should never
     # be blocked by a vault step that errors.
     from nightly_core.config import load_vault_config  # noqa: PLC0415
@@ -848,15 +855,15 @@ def headless(
         typer.Option("--timeout", help="Wall-clock timeout in seconds. Default: no timeout."),
     ] = None,
 ) -> None:
-    """Spawn a host's non-interactive CLI and print the result.
+    """Spawn a host's non-interactive CLI with `prompt` and print the result.
 
     Subscription credentials propagate through the environment — the
     spawned CLI reads its own cached creds from `~/.<host>/...`. Set the
     host's API key env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
     before invoking when running from a sandboxed CI environment.
 
-    Phase 7 ships single-shot invocation. Phase 8 will wrap this in a
-    cascade-driven loop (start → next → headless → land → brief).
+    For cascade-driven multi-task runs, use `nightly run` instead — it
+    wraps this primitive in a start → next → headless → land → brief loop.
     """
     root = repo_root()
     integration = _load_host(host, root=root)
@@ -1092,7 +1099,7 @@ def keepalive(
         typer.echo("")
 
 
-# ── Phase 9h commands: keep-alive hook + session + stop ──────────────────
+# ── keep-alive hook + session + stop ─────────────────────────────────────
 
 
 session_app = typer.Typer(
@@ -1205,6 +1212,16 @@ def vault_sync_prs() -> None:
     root = repo_root()
     paths = backfill_prs(root)
     typer.echo(f"✓ synced {len(paths)} PR node(s)")
+
+
+@vault_app.command(name="sync-feedback")
+def vault_sync_feedback() -> None:
+    """Walk vault PR nodes and mint feedback nodes from `gh` review data."""
+    from nightly_core.vault.project import backfill_feedback  # noqa: PLC0415
+
+    root = repo_root()
+    paths = backfill_feedback(root)
+    typer.echo(f"✓ synced {len(paths)} feedback node(s)")
 
 
 @worktree_app.command(name="create")
@@ -1343,7 +1360,11 @@ def worktree_doctor_cmd(
         ),
     ] = False,
 ) -> None:
-    """RFC 002 — probe the worktree's pre-commit infrastructure.
+    """Probe the worktree's pre-commit infrastructure and report readiness.
+
+    Auto-remediates `missing_python_dep` (runs `uv sync --all-extras`) and
+    `missing_pre_commit_hook` (runs `pre-commit install --install-hooks`) when
+    `--remediate` is passed. Other failure kinds require operator action.
 
     Exit codes:
     - 0  → ready
