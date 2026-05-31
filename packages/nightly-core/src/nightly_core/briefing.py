@@ -80,6 +80,13 @@ class BriefingContext:
     generated_at: str
     session_narrative: Markup | None
     lessons: Markup | None
+    stacked_geometry: list[dict[str, Any]]
+    """RFC 001 §B2 — open Nightly PRs HEAD currently coincides with. Empty
+    when HEAD is `main` or a non-`nightly/` branch. Each entry is a dict
+    with `number`, `branch`, `url` so the template can render a panel."""
+    current_branch: str
+    """The branch HEAD points at, for the geometry panel header. Empty
+    string if git wasn't reachable."""
 
 
 def _load_tasks(run: Run) -> list[dict[str, Any]]:
@@ -164,6 +171,23 @@ def _is_ready(task: dict[str, Any]) -> bool:
     return bool(task["has_plan"] and task["has_proposal"] and task["has_uncertainty"])
 
 
+def _load_stacked_geometry() -> tuple[str, list[dict[str, Any]]]:
+    """RFC 001 §B2 — detect open Nightly PRs HEAD stacks on.
+
+    Returns `(current_branch, [{number, branch, url}, ...])`. Wrapped in
+    try/except so a broken cascade import (e.g. in test fixtures that
+    monkeypatch cascade) never crashes the briefing — the panel just
+    degrades to "empty"."""
+    try:
+        from nightly_core.cascade import detect_stacked_geometry  # noqa: PLC0415 - lazy
+
+        geo = detect_stacked_geometry()
+    except Exception:
+        return "", []
+    chain = [{"number": n, "branch": b, "url": u} for n, b, u in geo.chain]
+    return geo.current_branch, chain
+
+
 def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
     """Walk the run directory and build the renderer context."""
     tasks = _load_tasks(run)
@@ -172,6 +196,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
     issues = _load_issues(run)
     ready = sum(1 for t in tasks if _is_ready(t))
     generated = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M UTC")
+    current_branch, stacked = _load_stacked_geometry()
     return BriefingContext(
         run_id=run.id,
         is_concluded=run.is_concluded,
@@ -183,6 +208,8 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         generated_at=generated,
         session_narrative=_render_markdown_file(run.path / "briefing.md"),
         lessons=_render_markdown_file(run.path / "lessons.md"),
+        stacked_geometry=stacked,
+        current_branch=current_branch,
     )
 
 
@@ -201,6 +228,8 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         generated_at=ctx.generated_at,
         session_narrative=ctx.session_narrative,
         lessons=ctx.lessons,
+        stacked_geometry=ctx.stacked_geometry,
+        current_branch=ctx.current_branch,
     )
 
 

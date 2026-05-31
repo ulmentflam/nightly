@@ -16,11 +16,13 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from nightly_core.config import load_worktree_config
 from nightly_core.ideation import run_proposers, top_auto_pr
 from nightly_core.paths import planning_dir, repo_root
 from nightly_core.plans import PlanRecord, list_plans, parse_frontmatter
@@ -28,13 +30,16 @@ from nightly_core.pr_feedback import FeedbackFetcher, PRFeedback, fetch_feedback
 from nightly_core.proposers.base import Proposal
 from nightly_core.runs import current_run
 from nightly_core.triage import IssueRanking, rank_issues
+from nightly_core.worktree_doctor import probe_worktree_readiness
 
 __all__ = [
     "CASCADE_SOURCES",
     "CascadeChoice",
     "CascadeSource",
     "PRRescueCandidate",
+    "StackedGeometry",
     "count_open_nightly_prs",
+    "detect_stacked_geometry",
     "next_task",
     "pick_accepted_rfc",
     "pick_github_issue",
@@ -43,11 +48,13 @@ __all__ = [
     "pick_in_flight",
     "pick_pr_rescue",
     "pick_unblocked",
+    "pick_worktree_blocked",
 ]
 
 
 CascadeSource = Literal[
     "concluded",
+    "worktree_blocked",
     "resume_in_flight",
     "unblocked_approval",
     "accepted_rfc",
@@ -68,6 +75,7 @@ CascadeSource = Literal[
 
 CASCADE_SOURCES: tuple[CascadeSource, ...] = (
     "concluded",
+    "worktree_blocked",
     "resume_in_flight",
     "unblocked_approval",
     "accepted_rfc",
@@ -149,6 +157,108 @@ class CascadeChoice:
 # ── individual cascade steps ──────────────────────────────────────────────
 
 
+_WORKTREE_READY_TTL = 24 * 60 * 60  # 24h
+_WORKTREE_READY_MARKER = "READY"
+
+
+def pick_worktree_blocked(root: Path | None = None) -> CascadeChoice | None:
+    """RFC 002 — return a `worktree_blocked` CascadeChoice if the
+    worktree's pre-commit infrastructure is broken AND unremediable.
+
+    Caches successful probes via a `.nightly/worktrees/<branch-slug>/READY`
+    marker with a 24h TTL + config-mtime invalidation, so successive
+    `nightly next` calls don't re-spawn pre-commit. Returns `None` if
+    the worktree is ready or only `remediable` (the driver decides
+    whether to auto-remediate).
+    """
+    root_path = (root or repo_root()).resolve()
+    cfg = load_worktree_config(root_path)
+    if not cfg.probe_enabled:
+        return None
+    if _worktree_ready_marker_is_fresh(root_path):
+        return None
+
+    readiness = probe_worktree_readiness(root_path)
+    if readiness.ok:
+        _touch_worktree_ready_marker(root_path)
+        return None
+    if readiness.remediable and cfg.remediate_enabled:
+        # Driver will remediate; cascade defers. Return None so the
+        # next pick step runs. (If remediation fails, the next cascade
+        # walk will surface `blocked` and we'll arrive here again.)
+        return None
+    if readiness.remediable:
+        # Remediable but operator opted out of auto-remediate.
+        kind = readiness.kind or "missing_python_dep"
+        return CascadeChoice(
+            source="worktree_blocked",
+            summary=f"worktree blocked (remediable): {kind}",
+            target_path=None,
+            rationale=(
+                f"Pre-commit reports `{kind}` and `worktree.remediate_enabled` "
+                f"is false. Detail: {readiness.detail}. Re-enable remediation "
+                "or fix the worktree manually."
+            ),
+        )
+    # Truly blocked — operator action required.
+    kind = readiness.kind or "unknown"
+    return CascadeChoice(
+        source="worktree_blocked",
+        summary=f"worktree blocked: {kind}",
+        target_path=None,
+        rationale=(
+            f"Pre-commit reports `{kind}` and the doctor has no auto-fix. "
+            f"Detail: {readiness.detail.strip()[:200]}. The agent should "
+            "scope a `worktree_remediation` proposal targeting the host "
+            "repo's hook config rather than start a fresh task."
+        ),
+    )
+
+
+def _branch_slug_for(root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return "unknown"
+    return result.stdout.strip().replace("/", "-") or "unknown"
+
+
+def _worktree_ready_marker_path(root: Path) -> Path:
+    return root / ".nightly" / "worktrees" / _branch_slug_for(root) / _WORKTREE_READY_MARKER
+
+
+def _worktree_ready_marker_is_fresh(root: Path) -> bool:
+    marker = _worktree_ready_marker_path(root)
+    if not marker.is_file():
+        return False
+    try:
+        marker_mtime = marker.stat().st_mtime
+    except OSError:
+        return False
+    if time.time() - marker_mtime > _WORKTREE_READY_TTL:
+        return False
+    # Config-mtime invalidation: any change to the hook config or
+    # pyproject must invalidate the cached READY.
+    for config_name in (".pre-commit-config.yaml", "pyproject.toml"):
+        cfg = root / config_name
+        if cfg.is_file() and cfg.stat().st_mtime > marker_mtime:
+            return False
+    return True
+
+
+def _touch_worktree_ready_marker(root: Path) -> None:
+    marker = _worktree_ready_marker_path(root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch(exist_ok=True)
+
+
 def pick_in_flight(root: Path | None = None) -> PlanRecord | None:
     """Return the first plan with `status: in_progress`, if any.
 
@@ -179,24 +289,156 @@ _RFC_UNCHECKED_RE = re.compile(r"^- \[ \] (.+)$", re.MULTILINE)
 class _RFCMatch:
     rfc_path: Path
     item_text: str
+    skipped_count: int = 0
+    """RFC 001 §A3 — how many checkbox items were skipped on the way to
+    this match because they overlap an open Nightly PR. Surfaces in
+    `nightly next` so the operator sees the cascade's PR-awareness in
+    action."""
+
+
+@dataclass(frozen=True)
+class StackedGeometry:
+    """RFC 001 Phase B — open Nightly PRs that would stack under HEAD.
+
+    `chain` is ordered from the closest ancestor (a parent PR whose head
+    is the immediate base for new work cut here) outward. Empty when
+    HEAD sits on `main` or any non-nightly branch.
+    """
+
+    current_branch: str
+    chain: tuple[tuple[int, str, str], ...]
+    """`(pr_number, branch, url)` for each open Nightly PR on the
+    ancestor path. Single-entry chains are the common case."""
+
+    @property
+    def is_stacked(self) -> bool:
+        return bool(self.chain)
+
+
+def detect_stacked_geometry(
+    root: Path | None = None,
+    *,
+    branch_prefix: str = "nightly/",
+) -> StackedGeometry:
+    """Detect open Nightly PRs that a new branch cut from HEAD would stack on.
+
+    Lightweight v1: only checks whether HEAD itself is the head ref of
+    an open Nightly PR. The cascade reports the geometry; preventing it
+    (forced branch-from-`main`) is deferred to a future worktree-policy
+    RFC.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return StackedGeometry(current_branch="", chain=())
+    current = result.stdout.strip()
+    if not current or not current.startswith(branch_prefix):
+        return StackedGeometry(current_branch=current, chain=())
+    chain: list[tuple[int, str, str]] = []
+    for branch, num, url in _nightly_open_pr_branches(root, branch_prefix=branch_prefix):
+        if branch == current:
+            chain.append((num, branch, url))
+    return StackedGeometry(current_branch=current, chain=tuple(chain))
+
+
+def _open_nightly_pr_texts(
+    root: Path | None = None,
+    *,
+    branch_prefix: str = "nightly/",
+) -> list[tuple[str, str]]:
+    """Return `(title, body)` for every open Nightly-authored PR.
+
+    Used by `_find_accepted_rfc` to skip RFC checkbox items that already
+    have an in-flight PR (RFC 001 Phase A). Returns `[]` if `gh` is
+    missing or the call fails — best-effort, no exceptions.
+    """
+    if shutil.which("gh") is None:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "200",
+                "--json",
+                "title,body,headRefName",
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return []
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return []
+    texts: list[tuple[str, str]] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        branch = str(entry.get("headRefName") or "")
+        if not branch.startswith(branch_prefix):
+            continue
+        title = str(entry.get("title") or "")
+        body = str(entry.get("body") or "")
+        texts.append((title, body))
+    return texts
+
+
+def _is_item_in_flight(rfc_filename: str, item_text: str, pr_texts: list[tuple[str, str]]) -> bool:
+    """Is this RFC item likely addressed by an open Nightly PR?
+
+    Two heuristics, biased toward false negatives (we'd rather re-pick
+    an in-flight item than silently skip one that isn't addressed):
+    - PR title or body contains the RFC filename (sans `.md`)
+    - PR title or body contains the literal item text (case-insensitive)
+
+    Both signals are weak. Operators get the explicit "stacked"
+    geometry warning in the briefing if they want a stronger signal.
+    """
+    if not pr_texts:
+        return False
+    stem = rfc_filename.removesuffix(".md").lower()
+    needle = item_text.strip().lower()
+    if not needle:
+        return False
+    for title, body in pr_texts:
+        haystack = (title + "\n" + body).lower()
+        if stem and stem in haystack:
+            return True
+        if needle and needle in haystack:
+            return True
+    return False
 
 
 def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
-    """Return the first unchecked task-list item from an `accepted` RFC.
+    """Return the first unchecked task-list item from an `accepted` RFC,
+    skipping items already addressed by an open Nightly PR (RFC 001).
 
-    Uses `parse_frontmatter` to read the `status:` field exactly —
-    earlier versions did a substring match against `"status: accepted"`
-    anywhere in the file body, which mis-picked draft RFCs whose prose
-    or checklist *discussed* the accepted status (e.g. RFC 002's
-    sizing checkbox `[ ] Promote RFC frontmatter to status: accepted`
-    matched the substring even though the frontmatter was draft).
-    Frontmatter parsing makes the contract exact: only an RFC whose
-    *parsed* `status` field equals `accepted` is eligible.
+    Uses `parse_frontmatter` to read the `status:` field exactly. Calls
+    `gh pr list` once at the top of the walk to gather PR texts; items
+    that overlap any open PR's title or body are skipped.
     """
     planning = planning_dir(root)
     rfcs = planning / "rfcs"
     if not rfcs.is_dir():
         return None
+    pr_texts = _open_nightly_pr_texts(root)
+    total_skipped = 0
     for entry in sorted(rfcs.iterdir()):
         if not entry.is_file() or entry.suffix != ".md":
             continue
@@ -204,13 +446,18 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
         metadata, body = parse_frontmatter(text)
         if metadata.get("status", "").strip().lower() != "accepted":
             continue
-        # Only search the body for unchecked items — checkboxes inside
-        # the frontmatter (or in front of the first `---` fence) don't
-        # count. Matches the brainstorm's intent: the RFC's *task list*
-        # is the scope, not its YAML metadata.
-        match = _RFC_UNCHECKED_RE.search(body)
-        if match:
-            return _RFCMatch(rfc_path=entry, item_text=match.group(1).strip())
+        # Walk every unchecked item in this RFC and return the first one
+        # that isn't already addressed by an open PR.
+        for match in _RFC_UNCHECKED_RE.finditer(body):
+            item_text = match.group(1).strip()
+            if _is_item_in_flight(entry.name, item_text, pr_texts):
+                total_skipped += 1
+                continue
+            return _RFCMatch(
+                rfc_path=entry,
+                item_text=item_text,
+                skipped_count=total_skipped,
+            )
     return None
 
 
@@ -478,7 +725,7 @@ def pick_ideated_fallback(root: Path | None = None) -> Proposal | None:
 # ── the cascade itself ────────────────────────────────────────────────────
 
 
-def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one return per cascade step is the whole point
+def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0912 - one return per cascade step is the whole point
     """Walk the cascade and return the first hit.
 
     The order is fixed:
@@ -509,6 +756,14 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
             ),
         )
 
+    # RFC 002 — worktree readiness. If the worktree can't even commit,
+    # surfacing in-flight work or fresh tasks is anti-helpful (the run
+    # lands as a stuck local-proposal branch). Block the cascade until
+    # the operator remediates.
+    blocked = pick_worktree_blocked(root)
+    if blocked is not None:
+        return blocked
+
     in_flight = pick_in_flight(root)
     if in_flight is not None:
         return CascadeChoice(
@@ -535,14 +790,21 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
 
     rfc = pick_accepted_rfc(root)
     if rfc is not None:
+        rationale = (
+            "An accepted RFC has unstarted task list items. RFCs are "
+            "human-blessed scope and outrank issue triage."
+        )
+        if rfc.skipped_count > 0:
+            rationale += (
+                f" Skipped {rfc.skipped_count} earlier item"
+                f"{'s' if rfc.skipped_count != 1 else ''} that matched an "
+                "open Nightly PR (RFC 001 §A2)."
+            )
         return CascadeChoice(
             source="accepted_rfc",
             summary=f"work on accepted RFC item: {rfc.item_text}",
             target_path=rfc.rfc_path,
-            rationale=(
-                "An accepted RFC has unstarted task list items. RFCs are "
-                "human-blessed scope and outrank issue triage."
-            ),
+            rationale=rationale,
         )
 
     issue = pick_github_issue(root)
@@ -655,8 +917,7 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911 - one
             "no nightly-eligible issues, no PR-rescue candidates, no "
             "proposals at any tier — the proposer suite came up empty. "
             + (
-                "Session is armed; the auto-ideate fallback also returned "
-                "nothing."
+                "Session is armed; the auto-ideate fallback also returned nothing."
                 if armed
                 else "Session is not armed — graceful exit is appropriate. "
                 "Arm with `nightly session start` and re-run `nightly next` "

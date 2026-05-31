@@ -287,9 +287,7 @@ def write_dispatch_state(result: BackgroundDispatchResult, *, root: Path | None 
     return state_path
 
 
-def read_dispatch_state(
-    slug: str, *, root: Path | None = None
-) -> BackgroundDispatchResult | None:
+def read_dispatch_state(slug: str, *, root: Path | None = None) -> BackgroundDispatchResult | None:
     """Load the last-recorded dispatch state for `slug`, or None.
 
     A None return means either the task has never been dispatched or
@@ -321,9 +319,7 @@ def read_dispatch_state(
             status=data.get("status", "unknown"),
             exit_code=data.get("exit_code"),
             finished_at=(
-                datetime.fromisoformat(data["finished_at"])
-                if data.get("finished_at")
-                else None
+                datetime.fromisoformat(data["finished_at"]) if data.get("finished_at") else None
             ),
         )
     except (KeyError, ValueError):

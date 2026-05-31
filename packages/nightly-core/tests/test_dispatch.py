@@ -246,8 +246,12 @@ def test_list_dispatches_returns_only_those_with_state(
         dispatch.shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None
     )
     fake = _FakePopen(pid=100)
-    start_background("alpha", role="implementer", host="claude", prompt="x", root=repo, popen_factory=fake)
-    start_background("gamma", role="tester", host="claude", prompt="x", root=repo, popen_factory=fake)
+    start_background(
+        "alpha", role="implementer", host="claude", prompt="x", root=repo, popen_factory=fake
+    )
+    start_background(
+        "gamma", role="tester", host="claude", prompt="x", root=repo, popen_factory=fake
+    )
 
     dispatches = list_dispatches(root=repo)
     slugs = {d.slug for d in dispatches}

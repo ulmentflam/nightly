@@ -347,9 +347,7 @@ def test_ideate_filters_duplicates_against_done_plans(
     assert drafts == []  # nothing written
 
 
-def test_ideate_reports_partial_dedupe(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ideate_reports_partial_dedupe(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When SOME proposals dedupe and others survive, the success line
     must include the dedupe count so operators can see what was
     filtered."""
@@ -1301,9 +1299,7 @@ def test_worktree_create_dry_run_prints_resolved_placement(repo: Path) -> None:
     assert "worktree_root=" in result.output
 
 
-def test_worktree_create_dry_run_honors_config_worktree_root(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_worktree_create_dry_run_honors_config_worktree_root(repo: Path, tmp_path: Path) -> None:
     """When `.nightly/config.yml` sets `git.worktree_root`, the
     resolved placement nests under that path, not the default
     `<repo>-nightly/` sibling. Regression for the modular-session

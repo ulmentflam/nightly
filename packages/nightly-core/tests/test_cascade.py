@@ -413,9 +413,7 @@ def test_next_task_nothing_rationale_when_all_proposals_deduped(
     plan = read_plan(landed.path / "plan.md")
     metadata = dict(plan.metadata)
     metadata[PROPOSER_FINGERPRINT_KEY] = "lint_debt:lint_debt:src/a.py"
-    (landed.path / "plan.md").write_text(
-        render_frontmatter(metadata, plan.body), encoding="utf-8"
-    )
+    (landed.path / "plan.md").write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
 
     monkeypatch.setattr(
         "nightly_core.cascade.run_proposers",

@@ -155,6 +155,28 @@
     </div>
   </div>
 
+  {# ── stacked-PR geometry (RFC 001 §B2) ───────────────────────────── #}
+  {% if stacked_geometry %}
+    <section class="narrative" style="border-left-color: var(--rose);">
+      <div class="label" style="color: var(--rose);">stacked PR geometry</div>
+      <div class="prose">
+        <p>HEAD (<code>{{ current_branch }}</code>) coincides with
+        {{ stacked_geometry|length }} open Nightly PR{% if stacked_geometry|length != 1 %}s{% endif %}.
+        New worktrees cut from this checkout would stack on
+        {% if stacked_geometry|length == 1 %}it{% else %}them{% endif %}.</p>
+        <ul>
+        {% for pr in stacked_geometry %}
+          <li><a href="{{ pr.url }}">#{{ pr.number }}</a> &mdash; <code>{{ pr.branch }}</code></li>
+        {% endfor %}
+        </ul>
+        <p><em>v1 reports only; prevention (forced branch-from-<code>main</code>)
+        is deferred to a future worktree-policy RFC. GitHub auto-retargets
+        downstream PRs when the base merges, so this isn't broken — but reviewers
+        may defer on later PRs waiting for earlier ones.</em></p>
+      </div>
+    </section>
+  {% endif %}
+
   {# ── session narrative (agent-authored, optional) ────────────────── #}
   {% if session_narrative %}
     <section class="narrative">

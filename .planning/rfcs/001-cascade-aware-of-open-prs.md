@@ -1,17 +1,21 @@
 ---
-status: draft
+status: accepted
+sized: true
 title: Make the cascade aware of open Nightly PRs (branch geometry + RFC overlap)
 created: 2026-05-24
+sized_on: 2026-05-30
+accepted_on: 2026-05-30
 author: ulmentflam
+estimated_effort: ~6h across 3 phases
 ---
 
 # RFC 001 — Cascade awareness of open Nightly PRs
 
 ## Status
 
-`draft` — not yet `accepted`, so Nightly's cascade will not auto-pick
-items from this RFC. Promote to `accepted` after a human author has
-read it, sized it, and broken it into checkbox items.
+`accepted` — sized into three phases. Failure mode B (RFC-overlap)
+ships in Phase A; failure mode A (stacked geometry) ships as
+report-only in Phase B, with prevention deferred to a follow-up RFC.
 
 ## Context
 
@@ -142,16 +146,77 @@ should happen when this RFC is sized.
   stacked PR collects blocking feedback, do we rescue it before
   merging the parent?
 
-## Checklist (for promotion to `accepted`)
+## Resolved design decisions
 
-Leave unchecked until a human author has decided to ship this.
+**1. Stacked geometry → "report-and-allow" for v1.** The cascade keeps
+picking work; new `nightly/` worktrees are still created from the
+current branch (worktree.py's current behavior). The briefing gains a
+"stacked-PR geometry" panel that lists the dependency chain when one
+is detected (HEAD branch is a `nightly/` open PR's head ref AND new
+work would inherit from it). Prevention (forced branch-from-`main`) is
+deferred — needs a worktree-policy RFC of its own.
 
-- [ ] Decide between "wait" / "branch-from-main" / "report-and-allow"
-      for stacked geometry (section A).
-- [ ] Decide on matching strategy for RFC-overlap (title scan vs
-      structured plan metadata).
-- [ ] Spec the `awaiting_dependency` cascade source (or rule it out).
-- [ ] Write characterization tests against the corpus-forge bundle
-      and the 2026-05-24 stacked-paperwork bundle.
-- [ ] Land the changes behind `MAX_OPEN_PRS` so the safety net stays
-      regardless of detection accuracy.
+**2. RFC overlap → best-effort title/body matching.** No structured
+`depends_on_pr` field on plans v1. The cascade calls `gh pr list` once,
+collects each PR's title + body, and skips any RFC item whose text
+appears (case-insensitive, exact-substring) in either. False negatives
+(missed skips → cascade picks an in-flight item) are tolerable; false
+positives (skipping an item that isn't actually in flight) are the real
+danger. The substring threshold biases toward false negatives.
+
+**3. No new cascade source.** Skipped items just fall through to the
+next cascade step (`pick_github_issue`, etc.). An `awaiting_dependency`
+source is more bookkeeping than the v1 use case warrants.
+
+## Implementation phases
+
+Three phases, ~6h total. A is the high-value piece; B is report-only;
+C is the safety net.
+
+### Phase A — RFC-overlap skip (~3h)
+
+- **A1.** `_open_nightly_pr_texts(root)` in `cascade.py` — list `(title,
+  body)` for open `nightly/` PRs via `gh pr list --json
+  title,body,headRefName`. Returns `[]` on no-`gh` / failure.
+- **A2.** Wire into `_find_accepted_rfc`: after locating an unchecked
+  item, scan the cached PR texts for substring overlap of either the
+  RFC filename (without extension) or the item text. Skip on match.
+- **A3.** `pick_accepted_rfc` exposes the skip count + reasons in its
+  return for the briefing.
+- **A4.** Tests with stubbed `gh pr list`: no-PRs path, one PR with
+  matching RFC filename, one PR with matching item text, one PR
+  unrelated.
+
+### Phase B — stacked-geometry detection (~2h)
+
+- **B1.** `detect_stacked_geometry(root)` in `cascade.py` — walks
+  `gh pr list` + reads current `git symbolic-ref HEAD`; returns a
+  `StackedGeometry(chain=[PR1, PR2, ...])` if HEAD is the head of an
+  open Nightly PR (i.e. new worktrees would stack on it).
+- **B2.** `briefing.build_context` calls it; the renderer adds a
+  "PR geometry" panel when non-empty.
+- **B3.** Tests: no-stack, one-level stack, two-level stack.
+
+### Phase C — characterization + README (~1h)
+
+- **C1.** Characterization test against the 2026-05-24
+  "stacked-paperwork" pattern: 5 nested nightly/ branches, the cascade
+  still picks work but the briefing reports the geometry.
+- **C2.** README paragraph on the cascade's PR-awareness.
+
+## Sized checklist
+
+**Phase A — RFC-overlap skip**
+- [x] A1. `_open_nightly_pr_texts(root)` PR-text fetcher
+- [x] A2. `_find_accepted_rfc` skips items overlapping an open PR
+- [x] A3. `_RFCMatch.skipped_count` carries the skip count; `next_task`'s `accepted_rfc` rationale appends a "Skipped N earlier item(s)" sentence with the RFC §A2 citation
+- [x] A4. Tests (no PRs / filename match / item-text match / unrelated-branch PR / no-gh path)
+
+**Phase B — stacked-geometry detection**
+- [x] B1. `detect_stacked_geometry()` + `StackedGeometry` type
+- [x] B2. `BriefingContext` carries `stacked_geometry` + `current_branch`; `briefing.html.j2` renders a rose-bordered "stacked PR geometry" panel when non-empty
+- [x] B3. Tests (no-stack / non-nightly branch / 1-level / git-failure / briefing render-panel / briefing omit-panel / cascade-failure degradation)
+
+**Phase C — characterization + README**
+- [x] C1. Characterization test against the 2026-05-24 stacked-paperwork pattern (5 stacked PRs, HEAD is in the chain)
+- [x] C2. README paragraph on cascade PR-awareness

@@ -143,6 +143,21 @@ pr_feedback:
   enabled:              true
   review_bots:          []
   treat_bots_as_human:  []
+
+# vault governs the .nightly/vault/ knowledge graph (RFC 003).
+# - `enabled: false` skips the vault build step in `nightly brief`.
+# - `open_on_brief: true` pops the dashboard in a browser at brief time.
+vault:
+  enabled:       true
+  open_on_brief: false
+
+# worktree governs the readiness probe (RFC 002).
+# - `probe_enabled: false` skips the probe entirely.
+# - `remediate_enabled: false` surfaces remediable failures rather than
+#   auto-fixing via `uv sync` / `pre-commit install --install-hooks`.
+worktree:
+  probe_enabled:     true
+  remediate_enabled: true
 """
 
 
@@ -338,8 +353,7 @@ def init(
         # Pure global install — touch nothing in the cwd.
         asyncio.run(integration.install(scope))
         typer.echo(
-            f"  ✓ installed {host} skill ({scope}) at "
-            f"{_format_path_for_display(target, root)}"
+            f"  ✓ installed {host} skill ({scope}) at {_format_path_for_display(target, root)}"
         )
         typer.echo("")
         typer.echo(
@@ -550,25 +564,19 @@ def task(
         # Find the existing task by slug suffix (`tasks/NNNN-<slug>/`).
         tasks_dir = run.path / "tasks"
         match = next(
-            (
-                t
-                for t in tasks_dir.iterdir()
-                if t.is_dir() and t.name.endswith(f"-{slug}")
-            ),
+            (t for t in tasks_dir.iterdir() if t.is_dir() and t.name.endswith(f"-{slug}")),
             None,
         )
         if match is None:
             typer.echo(
                 f"no task with slug `{slug}` in run {run.id}. "
-                "Pass `-d \"<description>\"` to create one, or fix the slug.",
+                'Pass `-d "<description>"` to create one, or fix the slug.',
                 err=True,
             )
             raise typer.Exit(code=1)
         plan_path = match / "plan.md"
         record = update_plan_status(plan_path, status)  # type: ignore[arg-type]
-        typer.echo(
-            f"✓ {match.name} → status: {record.status}"
-        )
+        typer.echo(f"✓ {match.name} → status: {record.status}")
         return
 
     created = new_task(run, slug=slug, description=description)
@@ -625,6 +633,28 @@ def brief(
         run = Run(id=run_id, path=path, is_concluded=(path / "CONCLUDE").is_file())
     target = write_briefing(run)
     typer.echo(f"✓ rendered {_format_path_for_display(target, root)}")
+
+    # Build the vault alongside the briefing (RFC 003 Phase F).
+    # Failures are downgraded to a warning — the briefing should never
+    # be blocked by a vault step that errors.
+    from nightly_core.config import load_vault_config  # noqa: PLC0415
+
+    vault_cfg = load_vault_config(root)
+    if vault_cfg.enabled:
+        try:
+            from nightly_core.vault import build as vault_build_call  # noqa: PLC0415
+
+            vault_result = vault_build_call(root)
+            typer.echo(
+                f"  vault: {vault_result.total_nodes} nodes, "
+                f"dashboard at {_format_path_for_display(vault_result.dashboard.index_path, root)}"
+            )
+            if vault_cfg.open_on_brief:
+                import webbrowser  # noqa: PLC0415
+
+                webbrowser.open(vault_result.dashboard.index_path.as_uri())
+        except Exception as exc:
+            typer.echo(f"  vault: build failed ({exc}); briefing unaffected", err=True)
 
 
 @app.command(name="next")
@@ -1088,10 +1118,93 @@ dispatch_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+vault_app = typer.Typer(
+    name="vault",
+    help="Build and open the .nightly/vault/ knowledge graph (RFC 003).",
+    no_args_is_help=True,
+)
 app.add_typer(session_app)
 app.add_typer(hook_app)
 app.add_typer(worktree_app)
 app.add_typer(dispatch_app)
+app.add_typer(vault_app)
+
+
+@vault_app.command(name="index")
+def vault_index() -> None:
+    """Rebuild `_index.db` from the markdown vault. Idempotent; ≪ 1s."""
+    from nightly_core.vault import rebuild_index, vault_root_for  # noqa: PLC0415
+
+    root = repo_root()
+    vault_root = vault_root_for(root)
+    stats = rebuild_index(vault_root)
+    typer.echo(
+        f"✓ indexed {stats.node_count} nodes, {stats.edge_count} edges"
+        + (f" ({stats.placeholder_count} dangling)" if stats.placeholder_count else "")
+    )
+
+
+@vault_app.command(name="build")
+def vault_build() -> None:
+    """Full pipeline: project runs → index → render encyclopedia + dashboard."""
+    from nightly_core.vault import build as vault_build_call  # noqa: PLC0415
+
+    root = repo_root()
+    result = vault_build_call(root)
+    typer.echo(
+        f"✓ vault built — {len(result.projections)} runs, "
+        f"{result.total_nodes} nodes, "
+        f"{result.encyclopedia.pages_written} encyclopedia pages, "
+        f"dashboard at {_format_path_for_display(result.dashboard.index_path, root)}"
+    )
+
+
+@vault_app.command(name="open")
+def vault_open(
+    encyclopedia: Annotated[
+        bool,
+        typer.Option("--encyclopedia", help="Open the encyclopedia (per-node prose pages)."),
+    ] = False,
+    dashboard: Annotated[
+        bool,
+        typer.Option("--dashboard", help="Open the dashboard (graph + filters). Default."),
+    ] = False,
+    build_first: Annotated[
+        bool,
+        typer.Option("--build/--no-build", help="Rebuild before opening."),
+    ] = True,
+) -> None:
+    """Open the encyclopedia or dashboard in the default browser."""
+    import webbrowser  # noqa: PLC0415
+
+    from nightly_core.vault import build as vault_build_call  # noqa: PLC0415
+    from nightly_core.vault import vault_root_for  # noqa: PLC0415
+
+    root = repo_root()
+    if build_first:
+        vault_build_call(root)
+
+    vault_root = vault_root_for(root)
+    if encyclopedia and not dashboard:
+        target = vault_root / "_site" / "index.html"
+    else:
+        target = vault_root / "_dashboard" / "index.html"
+
+    if not target.is_file():
+        typer.echo(f"target missing: {target}; run `nightly vault build`", err=True)
+        raise typer.Exit(code=1)
+    webbrowser.open(target.as_uri())
+    typer.echo(f"opened {_format_path_for_display(target, root)}")
+
+
+@vault_app.command(name="sync-prs")
+def vault_sync_prs() -> None:
+    """Walk `gh pr list` and mint vault nodes for any missing Nightly PRs."""
+    from nightly_core.vault.project import backfill_prs  # noqa: PLC0415
+
+    root = repo_root()
+    paths = backfill_prs(root)
+    typer.echo(f"✓ synced {len(paths)} PR node(s)")
 
 
 @worktree_app.command(name="create")
@@ -1218,6 +1331,53 @@ def worktree_list_cmd(
         return
     for h in handles:
         typer.echo(f"{h.branch:<60} {h.path}")
+
+
+@worktree_app.command(name="doctor")
+def worktree_doctor_cmd(
+    remediate: Annotated[
+        bool,
+        typer.Option(
+            "--remediate",
+            help="Auto-fix `missing_python_dep` / `missing_pre_commit_hook` failures.",
+        ),
+    ] = False,
+) -> None:
+    """RFC 002 — probe the worktree's pre-commit infrastructure.
+
+    Exit codes:
+    - 0  → ready
+    - 1  → blocked (operator intervention required)
+    - 2  → remediable (re-invoke with `--remediate`)
+    """
+    from nightly_core.worktree_doctor import (  # noqa: PLC0415
+        probe_worktree_readiness,
+    )
+    from nightly_core.worktree_doctor import (  # noqa: PLC0415
+        remediate as run_remediation,
+    )
+
+    root = repo_root()
+    readiness = probe_worktree_readiness(root)
+    if readiness.ok:
+        typer.echo("✓ worktree ready")
+        return
+
+    typer.echo(f"✗ {readiness.state}: {readiness.kind} — {readiness.detail}")
+    if not remediate or not readiness.remediable:
+        raise typer.Exit(code=1 if readiness.blocked else 2)
+
+    typer.echo(f"… remediating {readiness.kind}")
+    if run_remediation(readiness, root):
+        # Re-probe once to confirm
+        after = probe_worktree_readiness(root)
+        if after.ok:
+            typer.echo("✓ remediation succeeded; worktree ready")
+            return
+        typer.echo(f"✗ still {after.state}: {after.kind} — {after.detail}")
+        raise typer.Exit(code=1 if after.blocked else 2)
+    typer.echo("✗ remediation failed")
+    raise typer.Exit(code=1)
 
 
 # ── dispatch — background specialist sub-processes ────────────────────────
@@ -1377,21 +1537,21 @@ def _print_dispatch_row(
     """Render one dispatch as either a compact table row or a verbose block."""
     log = _format_path_for_display(state.log_path, root)  # type: ignore[attr-defined]
     if verbose:
-        typer.echo(f"slug:      {state.slug}")          # type: ignore[attr-defined]
-        typer.echo(f"role:      {state.role}")          # type: ignore[attr-defined]
-        typer.echo(f"host:      {state.host}")          # type: ignore[attr-defined]
-        typer.echo(f"pid:       {state.pid}")            # type: ignore[attr-defined]
-        typer.echo(f"status:    {state.status}")        # type: ignore[attr-defined]
-        if state.exit_code is not None:                  # type: ignore[attr-defined]
+        typer.echo(f"slug:      {state.slug}")  # type: ignore[attr-defined]
+        typer.echo(f"role:      {state.role}")  # type: ignore[attr-defined]
+        typer.echo(f"host:      {state.host}")  # type: ignore[attr-defined]
+        typer.echo(f"pid:       {state.pid}")  # type: ignore[attr-defined]
+        typer.echo(f"status:    {state.status}")  # type: ignore[attr-defined]
+        if state.exit_code is not None:  # type: ignore[attr-defined]
             typer.echo(f"exit_code: {state.exit_code}")  # type: ignore[attr-defined]
         typer.echo(f"started:   {state.started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
-        if state.finished_at is not None:                # type: ignore[attr-defined]
+        if state.finished_at is not None:  # type: ignore[attr-defined]
             typer.echo(f"finished:  {state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
         typer.echo(f"log:       {log}")
         return
     typer.echo(
-        f"{state.status:<10} {state.pid:<8} {state.host:<10} "                       # type: ignore[attr-defined]
-        f"{state.role:<13} {state.slug:<32} {log}"                                   # type: ignore[attr-defined]
+        f"{state.status:<10} {state.pid:<8} {state.host:<10} "  # type: ignore[attr-defined]
+        f"{state.role:<13} {state.slug:<32} {log}"  # type: ignore[attr-defined]
     )
 
 
@@ -1630,10 +1790,7 @@ def check_update_cmd(
         bool,
         typer.Option(
             "--force",
-            help=(
-                "Bypass the 24h cache and refetch the latest release "
-                "from GitHub now."
-            ),
+            help=("Bypass the 24h cache and refetch the latest release from GitHub now."),
         ),
     ] = False,
     verbose: Annotated[

@@ -21,7 +21,14 @@ import yaml
 
 from nightly_core.paths import nightly_dir
 
-__all__ = ["GitConfig", "load_git_config"]
+__all__ = [
+    "GitConfig",
+    "VaultConfig",
+    "WorktreeConfig",
+    "load_git_config",
+    "load_vault_config",
+    "load_worktree_config",
+]
 
 _log = logging.getLogger(__name__)
 
@@ -73,4 +80,78 @@ def load_git_config(root: Path) -> GitConfig:
         # Treat empty/whitespace-only as "unset" so a blank line in the template
         # doesn't become a literal worktree path.
         worktree_root=(str(worktree_root).strip() or None if worktree_root is not None else None),
+    )
+
+
+@dataclass(frozen=True)
+class VaultConfig:
+    """The `vault:` block of `.nightly/config.yml` — RFC 003."""
+
+    enabled: bool = True
+    """Master switch. False = `nightly brief` skips the vault build step."""
+
+    open_on_brief: bool = False
+    """If True, `nightly brief` opens the dashboard after rendering. Useful
+    for an interactive operator; off by default so unattended runs don't
+    pop windows."""
+
+
+@dataclass(frozen=True)
+class WorktreeConfig:
+    """The `worktree:` block of `.nightly/config.yml` — RFC 002."""
+
+    probe_enabled: bool = True
+    """Master switch — disable to skip readiness probing entirely."""
+
+    remediate_enabled: bool = True
+    """If False, remediable failures surface as `worktree_blocked`
+    rather than being auto-fixed via `uv sync` / `pre-commit install`."""
+
+
+def load_worktree_config(root: Path) -> WorktreeConfig:
+    """Parse the `worktree:` block from `<root>/.nightly/config.yml`.
+    Both knobs default on; missing block / malformed YAML → defaults."""
+    defaults = WorktreeConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+    wt = data.get("worktree") if isinstance(data, dict) else None
+    if not isinstance(wt, dict):
+        return defaults
+    return WorktreeConfig(
+        probe_enabled=bool(wt.get("probe_enabled", defaults.probe_enabled)),
+        remediate_enabled=bool(wt.get("remediate_enabled", defaults.remediate_enabled)),
+    )
+
+
+def load_vault_config(root: Path) -> VaultConfig:
+    """Parse the `vault:` block from `<root>/.nightly/config.yml`. Defaults
+    when the file is missing, unreadable, or has no `vault:` block."""
+    defaults = VaultConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+
+    vault = data.get("vault") if isinstance(data, dict) else None
+    if not isinstance(vault, dict):
+        return defaults
+
+    return VaultConfig(
+        enabled=bool(vault.get("enabled", defaults.enabled)),
+        open_on_brief=bool(vault.get("open_on_brief", defaults.open_on_brief)),
     )

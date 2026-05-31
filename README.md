@@ -101,8 +101,45 @@ nightly init                                  # one-time per repo
 nightly start                                 # create a session
 nightly task add-retry -d "Add retry budget to auth client"
 nightly run --concurrency 2 --max-tasks 5     # multi-task headless dispatch
-nightly brief                                 # render .nightly/runs/<id>/briefing.html
+nightly brief                                 # render briefing.html + vault
+nightly vault open                            # open the knowledge-graph dashboard
 ```
+
+### Cascade PR-awareness
+
+The cascade now skips RFC checkbox items whose text appears in an open
+Nightly PR's title or body (so the agent doesn't re-pick work that's
+already a PR awaiting review), and reports stacked-PR geometry when
+HEAD coincides with an open Nightly PR's head ref. Both signals are
+best-effort substring matches with a deliberate bias toward false
+negatives. See
+[`.planning/rfcs/001-cascade-aware-of-open-prs.md`](.planning/rfcs/001-cascade-aware-of-open-prs.md).
+
+### Worktree readiness
+
+Before any task dispatch on a fresh worktree, `nightly worktree doctor`
+probes the host repo's pre-commit infrastructure and surfaces failures
+in a small known set of categories. `missing_python_dep` and
+`missing_pre_commit_hook` are auto-remediated (`uv sync --all-extras`,
+`pre-commit install --install-hooks`); other failures surface as a
+`worktree_remediation` proposal targeting the host repo's hook config.
+The cascade gains a `worktree_blocked` source that fires before any
+plan resume, so a hostile worktree can't waste a turn on a task that
+will fail to commit. See
+[`.planning/rfcs/002-worktree-readiness.md`](.planning/rfcs/002-worktree-readiness.md).
+
+### Vault (knowledge graph)
+
+`nightly brief` also builds a navigable knowledge graph under
+`.nightly/vault/`: every run, task, lesson, and PR becomes a node;
+parent/spawned/derived_from edges form a DAG that's queried by a
+SQLite-backed dashboard and a per-node encyclopedia of static HTML
+pages. Open the dashboard with `nightly vault open` — it runs in any
+browser, no server needed (sql.js + wasm are vendored). The dashboard
+surfaces cross-run patterns (rescue chains, lesson citations, PR-stall
+clusters) the briefing alone doesn't. See
+[`.planning/rfcs/003-vault-knowledge-graph.md`](.planning/rfcs/003-vault-knowledge-graph.md)
+for the design.
 
 ### Slash commands
 
