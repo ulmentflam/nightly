@@ -18,7 +18,7 @@ will not auto-pick any checkbox from this RFC.
 
 The 2026-05-24 stacked-paperwork incident produced a five-level PR chain:
 
-```
+```text
 main
 └── nightly/unblock-20260523            (PR #54)
     └── nightly/phase-e-reconcile-…     (PR #55, base = #54's branch)

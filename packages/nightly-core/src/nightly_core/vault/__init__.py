@@ -87,6 +87,7 @@ def build(repo_root: Path) -> BuildResult:
     for projection in projections:
         all_nodes.append(projection.run_node)
         all_nodes.extend(projection.task_nodes)
+        all_nodes.extend(projection.dispatch_nodes)
         all_nodes.extend(projection.lesson_nodes)
 
     index_stats = rebuild_index(vault_root)

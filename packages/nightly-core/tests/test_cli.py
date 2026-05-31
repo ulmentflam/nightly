@@ -29,9 +29,11 @@ def test_version_command() -> None:
 
 
 def test_info_command_mentions_version_and_design_doc() -> None:
+    from nightly_core import __version__
+
     result = runner.invoke(app, ["info"])
     assert result.exit_code == 0
-    assert "nightly" in result.stdout.lower()
+    assert __version__ in result.stdout
     assert "brainstorm.html" in result.stdout
 
 
