@@ -1,4 +1,4 @@
-"""Smoke tests for nightly-core. Real coverage lands with Phase 1+."""
+"""Smoke tests for nightly-core."""
 
 from typer.testing import CliRunner
 
@@ -21,5 +21,5 @@ def test_cli_version_command() -> None:
 def test_cli_info_command() -> None:
     result = runner.invoke(app, ["info"])
     assert result.exit_code == 0
-    assert "Phase" in result.stdout
+    assert "nightly" in result.stdout.lower()
     assert "brainstorm.html" in result.stdout

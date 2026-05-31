@@ -16,25 +16,25 @@ the design doc in [`../.planning/brainstorm.html`](../.planning/brainstorm.html)
 ```
 .nightly/
 ├── config.yml              # actual config — copy from config.yml.example
-├── atlas/                  # Devin-style "wiki" — refreshed on cold start
-├── plans/                  # per-task scoped plans, append-only
+├── atlas/                  # repo wiki — scaffolded; rolling refresh deferred
+├── plans/                  # reserved
 ├── runs/<ts>/              # one folder per session
-│   ├── session.jsonl       # normalized event log
-│   ├── summary.md          # human-readable narrative
-│   ├── briefing.html       # the morning report (rendered on drain)
+│   ├── briefing.md         # agent-written session narrative
+│   ├── lessons.md          # agent-written cross-session takeaways
+│   ├── briefing.html       # the morning report (rendered by `nightly brief`)
+│   ├── CONCLUDE            # sentinel written by `nightly conclude`
 │   ├── tasks/<n>-<slug>/
-│   │   ├── plan.md
-│   │   ├── walkthrough.md
+│   │   ├── plan.md         # YAML frontmatter + task scope
+│   │   ├── notes.md        # per-task director's commentary
 │   │   ├── diff.patch
 │   │   ├── proposal.md     # PR-shaped artifact
 │   │   └── uncertainty.md  # required
 │   └── proposed/
 │       ├── approvals/      # refused-op records — surfaced in briefing
+│       ├── issues/         # ideation candidates for human review
 │       └── planning/       # draft RFCs / ADRs for human promotion
-├── memory/
-│   ├── lessons.md
-│   └── conventions.local.md
-└── prompts/                # reusable system prompts per host
+├── memory/                 # cross-session memory — scaffolded; reserved
+└── prompts/                # reserved
 ```
 
 ## What Nightly will and won't do here

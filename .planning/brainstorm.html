@@ -876,6 +876,12 @@ w_recent_activity<span class="com"># 0.4 if a human commented in last 24h (don't
         <li><b>Bypassing test or type safety.</b> Disabling, skipping, or deleting tests; commenting out assertions; introducing <code># type: ignore</code> / <code># noqa</code> / <code>// @ts-ignore</code> in changed paths that didn't already have them; lowering coverage thresholds; weakening type signatures to <code>Any</code> / <code>unknown</code> / <code>any</code> at module boundaries. The agent is allowed to add <em>new</em> ignores only when accompanied by a one-line justification in <code>uncertainty.md</code>.</li>
       </ol>
 
+      <div class="card teal" style="margin-top:1rem">
+        <span class="label">RFC 002 carveout · making the test runnable</span>
+        <p style="margin:0 0 .6em">Installing missing dependencies via the repo's declared installer — <code>uv sync --all-packages --all-extras</code>, <code>pip install -r requirements*.txt</code>, <code>pre-commit install --install-hooks</code>, <code>npm ci</code> / <code>pnpm install</code>, <code>cargo build</code>, <code>go mod download</code> — is <em>making</em> the test runnable, not bypassing it. The <code>worktree_doctor</code> probe (RFC 002) runs these autonomously when it detects a <code>missing_python_dep</code> or <code>missing_pre_commit_hook</code> signature and the operator hasn't opted out via <code>worktree.remediate_enabled: false</code>.</p>
+        <p style="margin:0">This is <em>explicitly distinct</em> from the prohibited operations in category 6: <code>--no-verify</code> still bypasses the test; <code>uv sync</code> makes the test possible to run. Category 6 forbids tampering with the gate itself (assertions, type ignores, coverage thresholds); the RFC 002 carveout covers <em>environmental</em> prerequisites the gate needs in order to run at all. The probe never invokes <code>pip install &lt;somepackage&gt;</code> off an error message — only the repo's declared installer; if that fails to provide the missing dep, the failure surfaces as <code>hook_config_error</code> for operator review.</p>
+      </div>
+
       <h4>How approvals work</h4>
       <p>Three approval surfaces, in order of friction and blast radius. <b>All three are retro</b> — they record a decision about an operation that already got refused. The next time Nightly visits the parent task, it sees the approval and retries the operation. None of them interrupt or unblock a run that's already in flight.</p>
       <ul>

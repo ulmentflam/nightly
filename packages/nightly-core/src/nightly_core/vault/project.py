@@ -19,12 +19,15 @@ hook — backfill on every `nightly vault build` is the v0 strategy
 (RFC 003 Fork 01 adjusted: dispatch-inline is replaced with
 build-time-backfill since no Python writer site exists).
 
-Dispatch and feedback nodes are not projected here yet; both ship in a
-follow-up slice within this RFC once their data sources are in place.
+Feedback nodes are written by `backfill_feedback()`, which walks every
+PR node already in `vault/pulls/` and calls `pr_feedback.fetch_feedback`
+for each branch. Each feedback item becomes a stable, idempotent node
+under `vault/feedback/<pr_number>--<sha>.md`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -39,6 +42,8 @@ from nightly_core.plans import parse_frontmatter
 from ._render import render_node
 from .model import (
     Node,
+    node_id_for_dispatch,
+    node_id_for_feedback,
     node_id_for_lesson,
     node_id_for_pr,
     node_id_for_run,
@@ -48,6 +53,7 @@ from .model import (
 
 __all__ = [
     "ProjectionResult",
+    "backfill_feedback",
     "backfill_prs",
     "project_pr",
     "project_run",
@@ -60,13 +66,14 @@ class ProjectionResult:
     """The outcome of one `project_run()` call.
 
     `paths_written` records every file the projection touched, in
-    deterministic order (run → tasks → lessons). Used by the CLI to
-    print a summary and by tests to assert idempotence.
+    deterministic order (run → tasks → dispatches → lessons). Used by
+    the CLI to print a summary and by tests to assert idempotence.
     """
 
     run_id: str
     run_node: Node
     task_nodes: tuple[Node, ...]
+    dispatch_nodes: tuple[Node, ...]
     lesson_nodes: tuple[Node, ...]
     paths_written: tuple[Path, ...]
 
@@ -111,6 +118,7 @@ def project_run(
 
     run_node = _project_run_node(run_id, run_path)
     task_nodes = tuple(_project_task_nodes(run_id, run_path))
+    dispatch_nodes = tuple(_project_dispatch_nodes(run_id, run_path))
     lesson_nodes = tuple(_project_lesson_nodes(run_id, run_path / "lessons.md"))
 
     # The run node's `spawned` edges are derived from the projected task
@@ -123,6 +131,8 @@ def project_run(
     paths.append(_write_node(run_node, target_root))
     for task in task_nodes:
         paths.append(_write_node(task, target_root))
+    for dispatch in dispatch_nodes:
+        paths.append(_write_node(dispatch, target_root))
     for lesson in lesson_nodes:
         paths.append(_write_node(lesson, target_root))
 
@@ -130,6 +140,7 @@ def project_run(
         run_id=run_id,
         run_node=run_node,
         task_nodes=task_nodes,
+        dispatch_nodes=dispatch_nodes,
         lesson_nodes=lesson_nodes,
         paths_written=tuple(paths),
     )
@@ -213,6 +224,106 @@ def _project_task_node(run_id: str, task_dir: Path, plan_path: Path) -> Node | N
         edges={"parent": (node_id_for_run(run_id),)},
         body=body,
     )
+
+
+def _project_dispatch_nodes(run_id: str, run_path: Path) -> list[Node]:  # noqa: PLR0912, PLR0915
+    """Project per-task `dispatch.json` records into dispatch nodes.
+
+    Each task may have at most one `dispatch.json` (the last-recorded
+    background-specialist invocation for that task). We emit one
+    dispatch node per file, linked to its task via `parent`. v1 only
+    captures the latest dispatch; multi-dispatch history is a follow-up.
+    """
+    tasks_dir = run_path / "tasks"
+    if not tasks_dir.is_dir():
+        return []
+    nodes: list[Node] = []
+    for task_dir in sorted(tasks_dir.iterdir()):
+        if not task_dir.is_dir():
+            continue
+        dispatch_json = task_dir / "dispatch.json"
+        if not dispatch_json.is_file():
+            continue
+        try:
+            payload = json.loads(dispatch_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        # Resolve the task slug — prefer the plan.md frontmatter so the
+        # ID matches the task node's ID exactly. Fall back to dir name.
+        slug = task_dir.name
+        plan = task_dir / "plan.md"
+        if plan.is_file():
+            try:
+                metadata, _ = parse_frontmatter(plan.read_text(encoding="utf-8"))
+                slug = metadata.get("slug") or slug
+            except OSError:
+                pass
+
+        role = str(payload.get("role") or "specialist")
+        host = str(payload.get("host") or "unknown")
+        status = str(payload.get("status") or "unknown")
+        started = payload.get("started_at")
+        finished = payload.get("finished_at")
+        pid = payload.get("pid")
+        exit_code = payload.get("exit_code")
+        log_path = payload.get("log_path")
+
+        data: dict[str, Any] = {
+            "specialist": role,
+            "host": host,
+        }
+        if isinstance(pid, int):
+            data["pid"] = pid
+        if isinstance(exit_code, int):
+            data["exit_code"] = exit_code
+
+        # Best-effort duration in seconds.
+        if isinstance(started, str) and isinstance(finished, str):
+            try:
+                t_start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                t_end = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+                data["duration_s"] = max(0, int((t_end - t_start).total_seconds()))
+            except (ValueError, TypeError):
+                pass
+
+        body_parts = [
+            f"Background dispatch for [[{node_id_for_task(run_id, slug)}]].",
+            f"- **Specialist role:** `{role}`",
+            f"- **Host:** `{host}`",
+            f"- **Status:** `{status}`",
+        ]
+        if isinstance(pid, int):
+            body_parts.append(f"- **PID:** `{pid}`")
+        if isinstance(exit_code, int):
+            body_parts.append(f"- **Exit code:** `{exit_code}`")
+        if log_path:
+            body_parts.append(f"- **Log:** `{log_path}`")
+
+        nodes.append(
+            Node(
+                id=node_id_for_dispatch(run_id, slug, 1),
+                kind="dispatch",
+                title=f"{role} · {slug}",
+                status=status,
+                created=_str_or_none(started),
+                updated=_str_or_none(finished) or _str_or_none(started),
+                data=data,
+                edges={"parent": (node_id_for_task(run_id, slug),)},
+                body="\n".join(body_parts),
+            )
+        )
+    return nodes
+
+
+def _str_or_none(v: Any) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v or None
+    return str(v)
 
 
 def _project_lesson_nodes(run_id: str, lessons_path: Path) -> list[Node]:
@@ -538,3 +649,108 @@ def _guess_source_task(branch: str, task_lookup: dict[str, str]) -> str | None:
         if slug in branch:
             return task_id
     return None
+
+
+# ── Feedback node writers ──────────────────────────────────────────────────
+
+_BRANCH_LINE_RE = re.compile(r"^\s+branch:\s+(.+)$", re.MULTILINE)
+"""Match `  branch: <value>` inside a PR node's `data:` block."""
+
+
+def _feedback_sha(url: str, body: str) -> str:
+    """12-hex-char SHA-256 of url+body — stable, idempotent across re-runs."""
+    digest = hashlib.sha256((url + "\x00" + body).encode()).hexdigest()
+    return digest[:12]
+
+
+def _feedback_status(feedback: Any) -> str:
+    """Map a PRFeedback to a status pill.
+
+    - `praise` when it's an APPROVED review
+    - `blocking` when `feedback.is_blocking` is True
+    - `nit` otherwise (normal comments, bot summaries, etc.)
+    """
+    if feedback.kind == "review" and feedback.state == "APPROVED":
+        return "praise"
+    if feedback.is_blocking:
+        return "blocking"
+    return "nit"
+
+
+def backfill_feedback(
+    repo_root: Path,
+    *,
+    vault_root: Path | None = None,
+) -> list[Path]:
+    """Walk every PR node in `vault/pulls/` and mint feedback nodes for each.
+
+    For each `vault/pulls/<num>.md` file the function:
+    1. Reads the frontmatter to extract the PR number (from the filename)
+       and the branch (from the `data.branch` line).
+    2. Calls `pr_feedback.fetch_feedback(branch, root=repo_root)`.
+    3. Writes one `vault/feedback/<num>--<sha>.md` node per item.
+
+    Returns the list of paths written. Best-effort — if `gh` is missing
+    or `fetch_feedback` raises for a given PR, that PR is skipped and the
+    loop continues. Never propagates exceptions.
+    """
+    from nightly_core import pr_feedback  # noqa: PLC0415 — lazy to avoid circular at module scope
+
+    target_root = vault_root if vault_root is not None else vault_root_for(repo_root)
+    pulls_dir = target_root / "pulls"
+    if not pulls_dir.is_dir():
+        return []
+
+    paths: list[Path] = []
+
+    for pr_file in sorted(pulls_dir.glob("*.md")):
+        stem = pr_file.stem
+        try:
+            pr_number = int(stem)
+        except ValueError:
+            continue
+
+        # Extract the branch from the data block.  parse_frontmatter only
+        # handles flat key: value lines so we search the raw text instead.
+        try:
+            raw = pr_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        m = _BRANCH_LINE_RE.search(raw)
+        if not m:
+            continue
+        branch = m.group(1).strip()
+        if not branch:
+            continue
+
+        # Fetch feedback items — best-effort.
+        try:
+            items = pr_feedback.fetch_feedback(branch, root=repo_root)
+        except Exception:  # best-effort: gh unavailable, network error, etc.
+            continue
+
+        for item in items:
+            sha = _feedback_sha(item.url, item.body)
+            node = Node(
+                id=node_id_for_feedback(pr_number, sha),
+                kind="feedback",
+                title=f"{item.kind} by {item.author_login}",
+                status=_feedback_status(item),
+                created=item.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                updated=None,
+                data={
+                    "kind": item.kind,
+                    "author_login": item.author_login,
+                    "author_is_bot": item.author_is_bot,
+                    "state": item.state,
+                    "file_ref": item.file_ref,
+                    "line_ref": item.line_ref,
+                    "url": item.url,
+                },
+                edges={"derived_from": (node_id_for_pr(pr_number),)},
+                body=item.body,
+            )
+            paths.append(_write_node(node, target_root))
+
+    return paths
