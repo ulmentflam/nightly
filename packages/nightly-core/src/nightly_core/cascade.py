@@ -289,6 +289,11 @@ _RFC_UNCHECKED_RE = re.compile(r"^- \[ \] (.+)$", re.MULTILINE)
 class _RFCMatch:
     rfc_path: Path
     item_text: str
+    skipped_count: int = 0
+    """RFC 001 §A3 — how many checkbox items were skipped on the way to
+    this match because they overlap an open Nightly PR. Surfaces in
+    `nightly next` so the operator sees the cascade's PR-awareness in
+    action."""
 
 
 @dataclass(frozen=True)
@@ -433,6 +438,7 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
     if not rfcs.is_dir():
         return None
     pr_texts = _open_nightly_pr_texts(root)
+    total_skipped = 0
     for entry in sorted(rfcs.iterdir()):
         if not entry.is_file() or entry.suffix != ".md":
             continue
@@ -445,8 +451,13 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
         for match in _RFC_UNCHECKED_RE.finditer(body):
             item_text = match.group(1).strip()
             if _is_item_in_flight(entry.name, item_text, pr_texts):
+                total_skipped += 1
                 continue
-            return _RFCMatch(rfc_path=entry, item_text=item_text)
+            return _RFCMatch(
+                rfc_path=entry,
+                item_text=item_text,
+                skipped_count=total_skipped,
+            )
     return None
 
 
@@ -779,14 +790,21 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0
 
     rfc = pick_accepted_rfc(root)
     if rfc is not None:
+        rationale = (
+            "An accepted RFC has unstarted task list items. RFCs are "
+            "human-blessed scope and outrank issue triage."
+        )
+        if rfc.skipped_count > 0:
+            rationale += (
+                f" Skipped {rfc.skipped_count} earlier item"
+                f"{'s' if rfc.skipped_count != 1 else ''} that matched an "
+                "open Nightly PR (RFC 001 §A2)."
+            )
         return CascadeChoice(
             source="accepted_rfc",
             summary=f"work on accepted RFC item: {rfc.item_text}",
             target_path=rfc.rfc_path,
-            rationale=(
-                "An accepted RFC has unstarted task list items. RFCs are "
-                "human-blessed scope and outrank issue triage."
-            ),
+            rationale=rationale,
         )
 
     issue = pick_github_issue(root)

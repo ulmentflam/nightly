@@ -209,13 +209,13 @@ C is the safety net.
 **Phase A — RFC-overlap skip**
 - [x] A1. `_open_nightly_pr_texts(root)` PR-text fetcher
 - [x] A2. `_find_accepted_rfc` skips items overlapping an open PR
-- [ ] A3. Surface skip count + reasons in `nightly next` output (small follow-up; the cascade already skips, briefing wiring deferred)
+- [x] A3. `_RFCMatch.skipped_count` carries the skip count; `next_task`'s `accepted_rfc` rationale appends a "Skipped N earlier item(s)" sentence with the RFC §A2 citation
 - [x] A4. Tests (no PRs / filename match / item-text match / unrelated-branch PR / no-gh path)
 
 **Phase B — stacked-geometry detection**
 - [x] B1. `detect_stacked_geometry()` + `StackedGeometry` type
-- [ ] B2. Briefing renders a "PR geometry" panel when stacked — function ready, template wiring deferred to the briefing's own follow-up
-- [x] B3. Tests (no-stack / non-nightly branch / 1-level / git-failure)
+- [x] B2. `BriefingContext` carries `stacked_geometry` + `current_branch`; `briefing.html.j2` renders a rose-bordered "stacked PR geometry" panel when non-empty
+- [x] B3. Tests (no-stack / non-nightly branch / 1-level / git-failure / briefing render-panel / briefing omit-panel / cascade-failure degradation)
 
 **Phase C — characterization + README**
 - [x] C1. Characterization test against the 2026-05-24 stacked-paperwork pattern (5 stacked PRs, HEAD is in the chain)
