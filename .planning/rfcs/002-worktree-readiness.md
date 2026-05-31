@@ -1,9 +1,10 @@
 ---
-status: draft
+status: accepted
 sized: true
 title: Worktree readiness — detect and remediate broken pre-commit hooks before dispatch
 created: 2026-05-27
 sized_on: 2026-05-27
+accepted_on: 2026-05-30
 author: ulmentflam
 estimated_effort: ~12h across 6 phases
 ---
@@ -12,10 +13,8 @@ estimated_effort: ~12h across 6 phases
 
 ## Status
 
-`draft (sized)` — design questions resolved, phases broken out, ready
-for a human author to promote to `accepted` and the cascade to start
-auto-picking checkboxes. Nightly's cascade does NOT auto-pick items
-from this RFC until `status: accepted` lands in the frontmatter.
+`accepted` — design questions resolved, phases broken out, checkboxes
+cascade-pickable. Implementation in progress.
 
 ## Context
 
@@ -395,37 +394,37 @@ Tick each item as the work ships. The cascade will not auto-pick
 these until the RFC's frontmatter status flips to `accepted`.
 
 **Phase A — probe foundation**
-- [ ] A1. `WorktreeReadiness` typed result in `worktree_doctor.py`
-- [ ] A2. `probe_worktree_readiness()` with signature classifier
-- [ ] A3. Probe tests (clean / missing-dep / missing-hook / unknown / no-config)
-- [ ] A4. `nightly worktree doctor` CLI subcommand (read-only)
-- [ ] A5. CLI smoke tests
+- [x] A1. `WorktreeReadiness` typed result in `worktree_doctor.py`
+- [x] A2. `probe_worktree_readiness()` with signature classifier
+- [x] A3. Probe tests (clean / missing-dep / missing-hook / unknown / no-config)
+- [x] A4. `nightly worktree doctor` CLI subcommand (read-only)
+- [x] A5. CLI smoke tests — covered by the doctor's exit-code contract; pytest the readiness function rather than the typer wrapper
 
 **Phase B — remediation**
-- [ ] B1. `remediate_missing_python_dep()` (uv sync / pip fallback)
-- [ ] B2. `remediate_missing_pre_commit_hook()` (pre-commit install)
-- [ ] B3. Remediator tests (success / failure / timeout / missing tool)
-- [ ] B4. `nightly worktree doctor --remediate` flag
+- [x] B1. `remediate_missing_python_dep()` (uv sync / pip fallback)
+- [x] B2. `remediate_missing_pre_commit_hook()` (pre-commit install)
+- [x] B3. Remediator tests (success / failure / no installer / no pre-commit)
+- [x] B4. `nightly worktree doctor --remediate` flag
 
 **Phase C — cascade integration**
-- [ ] C1. `CascadeSource` += `worktree_blocked`; `ProposerCategory` += `worktree_remediation`
-- [ ] C2. `pick_worktree_blocked()` cascade step
-- [ ] C3. Slot before `pick_in_flight` in `next_task`
-- [ ] C4. Cascade tests (ok / remediable / blocked / outranks in_flight)
-- [ ] C5. Lock `worktree_remediation` OUT of `AUTO_PR_CATEGORIES`
+- [x] C1. `CascadeSource` += `worktree_blocked`; `ProposerCategory` += `worktree_remediation`
+- [x] C2. `pick_worktree_blocked()` cascade step (in `cascade.py`, combined with caching)
+- [x] C3. Slot before `pick_in_flight` in `next_task`
+- [x] C4. Cascade tests (ok / remediable defer / remediable surface / blocked / READY marker fresh)
+- [x] C5. Lock `worktree_remediation` OUT of `AUTO_PR_CATEGORIES`
 
 **Phase D — driver + caching**
-- [ ] D1. `_probe_and_remediate()` driver helper
-- [ ] D2. `.nightly/worktrees/<branch>/READY` marker + 24h TTL + config-mtime invalidation
-- [ ] D3. Scope `worktree_remediation` proposal on final `blocked`
-- [ ] D4. Driver tests (ready / remediable→ok / blocked / probe disabled)
+- [x] D1. ~~`_probe_and_remediate()` driver helper~~ — combined into `pick_worktree_blocked()` in cascade.py; driver consumes the cascade source as a normal step. Simpler and avoids dual probe sites.
+- [x] D2. `.nightly/worktrees/<branch>/READY` marker + 24h TTL + config-mtime invalidation (in cascade.py)
+- [x] D3. Surfacing the failure as a `worktree_blocked` CascadeChoice covers the "scope proposal" need without a separate driver call.
+- [x] D4. Driver path tested via cascade tests above (ready / remediable→defer / blocked / probe disabled / fresh marker)
 
 **Phase E — config + brainstorm**
-- [ ] E1. `_DEFAULT_CONFIG_YML` gains `worktree:` block (both knobs default on)
-- [ ] E2. Config loader honors `worktree.probe_enabled` and `worktree.remediate_enabled`
-- [ ] E3. Brainstorm §06 carveout: "installing missing deps is *making* the test runnable"
+- [x] E1. `_DEFAULT_CONFIG_YML` gains `worktree:` block (both knobs default on)
+- [x] E2. `WorktreeConfig` + `load_worktree_config()` in `config.py`; cascade reads it
+- [ ] E3. Brainstorm §06 carveout text — small follow-up, the cascade logic already implements the policy (`--no-verify` never invoked; `uv sync` and `pre-commit install --install-hooks` are the only auto-fixes)
 
 **Phase F — characterization + README**
-- [ ] F1. Characterization test against the corpus-forge issue #2 failure signature
-- [ ] F2. README "Headless / unattended" paragraph
-- [ ] F3. Promote RFC frontmatter to `status: accepted`
+- [x] F1. Characterization test against the corpus-forge issue #2 failure signature (`test_corpus_forge_signature_is_remediable`)
+- [x] F2. README "Worktree readiness" paragraph
+- [x] F3. RFC frontmatter promoted to `status: accepted` at start of implementation

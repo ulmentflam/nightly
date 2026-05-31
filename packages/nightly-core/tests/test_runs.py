@@ -38,7 +38,10 @@ from nightly_core.runs import (
             "dogfood-exercise-cascade-dispatch",
         ),
         # Single long token with no word boundary — hard cut at 40.
-        ("supercalifragilisticexpialidocious" + "z" * 20, "supercalifragilisticexpialidociouszzzzzz"),
+        (
+            "supercalifragilisticexpialidocious" + "z" * 20,
+            "supercalifragilisticexpialidociouszzzzzz",
+        ),
     ],
 )
 def test_slugify(raw: str, expected: str) -> None:

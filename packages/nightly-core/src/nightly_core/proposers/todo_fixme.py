@@ -106,8 +106,8 @@ _IGNORED_DIRS = frozenset(
 # the AST pass lands.
 _IGNORED_FILENAMES = frozenset(
     {
-        "todo_fixme.py",     # this proposer's own source
-        "test_proposers.py", # this proposer's own tests
+        "todo_fixme.py",  # this proposer's own source
+        "test_proposers.py",  # this proposer's own tests
     }
 )
 

@@ -332,7 +332,9 @@ def test_fetch_latest_tag_uses_gh_when_available(
     monkeypatch.setattr(cu.subprocess, "run", fake_run)
     urllib_called = []
     monkeypatch.setattr(
-        cu.urllib.request, "urlopen", lambda *_a, **_kw: urllib_called.append("nope")  # type: ignore[arg-type,return-value]
+        cu.urllib.request,
+        "urlopen",
+        lambda *_a, **_kw: urllib_called.append("nope"),  # type: ignore[arg-type,return-value]
     )
 
     assert cu._fetch_latest_tag() == "v0.5.0"
