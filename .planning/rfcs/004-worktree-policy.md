@@ -1,18 +1,25 @@
 ---
-status: draft
+status: accepted
+sized: true
 title: Worktree policy — prevent stacked-PR geometry at branch creation time
 created: 2026-05-31
+sized_on: 2026-06-01
+accepted_on: 2026-06-01
 author: ulmentflam
+estimated_effort: ~9.5h across 4 phases
 ---
 
 # RFC 004 — Worktree policy: stacked-PR geometry prevention
 
 ## Status
 
-`draft` — not yet sized or accepted. Promote to `accepted` only after a
-human author sizes the checklist into phases, resolves the open questions
-below, and picks among the three named approaches. Until then the cascade
-will not auto-pick any checkbox from this RFC.
+`accepted` — sized into four phases around Approach C (default-prevent
+with explicit `depends_on_pr` opt-in). Phase A lands the plan-frontmatter
+field and the driver-side enforcement; Phase B threads the declaration
+into PR bodies; Phase C refines RFC 001 §B's briefing panel to
+distinguish declared from accidental stacks; Phase D characterizes
+against the 2026-05-24 stacked-paperwork bundle and documents the
+declaration heuristic for the host task-scoping skill.
 
 ## Context
 
@@ -221,17 +228,98 @@ dependencies are legitimate" carveout.
 
 ## Resolved technical decisions
 
-_None yet — left for the sizing pass to fill in._
+**1. Approach C (hybrid) ships as v1.** Default behavior is
+branch-from-`main`, enforced in the driver before `create_worktree` is
+called. The agent opts into a stacked geometry by writing
+`depends_on_pr: <N>` into the plan's frontmatter at scoping time. With
+the declaration, the worktree is cut from PR #N's head ref (preserving
+the dependency's context); without it, the driver substitutes
+`origin/main` regardless of the current HEAD. Approach A was rejected
+because it silently breaks legitimate cross-task dependencies (e.g.
+Phase E building on Phase D's new module) and produces conflicted diffs
+the agent isn't equipped to resolve. Pure Approach B was rejected
+because forgetting to declare reproduces the original failure
+silently — the prevention-by-default in C closes that hole.
 
-Placeholders for the sizing author:
+**2. Enforcement point is the driver, not `create_worktree`.** The
+plan's frontmatter is read at the same layer that already constructs
+the worktree request (the dispatch driver), so the substitution happens
+*before* `create_worktree` is called. `create_worktree` itself stays
+plan-agnostic and continues to honor the `base_branch` argument it
+receives. The guard lives in a new helper —
+`_resolve_base_branch(plan, repo_root) -> str` — that the driver calls
+to derive the effective base. This keeps the prevention logic
+co-located with the plan-reading code rather than smearing
+plan-awareness into the worktree primitives.
 
-- **Which approach ships as v1 (A, B, or C)?** TBD.
-- **Enforcement point** (inside `create_worktree`, in the driver, or as a
-  new `worktree_policy` cascade step)? TBD.
-- **`depends_on_pr` as plan frontmatter field vs. cascade-only metadata?**
-  TBD — relevant only if B or C wins.
-- **`blocked: dependency` as a new `PlanStatus`?** TBD — relevant only if
-  the wait sub-variant of B or C ships.
+**3. `depends_on_pr` is a structured plan frontmatter field.** Add
+`DEPENDS_ON_PR_KEY = "depends_on_pr"` to `plans.py` alongside the
+existing `PROPOSER_FINGERPRINT_KEY` and `PR_LAST_RECONCILED_KEY`
+constants, plus a `PlanRecord.depends_on_pr: int | None` property.
+Cascade-only metadata was rejected because the field needs to round-trip
+through plan persistence (so subsequent cascade walks can re-read it)
+and needs to be auditable in `git log`.
+
+**4. No new `blocked: dependency` PlanStatus.** Because Approach C cuts
+from the PR's branch when the declaration is present, the dependency is
+*satisfied* by the geometry itself rather than gated by a status. There
+is no cascade wait — `depends_on_pr` is descriptive (where to base
+from), not gating (whether to dispatch). Consequently no new
+`PlanStatus` literal, no changes to existing status-set fixtures.
+
+**5. No new `awaiting_dependency` cascade source.** With no wait
+semantics, the cascade has nothing new to surface. The existing sources
+remain unchanged; `pick_in_flight` and `pick_unblocked` see
+`depends_on_pr`-bearing plans exactly like any other ready plan.
+Resolution preserves RFC 001 §Resolved-design-decisions #3's bias
+toward bookkeeping minimalism.
+
+**6. Declaration heuristic: documented prompt, not automatic
+detection.** No diff-overlap reasoning, no automatic dependency
+inference. The host-side task-scoping skill instructions gain a single
+heuristic paragraph: *"If your planned changes touch a symbol, module,
+or file introduced by an open Nightly PR, declare it as
+`depends_on_pr: <N>` in the plan frontmatter. When in doubt, omit the
+field — the driver will branch from `main` and any conflict will
+surface at CI time rather than at base-resolution time."* This biases
+toward false negatives (occasionally a missed declaration produces a
+conflicted diff at CI) over false positives (a declared dependency
+that isn't real, which would stack the PR unnecessarily). Consistent
+with RFC 001 §Resolved-design-decisions #2's same bias.
+
+**7. Stacked PRs count toward `MAX_OPEN_PRS`.** The Stop-hook cap is
+about operator review bandwidth, not branch geometry. A 5-level
+declared chain is 5 PRs the operator must read, so it occupies 5
+cap-slots. Excluding stacked PRs would create a loophole where the
+agent could build arbitrarily deep chains while staying under the cap
+nominally. The existing `count_open_nightly_prs` in `cascade.py` keeps
+its current behavior; no code change in this RFC.
+
+**8. Operator escape hatch deferred to v2.** Removing a `depends_on_pr`
+declaration to rebase a child onto `main` is a manual operation in v1:
+the operator edits the plan's frontmatter, deletes the field, and
+`nightly` re-bases at the next dispatch cycle. A dedicated
+`nightly rebase <slug>` command is out of scope. The escape hatch is
+worth revisiting if v1 produces frequent rebase asks; otherwise the
+manual edit is acceptable.
+
+**9. Briefing panel gains a `declared` flag per chain entry.**
+`StackedGeometry` (from RFC 001 §B) extends to carry a `declared: bool`
+per chain entry, computed by reading the plan on the chain branch and
+checking whether its `depends_on_pr` matches the parent PR number.
+`briefing.html.j2` renders declared chains with a green-bordered panel
+and accidental chains with the existing rose border. A mixed chain
+(some declared, some accidental) renders rose with per-entry color
+annotations — accidental is the dominant signal because it's the
+failure mode.
+
+**10. Geometry-check and READY-marker boundary.** The geometry check
+fires in the driver at branch-creation time (pre-creation policy gate);
+RFC 002's `READY` marker is a post-creation cache for the pre-commit
+probe. They share `_branch_slug_for` from `cascade.py` for slug
+derivation but otherwise operate on disjoint state. No coupling, no
+shared mutable cache. Documented as a one-paragraph note in
+`worktree.py` next to the `_resolve_base_branch` helper.
 
 ## Risks
 
@@ -273,90 +361,119 @@ Placeholders for the sizing author:
   stale), the operator sees a false alarm in the briefing. Mitigation:
   share a single `_nightly_open_pr_branches` call between both paths.
 
-## Open questions
+## Implementation phases
 
-1. **Which approach (A, B, or C) wins for v1?** The sizing pass must
-   pick one. Approach C is the most complete but also the most surface
-   area. Approach A is the simplest but has the highest conflict risk for
-   tasks with genuine code dependencies. Approach B (declare-and-surface
-   sub-variant, not the wait variant) may be the right starting point:
-   low enforcement, high visibility.
+Four phases, ~9.5h total. Phase A is the load-bearing piece (plan
+field + driver enforcement); Phases B–D layer transparency and
+characterization on top. Each phase is independently mergeable — the
+prevention semantics work after Phase A even if B–D never land.
 
-2. **Does the cascade need a new source `awaiting_dependency`, or is
-   dropping back to `nothing` enough for the wait sub-variant?** RFC 001's
-   Resolved design decision #3 chose "no new cascade source" for the
-   RFC-overlap case. The dependency-wait case is different: `nothing` is
-   misleading when there are `blocked: dependency` plans sitting on disk.
-   An `awaiting_dependency` source (inserted after `unblocked_approval` in
-   `CASCADE_SOURCES`) would let `nightly next` surface the blockage
-   explicitly rather than silently falling through to ideation.
+### Phase A — plan field + driver enforcement (~4h)
 
-3. **How does the driver detect "this task depends on the in-flight PR"
-   without a structured declaration?** Automatic detection requires
-   reasoning about diff overlap between the in-flight PR's changes and the
-   new task's planned scope. The most practical v1 approach is to skip
-   automatic detection entirely: if the agent does not write
-   `depends_on_pr` into the plan frontmatter, the driver treats the task
-   as having no dependency and cuts from `main`. The question for sizing
-   is whether to document a prompt heuristic in the task-scoping agent
-   instructions (e.g. "if the plan references a function or module
-   introduced by an open PR, add `depends_on_pr`") or to leave detection
-   entirely to the agent's own judgment.
+- **A1.** `DEPENDS_ON_PR_KEY = "depends_on_pr"` constant in `plans.py`,
+  alongside `PROPOSER_FINGERPRINT_KEY` and `PR_LAST_RECONCILED_KEY`.
+- **A2.** `PlanRecord.depends_on_pr: int | None` property — parses the
+  frontmatter value, accepting `int` or `str` (with `"#"` prefix
+  tolerated) and returning `None` when absent/unparseable.
+- **A3.** `_resolve_base_branch(plan, repo_root) -> str` helper in
+  `worktree.py` — when `plan.depends_on_pr` is set, resolves the PR's
+  head ref via `gh pr view <N> --json headRefName,state`; falls back to
+  `origin/main` with a warning if the PR is closed/merged or `gh`
+  fails. When unset, returns `origin/main` unconditionally.
+- **A4.** Dispatch driver call site swapped from passing `base_branch`
+  literally to calling `_resolve_base_branch(plan, repo_root)`.
+- **A5.** Unit tests (stubbed `gh pr view`): no-declaration → main;
+  declared + open PR → PR's head ref; declared + merged PR → main with
+  warning; declared + closed PR → main with warning; declared + no-`gh`
+  → main with warning; malformed `depends_on_pr` → main + log.
 
-4. **Should the Stop-hook backpressure cap (`MAX_OPEN_PRS`) interact with
-   this RFC's prevention logic?** Specifically: should stacked PRs (those
-   with a declared `depends_on_pr` ancestor) count toward the cap, or
-   should only root-level PRs (those targeting `main` directly) count?
-   The current `count_open_nightly_prs` function in `cascade.py` counts
-   all open `nightly/*` PRs, stacked or not. Excluding stacked PRs from
-   the cap could allow the agent to build deep chains while staying under
-   the cap nominally — a loophole. Including them treats a 5-level chain
-   as 5 cap-slots, which may be too conservative. This is a policy
-   decision for the sizing author.
+**Merge gate for Phase A:** all unit tests pass; characterization test
+deferred to Phase D so this phase ships independently.
 
-5. **What is the operator escape hatch when a declared dependency no
-   longer matters and they want the branch rebased to `main`?** If the
-   operator reviews the stacked PR and decides the parent PR's changes
-   are irrelevant to the child, they should be able to signal to Nightly
-   "drop the `depends_on_pr` and rebase to `main`." The current
-   `nightly approve` path (which clears `blocked: approval` via
-   `approval_granted: true`) could be extended, or a separate
-   `nightly rebase <task-slug>` command added. Sizing must decide whether
-   this is in scope for v1 or deferred.
+### Phase B — PR-body declaration via prompt injection (~1.5h)
 
-6. **How does the prevention check interact with the READY marker from
-   RFC 002 §D2?** The `.nightly/worktrees/<branch-slug>/READY` marker
-   caches the worktree's pre-commit readiness. The stacked-geometry check
-   operates at branch *creation* time, before a READY marker exists.
-   These are independent — the READY marker is a post-creation cache for
-   the probe; the geometry check is a pre-creation policy gate. They share
-   the branch-slug derivation logic in `_branch_slug_for` in `cascade.py`,
-   and any v1 implementation should reuse that helper rather than
-   duplicating the slug logic.
+PR creation lives in the host agent's shell (`gh pr create`), not in
+Python — `vault/project.py` notes there is no in-process PR-body
+builder to hook. The agent generates the PR body itself based on its
+task prompt. So Phase B threads the declaration through the *prompt*
+rather than a body builder.
 
-## Checklist (for promotion to `accepted`)
+- **B1.** `build_task_prompt` in `driver.py` appends a "Declared
+  dependency" section when `plan.depends_on_pr` is set, instructing the
+  agent that (a) the worktree is intentionally based on PR #N's branch,
+  not `main`, and (b) the PR body MUST begin with `Depends on #<N>` so
+  reviewers see the dependency at a glance. The section is omitted when
+  `depends_on_pr` is None — no surface area for the common case.
+- **B2.** Tests: prompt contains the declaration when set (number
+  rendered, `Depends on #` literal present); prompt omits the section
+  when unset; declaration coexists with `LOCAL PROPOSAL` fallback
+  landing (a declared-dependency task is never *also* an ideate
+  fallback in practice, but the prompt should not crash if both are
+  set).
 
-Complete all items before changing `status` to `accepted`. The cascade
-will not pick these items until the status flips.
+**Merge gate for Phase B:** Phase A merged; prompt tests green.
 
-- [ ] Resolve open question 1: pick Approach A, B, or C for v1
-- [ ] Resolve open question 2: decide whether to add `awaiting_dependency`
-      to `CASCADE_SOURCES` or fall through to `nothing`
-- [ ] Resolve open question 3: document the agent-level heuristic (or
-      explicit non-heuristic) for declaring `depends_on_pr`
-- [ ] Resolve open question 4: decide whether stacked PRs count toward
-      `MAX_OPEN_PRS` in the Stop-hook cap
-- [ ] Resolve open question 5: decide on operator escape hatch (in-scope
-      for v1 or deferred)
-- [ ] Resolve open question 6: confirm that the geometry check and the
-      RFC 002 READY marker are implementation-independent and document the
-      boundary explicitly
-- [ ] Size the chosen approach into implementation phases (with
-      effort estimates, hard-dependency arrows, and per-phase merge gates)
-- [ ] Write characterization tests against the 2026-05-24 stacked-paperwork
-      bundle (5 nested `nightly/` branches, HEAD in the chain) that lock
-      the prevention behavior selected in question 1
-- [ ] Update `detect_stacked_geometry` documentation in `cascade.py` to
-      reference this RFC's prevention decision once it is made
-- [ ] Update `.planning/brainstorm.html` §03 (cascade sources) if a new
-      `awaiting_dependency` source is added
+### Phase C — briefing panel: declared vs accidental (~2h)
+
+- **C1.** `StackedGeometry` (from RFC 001 §B) extends to carry
+  `declared: bool` per chain entry. Computed by reading the plan on the
+  chain branch and matching `plan.depends_on_pr` against the parent
+  PR number.
+- **C2.** `briefing.html.j2` adds a green-bordered "declared dependency
+  chain" panel variant; the existing rose-bordered panel covers
+  accidental and mixed chains. Mixed chains render rose with per-entry
+  color annotations.
+- **C3.** Tests: pure-declared (all green); pure-accidental (all rose,
+  existing behavior); mixed (rose with annotations); empty (no panel,
+  existing behavior).
+
+**Merge gate for Phase C:** Phase A merged (so plans actually carry
+`depends_on_pr`); briefing render tests green.
+
+### Phase D — characterization + heuristic docs (~2h)
+
+- **D1.** Characterization test against the 2026-05-24 stacked-paperwork
+  bundle: 5 nested `nightly/` branches, none of the plans declare
+  `depends_on_pr`. Expected: each new worktree cuts from `main`,
+  geometry panel renders rose, no stacking occurs.
+- **D2.** Counterpart characterization test: same 5-branch bundle but
+  each child plan declares `depends_on_pr: <parent>`. Expected: chain
+  preserved, geometry panel renders green, PR bodies carry the
+  `Depends on #N` line.
+- **D3.** Update `detect_stacked_geometry`'s docstring in `cascade.py`
+  to reference this RFC and the prevention semantics it now interacts
+  with.
+- **D4.** Document the declaration heuristic in the host task-scoping
+  skill instructions (the paragraph in Resolved decision #6). Apply
+  the same paragraph to `nightly-core`'s skill template so all five
+  hosts inherit it.
+- **D5.** README paragraph cross-referencing RFC 001 §B (detection)
+  and RFC 004 (prevention + declared-dependency carveout).
+
+**Merge gate for Phase D:** Phases A + B + C merged; both
+characterization tests green; docs reviewed.
+
+## Sized checklist
+
+**Phase A — plan field + driver enforcement**
+- [x] A1. `DEPENDS_ON_PR_KEY` constant in `plans.py`
+- [x] A2. `PlanRecord.depends_on_pr: int | None` property (parses bare int, `#`-prefixed, returns None on malformed/zero/negative)
+- [x] A3. `_resolve_base_branch` helper in `worktree.py` (decoupled from `PlanRecord` to keep `driver → {plans, worktree}` direction; split fallback bookkeeping into `_lookup_open_pr_head_ref`)
+- [x] A4. `run_one_task` calls `_resolve_base_branch(depends_on_pr=plan.depends_on_pr, default_base=base_branch, root=root)` before `create_worktree`
+- [x] A5. Unit tests (15 cases: PlanRecord parsing + no-decl / open PR / merged PR / closed PR / no-gh / gh-nonzero-exit / unparseable JSON / subprocess error / non-main default)
+
+**Phase B — PR-body declaration via prompt injection**
+- [x] B1. `build_task_prompt` injects a "Declared dependency — base = PR #N" section when `plan.depends_on_pr` is set (suppressed for `ideate_fallback` since those land locally and have no PR body); section quotes the literal `Depends on #N` line the agent must put at the top of the PR body, citing RFC 004 §B as the rationale
+- [x] B2. Tests (unset → section + literal absent / declared → section + `Depends on #54` + `base = PR #54` + RFC citation present / fallback + declared → fallback wins, section suppressed)
+
+**Phase C — briefing panel: declared vs accidental**
+- [x] C1. `StackedGeometry` chain entries extended to `(pr_number, branch, url, declared)` 4-tuples; added `all_declared` property; `detect_stacked_geometry` reads the current branch's plan via `_match_plan_to_branch` and sets `declared` from `plan.depends_on_pr`. v1's single-entry chain means all entries share the same declared value; per-PR-number matching is a future-RFC concern when multi-level chain walking lands.
+- [x] C2. `briefing.html.j2` switches border color + panel label between "declared dependency chain" (teal) and "stacked PR geometry" (rose) based on `all_declared`; adds per-entry `— declared` / `— accidental` annotations; rose panel cites RFC 004 §C and notes the prevention-by-default at dispatch
+- [x] C3. Tests (`test_cascade_stacked_geometry.py`: declared-true / declared-false / empty-chain → `all_declared` semantics; `test_briefing_stacked_geometry.py`: all-declared → teal label / accidental → rose label + per-entry annotations / mixed → rose with both / empty → no panel)
+
+**Phase D — characterization + heuristic docs**
+- [x] D1. `test_rfc004_characterization.py::test_d1_undeclared_chain_all_cut_from_main` + `test_d1_geometry_panel_rose_when_undeclared`: 2026-05-24 5-PR bundle without declarations exercises both the prevention path (`_resolve_base_branch(depends_on_pr=None) → "main"`, short-circuit without invoking `gh`) and the detection path (`detect_stacked_geometry` returns chain entries with `declared=False`, `all_declared=False`).
+- [x] D2. `test_d2_declared_chain_preserves_stacking` + `test_d2_geometry_panel_teal_when_declared` + `test_d2_prompt_carries_pr_body_directive`: same bundle with declarations exercises (a) `_resolve_base_branch` returning each parent PR's head ref via stubbed `gh pr view`, (b) geometry detection marking `all_declared=True`, and (c) `build_task_prompt` injecting the `Depends on #N` directive into the prompt.
+- [x] D3. `detect_stacked_geometry` docstring references RFC 004's prevention semantics and explains the `declared` flag's v1 scope
+- [x] D4. Heuristic paragraph added to host SCOPE sections across all six hosts (claude / codex / cursor / gemini / opencode / antigravity). Note: RFC text said "five hosts" but the workspace has six packages — antigravity included; updated wording reflects reality. Hosts each carry their own `skill.md` (no shared `nightly-core` template), so the paragraph was applied per-host with format adapted to each host's existing SCOPE style.
+- [x] D5. README's "Cascade PR-awareness" bullet now sits alongside a new "Stacked-PR prevention" bullet cross-referencing RFC 001 §B2 (detection) and RFC 004 §C (prevention)

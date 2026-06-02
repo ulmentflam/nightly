@@ -11,6 +11,7 @@ spawn git (they're shells with arguments + cwds we can capture).
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import platform
@@ -221,6 +222,98 @@ async def _resolve_worktree_base(
     """Resolve the worktree parent dir: find the main repo, then `_select_base`."""
     main = await _main_worktree_root(root, run)
     return _select_base(main, worktree_root)
+
+
+def _lookup_open_pr_head_ref(pr_number: int, root: Path | None) -> str | None:
+    """Return the head ref of PR #N if it is OPEN, else None.
+
+    Splits the failure-path bookkeeping (logging, fall-throughs) out of
+    `_resolve_base_branch` so the latter stays a small dispatcher. Each
+    failure mode (missing `gh`, subprocess error, non-zero exit, bad
+    JSON, non-OPEN state) logs once with `pr_number` in context and
+    returns None — the caller substitutes `default_base`.
+    """
+    if shutil.which("gh") is None:
+        _log.warning(
+            "plan declares depends_on_pr=%s but `gh` is unavailable; "
+            "falling back to default base",
+            pr_number,
+        )
+        return None
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--json", "headRefName,state"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        _log.warning(
+            "gh pr view %s failed (%s); falling back to default base", pr_number, exc
+        )
+        return None
+    if result.returncode != 0:
+        _log.warning(
+            "gh pr view %s exited %s; falling back to default base",
+            pr_number,
+            result.returncode,
+        )
+        return None
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        _log.warning(
+            "gh pr view %s returned unparseable JSON; falling back to default base",
+            pr_number,
+        )
+        return None
+    state = str(payload.get("state") or "").upper()
+    head_ref = str(payload.get("headRefName") or "").strip()
+    if state != "OPEN" or not head_ref:
+        _log.warning(
+            "depends_on_pr=%s is in state %r (head=%r); falling back to default base",
+            pr_number,
+            state or "<unknown>",
+            head_ref,
+        )
+        return None
+    return head_ref
+
+
+def _resolve_base_branch(
+    *,
+    depends_on_pr: int | None,
+    default_base: str,
+    root: Path | None = None,
+) -> str:
+    """Resolve the effective base branch for a new worktree (RFC 004).
+
+    Default behavior is "branch from `default_base`" (the configured base,
+    usually `main`). The plan can opt into a stacked geometry by declaring
+    `depends_on_pr: <N>` in its frontmatter: when set, this helper looks
+    up PR #N via `gh pr view <N> --json headRefName,state` and returns
+    the PR's head ref *only if the PR is OPEN*. Closed/merged PRs, a
+    missing `gh`, or any failure (timeout, JSON parse, non-zero exit)
+    fall back to `default_base` with a warning — RFC 004 deliberately
+    biases toward `default_base` over silently stacking on a stale PR.
+
+    Lives in `worktree.py` rather than `plans.py` so the geometry-check
+    primitive stays plan-agnostic; the caller passes the parsed
+    `depends_on_pr` int. This keeps the import direction
+    `driver → {plans, worktree}` clean instead of inducing
+    `worktree → plans`.
+
+    Synchronous shell-out matches `cascade._nightly_open_pr_branches`'s
+    `gh pr list` pattern; called from `run_one_task`'s async body just
+    before `create_worktree`. RFC 002's READY-marker check is
+    independent (post-creation cache); no shared state.
+    """
+    if depends_on_pr is None:
+        return default_base
+    head_ref = _lookup_open_pr_head_ref(depends_on_pr, root)
+    return head_ref if head_ref is not None else default_base
 
 
 async def create_worktree(  # noqa: PLR0913 - all params are real config dimensions

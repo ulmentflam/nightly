@@ -174,17 +174,20 @@ def _is_ready(task: dict[str, Any]) -> bool:
 def _load_stacked_geometry() -> tuple[str, list[dict[str, Any]]]:
     """RFC 001 §B2 — detect open Nightly PRs HEAD stacks on.
 
-    Returns `(current_branch, [{number, branch, url}, ...])`. Wrapped in
-    try/except so a broken cascade import (e.g. in test fixtures that
-    monkeypatch cascade) never crashes the briefing — the panel just
-    degrades to "empty"."""
+    Returns `(current_branch, [{number, branch, url, declared}, ...])`.
+    `declared` (RFC 004 §C) is `True` when the current branch's plan
+    declared this PR via `depends_on_pr` — the briefing renderer picks
+    a teal border for an all-declared chain and rose otherwise. Wrapped
+    in try/except so a broken cascade import (e.g. in test fixtures
+    that monkeypatch cascade) never crashes the briefing — the panel
+    just degrades to "empty"."""
     try:
         from nightly_core.cascade import detect_stacked_geometry  # noqa: PLC0415 - lazy
 
         geo = detect_stacked_geometry()
     except Exception:
         return "", []
-    chain = [{"number": n, "branch": b, "url": u} for n, b, u in geo.chain]
+    chain = [{"number": n, "branch": b, "url": u, "declared": d} for n, b, u, d in geo.chain]
     return geo.current_branch, chain
 
 
