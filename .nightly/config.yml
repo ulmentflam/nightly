@@ -1,0 +1,30 @@
+# .nightly/config.yml — written by `nightly init`. Edit as needed.
+# See `.nightly/config.yml.example` (if present) for the full schema, or
+# `.planning/brainstorm.html` §05 for the design rationale.
+
+hosts:
+  - claude
+
+git:
+  branch_prefix: nightly/
+  wip_prefix:    nightly/wip-
+  protected:     [main, master, "release/*"]
+
+refuse:
+  destructive_git:        true
+  production_state:       true
+  external_communication: true
+  network_egress_unknown: true
+  scope_creep:            true
+  bypass_test_or_type:    true
+
+# pr_feedback governs the `pr_rescue` cascade step (Phase 9).
+# - `enabled` flips the whole feature off without removing the block.
+# - `review_bots` extends the default bot allowlist (CodeRabbit, Cursor BugBot,
+#   Copilot reviewer, Greptile, Amp, etc.) with project-specific accounts.
+# - `treat_bots_as_human` flips a bot login into the "human" bucket — useful
+#   for an internally-trusted automation that should outrank ordinary bots.
+pr_feedback:
+  enabled:              true
+  review_bots:          []
+  treat_bots_as_human:  []
