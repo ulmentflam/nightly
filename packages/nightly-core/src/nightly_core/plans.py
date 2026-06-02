@@ -28,6 +28,7 @@ from typing import Literal
 from nightly_core.paths import runs_dir
 
 __all__ = [
+    "DEPENDS_ON_PR_KEY",
     "PLAN_STATUSES",
     "PROPOSER_FINGERPRINT_KEY",
     "PR_LAST_RECONCILED_KEY",
@@ -53,6 +54,18 @@ Populated by the driver when a plan is materialized from `ideate` or
 `ideate_fallback`. The cascade dedupes future proposals by matching
 against this value — see `Proposal.fingerprint` (proposers/base.py) and
 issue #2 for the failure mode this addresses."""
+
+DEPENDS_ON_PR_KEY = "depends_on_pr"
+"""Frontmatter key declaring that a plan's worktree must branch from an
+open Nightly PR's head ref rather than `main`. When set to a PR number
+(int, or string with optional `#` prefix), the driver resolves the PR
+via `gh pr view <N> --json headRefName,state` and bases the worktree on
+its branch — preserving cross-task dependencies that would otherwise
+produce a conflicted diff at CI time. Without the field, the driver
+forces branch-from-`main`. See RFC 004 for the prevention-by-default
+semantics; bias is toward false negatives (omitted declarations →
+conflicts surface at CI) over false positives (spurious declarations →
+stacked PRs the operator must review)."""
 
 
 PlanStatus = Literal[
@@ -127,6 +140,23 @@ class PlanRecord:
         """
         value = self.metadata.get(PROPOSER_FINGERPRINT_KEY, "").strip()
         return value or None
+
+    @property
+    def depends_on_pr(self) -> int | None:
+        """The open Nightly PR this plan declares a dependency on, if any.
+
+        Accepts a bare integer (`54`) or a hash-prefixed number (`#54`);
+        anything else returns None. Cascade and dispatch treat None as
+        "no declared dependency → branch from `main`."
+        """
+        raw = self.metadata.get(DEPENDS_ON_PR_KEY, "").strip().lstrip("#").strip()
+        if not raw:
+            return None
+        try:
+            number = int(raw)
+        except ValueError:
+            return None
+        return number if number > 0 else None
 
 
 # ── frontmatter parsing ───────────────────────────────────────────────────
