@@ -140,6 +140,65 @@ def test_build_task_prompt_fallback_says_no_pr(tmp_path: Path) -> None:
     assert "LOCAL PROPOSAL" not in strict_prompt
 
 
+def _stamp_depends_on_pr(plan_path: Path, pr_number: int) -> None:
+    """Inject `depends_on_pr: N` into an existing plan's frontmatter."""
+    from nightly_core.plans import parse_frontmatter, render_frontmatter
+
+    text = plan_path.read_text(encoding="utf-8")
+    metadata, body = parse_frontmatter(text)
+    metadata["depends_on_pr"] = str(pr_number)
+    plan_path.write_text(render_frontmatter(metadata, body), encoding="utf-8")
+
+
+def test_build_task_prompt_omits_declared_dependency_when_unset(tmp_path: Path) -> None:
+    """Plans without `depends_on_pr` must not carry the declaration section."""
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    plan = read_plan(task.path / "plan.md")
+    prompt = build_task_prompt(plan, task.path)
+    assert "Declared dependency" not in prompt
+    assert "Depends on #" not in prompt
+
+
+def test_build_task_prompt_injects_declared_dependency(tmp_path: Path) -> None:
+    """Plans with `depends_on_pr: N` must include the declaration + PR-body directive."""
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    _stamp_depends_on_pr(task.path / "plan.md", 54)
+    plan = read_plan(task.path / "plan.md")
+
+    prompt = build_task_prompt(plan, task.path)
+    assert "Declared dependency" in prompt
+    assert "base = PR #54" in prompt
+    # The literal directive the agent must copy into the PR body.
+    assert "Depends on #54" in prompt
+    # Explains the why so the agent doesn't second-guess it.
+    assert "RFC 004" in prompt
+
+
+def test_build_task_prompt_declared_dependency_suppressed_for_local_proposal(
+    tmp_path: Path,
+) -> None:
+    """A declared dependency on a fallback (LOCAL PROPOSAL) task should be
+    suppressed — fallback tasks land locally, never open a PR, so the
+    `Depends on #N` line has no PR body to attach to."""
+    from nightly_core.cascade import CascadeChoice
+
+    run = start_run(tmp_path)
+    task = new_task(run, slug="alpha")
+    _stamp_depends_on_pr(task.path / "plan.md", 54)
+    plan = read_plan(task.path / "plan.md")
+    choice = CascadeChoice(
+        source="ideate_fallback",
+        summary="fallback",
+        rationale="below bar",
+    )
+    prompt = build_task_prompt(plan, task.path, cascade_choice=choice)
+    assert "LOCAL PROPOSAL" in prompt
+    # Declaration section must not appear — the PR body line would be moot.
+    assert "Declared dependency" not in prompt
+
+
 # ── run_one_task ──────────────────────────────────────────────────────────
 
 

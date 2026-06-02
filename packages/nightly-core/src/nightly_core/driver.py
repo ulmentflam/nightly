@@ -156,6 +156,28 @@ risks — even when a PR is opened, the local proposal is the audit
 trail.
 """
 
+    if plan.depends_on_pr is not None and not is_fallback:
+        landing_section += f"""\
+
+## Declared dependency — base = PR #{plan.depends_on_pr}
+
+This plan declares `depends_on_pr: {plan.depends_on_pr}` in its
+frontmatter, so the worktree is intentionally based on PR
+#{plan.depends_on_pr}'s head ref rather than `main`. The stacked
+geometry is deliberate, not accidental.
+
+When you open the PR (step above), the PR body **must begin** with this
+line, exactly:
+
+    Depends on #{plan.depends_on_pr}
+
+That single line tells reviewers (and the morning briefing's geometry
+panel) why the base is non-`main`, distinguishes this PR from an
+accidental stack, and lets GitHub auto-retarget downstream PRs when
+#{plan.depends_on_pr} merges. Do not omit it — RFC 004 §B requires it
+so the operator can see declared dependencies at a glance.
+"""
+
     return f"""\
 You are Nightly running headlessly on a single task. Your current working
 directory is a fresh git worktree forked from the project's main branch.

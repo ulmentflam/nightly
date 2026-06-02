@@ -187,6 +187,15 @@ merge is idempotent if you co-install them.
   text appears in an open Nightly PR's title or body, so the agent
   doesn't re-pick work that's already awaiting review. Both signals are
   best-effort substring matches with a bias toward false negatives.
+- **Stacked-PR prevention** — RFC 004 §C prevents accidental PR chains
+  by forcing each new worktree to branch from `main`. A task can opt
+  into a stacked geometry by declaring `depends_on_pr: <N>` in its
+  plan frontmatter; the driver then bases the worktree on PR #N's
+  branch and instructs the agent to begin the PR body with
+  `Depends on #<N>`. The morning briefing renders an all-declared chain
+  with a teal "declared dependency chain" panel and any accidental
+  geometry with the existing rose "stacked PR geometry" panel (RFC
+  001 §B2) so reviewers can distinguish the two at a glance.
 - **Worktree readiness** — before any task dispatch, `nightly worktree
   doctor` probes the repo's pre-commit infrastructure. `missing_python_dep`
   and `missing_pre_commit_hook` are auto-remediated; other failures surface

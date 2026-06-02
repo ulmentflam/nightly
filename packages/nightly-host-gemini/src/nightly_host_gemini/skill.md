@@ -143,6 +143,12 @@ Update `plan.md` frontmatter as you transition between phases:
 ## The loop, per task picked
 
 1. **SCOPE** — fill in `tasks/<n>-<slug>/plan.md`. `status: in_progress`.
+   If your planned changes touch a symbol, module, or file introduced
+   by an open Nightly PR, add `depends_on_pr: <N>` to the plan
+   frontmatter (RFC 004 §C) — Nightly will base your worktree on PR
+   #N's branch and instruct the agent to begin the PR body with
+   `Depends on #<N>`. When in doubt, omit: branch-from-`main` is the
+   safe default.
 2. **ISOLATE** — `nightly worktree create <slug>` (config-aware
    wrapper; honors `worktree_root` from `.nightly/config.yml` and
    auto-relocates off iCloud / FileProvider). Do NOT use raw

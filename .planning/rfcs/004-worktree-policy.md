@@ -390,16 +390,28 @@ prevention semantics work after Phase A even if B–D never land.
 **Merge gate for Phase A:** all unit tests pass; characterization test
 deferred to Phase D so this phase ships independently.
 
-### Phase B — PR-body declaration line (~1.5h)
+### Phase B — PR-body declaration via prompt injection (~1.5h)
 
-- **B1.** PR-body builder (in the dispatch driver's commit-and-push
-  path) reads `plan.depends_on_pr` and, when present, prepends a
-  `Depends on #<N>` line before the existing PR body.
-- **B2.** Tests: declared → line present and exactly once even when
-  re-pushed; not declared → line absent; multi-line body preserved
-  verbatim after the line.
+PR creation lives in the host agent's shell (`gh pr create`), not in
+Python — `vault/project.py` notes there is no in-process PR-body
+builder to hook. The agent generates the PR body itself based on its
+task prompt. So Phase B threads the declaration through the *prompt*
+rather than a body builder.
 
-**Merge gate for Phase B:** Phase A merged; PR-body tests green.
+- **B1.** `build_task_prompt` in `driver.py` appends a "Declared
+  dependency" section when `plan.depends_on_pr` is set, instructing the
+  agent that (a) the worktree is intentionally based on PR #N's branch,
+  not `main`, and (b) the PR body MUST begin with `Depends on #<N>` so
+  reviewers see the dependency at a glance. The section is omitted when
+  `depends_on_pr` is None — no surface area for the common case.
+- **B2.** Tests: prompt contains the declaration when set (number
+  rendered, `Depends on #` literal present); prompt omits the section
+  when unset; declaration coexists with `LOCAL PROPOSAL` fallback
+  landing (a declared-dependency task is never *also* an ideate
+  fallback in practice, but the prompt should not crash if both are
+  set).
+
+**Merge gate for Phase B:** Phase A merged; prompt tests green.
 
 ### Phase C — briefing panel: declared vs accidental (~2h)
 
@@ -450,18 +462,18 @@ characterization tests green; docs reviewed.
 - [x] A4. `run_one_task` calls `_resolve_base_branch(depends_on_pr=plan.depends_on_pr, default_base=base_branch, root=root)` before `create_worktree`
 - [x] A5. Unit tests (15 cases: PlanRecord parsing + no-decl / open PR / merged PR / closed PR / no-gh / gh-nonzero-exit / unparseable JSON / subprocess error / non-main default)
 
-**Phase B — PR-body declaration line**
-- [ ] B1. PR-body builder prepends `Depends on #<N>` when `plan.depends_on_pr` is set
-- [ ] B2. Tests (line present / line absent / re-push idempotent / multi-line body preserved)
+**Phase B — PR-body declaration via prompt injection**
+- [x] B1. `build_task_prompt` injects a "Declared dependency — base = PR #N" section when `plan.depends_on_pr` is set (suppressed for `ideate_fallback` since those land locally and have no PR body); section quotes the literal `Depends on #N` line the agent must put at the top of the PR body, citing RFC 004 §B as the rationale
+- [x] B2. Tests (unset → section + literal absent / declared → section + `Depends on #54` + `base = PR #54` + RFC citation present / fallback + declared → fallback wins, section suppressed)
 
 **Phase C — briefing panel: declared vs accidental**
-- [ ] C1. `StackedGeometry` chain entries carry `declared: bool`
-- [ ] C2. `briefing.html.j2` renders green panel for declared, rose for accidental/mixed
-- [ ] C3. Tests (pure-declared / pure-accidental / mixed / empty)
+- [x] C1. `StackedGeometry` chain entries extended to `(pr_number, branch, url, declared)` 4-tuples; added `all_declared` property; `detect_stacked_geometry` reads the current branch's plan via `_match_plan_to_branch` and sets `declared` from `plan.depends_on_pr`. v1's single-entry chain means all entries share the same declared value; per-PR-number matching is a future-RFC concern when multi-level chain walking lands.
+- [x] C2. `briefing.html.j2` switches border color + panel label between "declared dependency chain" (teal) and "stacked PR geometry" (rose) based on `all_declared`; adds per-entry `— declared` / `— accidental` annotations; rose panel cites RFC 004 §C and notes the prevention-by-default at dispatch
+- [x] C3. Tests (`test_cascade_stacked_geometry.py`: declared-true / declared-false / empty-chain → `all_declared` semantics; `test_briefing_stacked_geometry.py`: all-declared → teal label / accidental → rose label + per-entry annotations / mixed → rose with both / empty → no panel)
 
 **Phase D — characterization + heuristic docs**
-- [ ] D1. Characterization test: 2026-05-24 bundle without declarations → all cut from main
-- [ ] D2. Characterization test: 2026-05-24 bundle with declarations → chain preserved, green panel
-- [ ] D3. `detect_stacked_geometry` docstring references RFC 004 prevention semantics
-- [ ] D4. Declaration heuristic paragraph added to host task-scoping skill instructions across all five hosts (claude / codex / cursor / gemini / opencode) via the `nightly-core` template
-- [ ] D5. README paragraph cross-references RFC 001 §B + RFC 004
+- [x] D1. `test_rfc004_characterization.py::test_d1_undeclared_chain_all_cut_from_main` + `test_d1_geometry_panel_rose_when_undeclared`: 2026-05-24 5-PR bundle without declarations exercises both the prevention path (`_resolve_base_branch(depends_on_pr=None) → "main"`, short-circuit without invoking `gh`) and the detection path (`detect_stacked_geometry` returns chain entries with `declared=False`, `all_declared=False`).
+- [x] D2. `test_d2_declared_chain_preserves_stacking` + `test_d2_geometry_panel_teal_when_declared` + `test_d2_prompt_carries_pr_body_directive`: same bundle with declarations exercises (a) `_resolve_base_branch` returning each parent PR's head ref via stubbed `gh pr view`, (b) geometry detection marking `all_declared=True`, and (c) `build_task_prompt` injecting the `Depends on #N` directive into the prompt.
+- [x] D3. `detect_stacked_geometry` docstring references RFC 004's prevention semantics and explains the `declared` flag's v1 scope
+- [x] D4. Heuristic paragraph added to host SCOPE sections across all six hosts (claude / codex / cursor / gemini / opencode / antigravity). Note: RFC text said "five hosts" but the workspace has six packages — antigravity included; updated wording reflects reality. Hosts each carry their own `skill.md` (no shared `nightly-core` template), so the paragraph was applied per-host with format adapted to each host's existing SCOPE style.
+- [x] D5. README's "Cascade PR-awareness" bullet now sits alongside a new "Stacked-PR prevention" bullet cross-referencing RFC 001 §B2 (detection) and RFC 004 §C (prevention)

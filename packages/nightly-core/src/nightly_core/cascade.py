@@ -303,16 +303,31 @@ class StackedGeometry:
     `chain` is ordered from the closest ancestor (a parent PR whose head
     is the immediate base for new work cut here) outward. Empty when
     HEAD sits on `main` or any non-nightly branch.
+
+    Each entry is `(pr_number, branch, url, declared)`. The `declared`
+    flag (RFC 004 §C) is `True` when the current branch's plan carries
+    `depends_on_pr: <N>` for this entry's PR number — i.e. the stacking
+    was a deliberate, auditable opt-in rather than an accidental
+    branch-off-main miss. The briefing renderer uses `all_declared` to
+    pick the panel border color (teal vs rose).
     """
 
     current_branch: str
-    chain: tuple[tuple[int, str, str], ...]
-    """`(pr_number, branch, url)` for each open Nightly PR on the
-    ancestor path. Single-entry chains are the common case."""
+    chain: tuple[tuple[int, str, str, bool], ...]
+    """`(pr_number, branch, url, declared)` for each open Nightly PR on
+    the ancestor path. Single-entry chains are the common case in v1."""
 
     @property
     def is_stacked(self) -> bool:
         return bool(self.chain)
+
+    @property
+    def all_declared(self) -> bool:
+        """True iff every chain entry was declared via `depends_on_pr`
+        in the current branch's plan. False for an empty chain (no
+        geometry to classify) and for any mixed/accidental chain.
+        """
+        return bool(self.chain) and all(entry[3] for entry in self.chain)
 
 
 def detect_stacked_geometry(
@@ -323,9 +338,10 @@ def detect_stacked_geometry(
     """Detect open Nightly PRs that a new branch cut from HEAD would stack on.
 
     Lightweight v1: only checks whether HEAD itself is the head ref of
-    an open Nightly PR. The cascade reports the geometry; preventing it
-    (forced branch-from-`main`) is deferred to a future worktree-policy
-    RFC.
+    an open Nightly PR. The cascade reports the geometry; RFC 004
+    addresses prevention by forcing branch-from-`main` at dispatch time
+    unless the plan declares `depends_on_pr: <N>` (the "declared" flag
+    surfaced per chain entry here).
     """
     try:
         result = subprocess.run(
@@ -341,10 +357,16 @@ def detect_stacked_geometry(
     current = result.stdout.strip()
     if not current or not current.startswith(branch_prefix):
         return StackedGeometry(current_branch=current, chain=())
-    chain: list[tuple[int, str, str]] = []
+    # RFC 004 §C — look up the current branch's plan to decide whether
+    # this stacking was declared. v1 detection only finds a single chain
+    # entry (HEAD's own open PR), so the same `declared_pr` applies to
+    # every entry; multi-level chain traversal is left for a future RFC.
+    current_plan = _match_plan_to_branch(current, root)
+    declared_pr = current_plan.depends_on_pr if current_plan else None
+    chain: list[tuple[int, str, str, bool]] = []
     for branch, num, url in _nightly_open_pr_branches(root, branch_prefix=branch_prefix):
         if branch == current:
-            chain.append((num, branch, url))
+            chain.append((num, branch, url, declared_pr is not None))
     return StackedGeometry(current_branch=current, chain=tuple(chain))
 
 

@@ -221,6 +221,15 @@ skeleton). Fill in:
 - File scope (which files this task may touch — edits outside trigger
   the scope-creep refusal category)
 - Known risks and uncertainties up front
+- `depends_on_pr: <N>` — **optional** (RFC 004 §C). Declare this only
+  when your planned changes touch a symbol, module, or file introduced
+  by an open Nightly PR #N. With the declaration, Nightly bases your
+  worktree on PR #N's branch and instructs you to begin the PR body
+  with `Depends on #<N>` so reviewers see the dependency at a glance.
+  Without it, the driver forces branch-from-`main` (the safe default).
+  Bias: when in doubt, omit — an occasional CI conflict from
+  out-of-sync work is preferred over silently stacking PRs reviewers
+  must read in chain.
 
 Set `status: in_progress` in the plan's frontmatter (`nightly task
 <slug> --status in_progress` is the one-liner; or edit the YAML
