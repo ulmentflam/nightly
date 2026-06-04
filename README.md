@@ -285,7 +285,17 @@ Everything Nightly writes lives in one place:
 
 Human-authored design intent (RFCs, ADRs, the brainstorm itself) lives
 in `.planning/`. Nightly reads it on every cold start (it's a context
-source alongside `AGENTS.md` / `CLAUDE.md`) but **never writes to it**.
+source alongside `AGENTS.md` / `CLAUDE.md`) but **never writes to it**
+on its own — with one explicit exception (RFC 005). When the operator
+invokes `/nightly` interactively with a feature seed, the host skill
+calls `nightly seed-rfc "<title>"` to stub a new accepted RFC under
+`.planning/rfcs/` carrying `author: nightly-seed` in the frontmatter.
+The cascade then picks the stub's unchecked items via the standard
+`accepted_rfc` slot — same shape as hand-authored RFCs 001–004,
+distinguishable on retro audit by the `author` field. The
+seed-stubbed pathway is opt-in (the skill decides based on seed
+shape) and never fires for one-line bugfix seeds, which keep using
+the `nightly start <seed>` single-task pathway.
 
 ### The priority cascade
 

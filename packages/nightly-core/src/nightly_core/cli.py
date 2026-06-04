@@ -9,6 +9,7 @@ Full command surface:
 - `nightly start`       — create a new run (optionally seed first task)
 - `nightly conclude`    — mark the current run as concluding (non-blocking)
 - `nightly task`        — create a new task inside the current run
+- `nightly seed-rfc`    — stub an accepted RFC from an interactive seed
 - `nightly specialist`  — print the system prompt for a specialist role
 - `nightly brief`       — render briefing.html for the current or named run
 - `nightly next`        — walk the priority cascade and recommend the next task
@@ -89,6 +90,7 @@ from nightly_core.runs import (
     new_task,
     start_run,
 )
+from nightly_core.seed_rfc import SEED_SOURCES, write_seed_rfc
 from nightly_core.specialists import specialist_prompt
 from nightly_core.triage import rank_issues
 from nightly_core.update import (
@@ -601,6 +603,77 @@ def task(
         plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
     typer.echo(
         f"✓ task {created.path.name} ready at {_format_path_for_display(created.path, root)}"
+    )
+
+
+@app.command(name="seed-rfc")
+def seed_rfc_cmd(
+    title: Annotated[
+        str,
+        typer.Argument(help="Human-readable RFC title — also the basis for the auto-derived slug."),
+    ],
+    slug: Annotated[
+        str | None,
+        typer.Option(
+            "--slug",
+            help=(
+                "Override the auto-derived kebab-case slug. Use when the "
+                "title's slugified form is longer than you want, or when "
+                "you need a slug that diverges from the title."
+            ),
+        ),
+    ] = None,
+    source: Annotated[
+        str,
+        typer.Option(
+            "--source",
+            help=(
+                "Trigger that fired: interactive_seed (operator typed "
+                "`/nightly <seed>`), interactive_context (operator typed "
+                "bare `/nightly` and the agent distilled prior conversation "
+                "into a title), or headless (programmatic caller). "
+                "Recorded in the RFC's frontmatter for retro analytics."
+            ),
+        ),
+    ] = "interactive_seed",
+) -> None:
+    """Stub an `accepted` RFC under `.planning/rfcs/` from an interactive seed (RFC 005).
+
+    The agent invokes this when the operator's seed (or distilled
+    conversation context) describes a feature or multi-step
+    initiative — heavy enough to warrant RFC-shape work rather than
+    a single throwaway task. The CLI writes the next-numbered RFC
+    with `status: accepted` and a section-by-section skeleton; the
+    agent then opens the file and fills in Context, Resolved
+    decisions, and the Sized checklist in its first Edit pass.
+
+    For one-line bugfix seeds, keep using `nightly start <seed>` —
+    the single-task pathway is still the right shape for one-shot
+    work. The host's `skill.md` carries the heuristic for when to
+    pick which pathway (RFC 005 §Resolved-7).
+    """
+    if source not in SEED_SOURCES:
+        typer.echo(
+            f"unknown source '{source}'. Valid: {', '.join(SEED_SOURCES)}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    root = repo_root()
+    try:
+        path = write_seed_rfc(root, title=title, slug=slug, source=source)
+    except ValueError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except FileExistsError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"✓ stubbed {_format_path_for_display(path, root)} (status: accepted)")
+    typer.echo(
+        "→ next: edit the body to flesh out Context, Resolved decisions, and "
+        "the Sized checklist. The cascade picks up unchecked items on "
+        "subsequent `nightly next` calls."
     )
 
 

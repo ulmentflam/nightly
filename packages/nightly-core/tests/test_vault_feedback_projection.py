@@ -110,9 +110,7 @@ def test_backfill_feedback_writes_nodes_for_two_items(
     assert "praise" in statuses
 
 
-def test_backfill_feedback_status_blocking(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_backfill_feedback_status_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A CHANGES_REQUESTED review → status: blocking."""
     _seed_pr_node(tmp_path)
     item = _make_feedback(kind="review", state="CHANGES_REQUESTED", body="fix this")
@@ -127,9 +125,7 @@ def test_backfill_feedback_status_blocking(
     assert "status: blocking" in text
 
 
-def test_backfill_feedback_status_praise(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_backfill_feedback_status_praise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An APPROVED review → status: praise."""
     _seed_pr_node(tmp_path)
     item = _make_feedback(kind="review", state="APPROVED", body="ship it")
@@ -211,9 +207,7 @@ def test_backfill_feedback_fetch_raises_is_caught(
     assert paths == []
 
 
-def test_backfill_feedback_idempotent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_backfill_feedback_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Running backfill_feedback twice produces the same files (sha is stable)."""
     _seed_pr_node(tmp_path)
     item = _make_feedback(url="https://example.com/pulls/42#r1", body="great work")
@@ -230,9 +224,7 @@ def test_backfill_feedback_idempotent(
     # Same path — same sha derived from the same url+body.
     assert paths_first[0] == paths_second[0]
     # Content is identical.
-    assert paths_first[0].read_text(encoding="utf-8") == paths_second[0].read_text(
-        encoding="utf-8"
-    )
+    assert paths_first[0].read_text(encoding="utf-8") == paths_second[0].read_text(encoding="utf-8")
 
 
 def test_backfill_feedback_node_id_uses_pr_number_and_sha(
@@ -259,9 +251,7 @@ def test_backfill_feedback_node_id_uses_pr_number_and_sha(
     assert f"id: feedback/{pr_number}--{expected_sha}" in text
 
 
-def test_backfill_feedback_multiple_prs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_backfill_feedback_multiple_prs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Feedback is collected for every PR node in vault/pulls/."""
     _seed_pr_node(tmp_path, pr_number=10, branch="nightly/pr-ten")
     _seed_pr_node(tmp_path, pr_number=20, branch="nightly/pr-twenty")

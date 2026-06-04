@@ -38,6 +38,18 @@ registered as a managed agent and discoverable from the dashboard.
 Optionally followed by a task description; if seeded, use it as the
 first task. If not, walk the cascade.
 
+**Seed-RFC pathway for feature seeds (RFC 005).** When the seed (or
+prior interactive conversation) describes a feature, design change,
+or multi-step initiative, run `nightly seed-rfc "<distilled title>"`
+and immediately Edit the resulting RFC file to fill in Context,
+Resolved decisions, and the Sized checklist. The cascade picks up
+unchecked items on subsequent `nightly next` calls — same shape as
+RFCs 001-004. For one-line bugfix seeds, keep using `nightly start
+<seed>` — single-task is still the right shape for one-shot work.
+Bias: when in doubt, prefer the lighter path (task) over the heavier
+path (RFC); a borderline seed can be upgraded post-hoc by authoring
+an RFC manually and marking the stranded task done.
+
 If `.nightly/runs/CURRENT` is missing, the repo isn't initialized — tell
 the user to run `nightly init`, then stop.
 
@@ -72,6 +84,7 @@ Read this once at the start of each iteration; your context can compact.
 | `nightly start "<seed>"`                 | Create a new run; optionally seed `tasks/0001-<slug>/`.   |
 | `nightly task <slug> -d "<description>"` | Add another task to the current run.                      |
 | `nightly task <slug> --status <state>`   | Transition an existing plan's status without editing YAML. |
+| `nightly seed-rfc "<title>"`             | Stub an accepted RFC from a feature seed (RFC 005).        |
 | `nightly worktree create <slug>`        | Open isolated worktree (config-aware, iCloud-safe).        |
 | `nightly dispatch start <slug>`         | Background-dispatch a specialist (default in interactive). |
 | `nightly dispatch status [<slug>]`      | List active + finished background dispatches.              |
