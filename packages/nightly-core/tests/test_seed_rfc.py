@@ -23,7 +23,14 @@ from nightly_core.seed_rfc import (
 
 
 def test_next_rfc_number_empty_dir_returns_one(tmp_path: Path) -> None:
-    """Empty `.planning/rfcs/` is the first-ever-RFC case; default to 1."""
+    """Empty `.planning/rfcs/` is the first-ever-RFC case; default to 1.
+
+    Exercises the directory-exists-but-empty branch — distinct from
+    the missing-directory case below (caught by CodeRabbit review on
+    PR #9: without the explicit mkdir, both tests covered the same
+    branch).
+    """
+    (tmp_path / ".planning" / "rfcs").mkdir(parents=True)
     assert next_rfc_number(tmp_path) == 1
 
 
