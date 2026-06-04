@@ -209,12 +209,16 @@ def write_seed_rfc(
     metadata["accepted_on"] = stamp
     metadata["source"] = source
 
-    with _rfc_write_lock(rfcs):
-        number = next_rfc_number(root)
-        filename = f"{number:03d}-{chosen_slug}.md"
-        path = rfcs / filename
-        body = RFC_BODY_SKELETON.format(number=number, title=title)
-        with path.open("x", encoding="utf-8") as f:
-            f.write(render_frontmatter(metadata, body))
-    return path
+    number = next_rfc_number(root)
+    filename = f"{number:03d}-{chosen_slug}.md"
+    path = rfcs / filename
+    body = RFC_BODY_SKELETON.format(number=number, title=title)
+    # Atomic exclusive-create — `open("x")` raises FileExistsError if
+    # the path already exists, so a racing writer (or an operator who
+    # passed a slug whose `NNN-<slug>.md` is already on disk) surfaces
+    # rather than silently clobbering. Per RFC 005 §Resolved-4 we
+    # intentionally do not lock — two concurrent operators is a
+    # pathological case outside the single-process contract.
+    with path.open("x", encoding="utf-8") as f:
+        f.write(render_frontmatter(metadata, body))
     return path
