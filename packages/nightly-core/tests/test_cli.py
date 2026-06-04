@@ -23,9 +23,11 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_version_command() -> None:
+    from nightly_core import __version__
+
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "nightly 0.0.1" in result.stdout
+    assert f"nightly {__version__}" in result.stdout
 
 
 def test_info_command_mentions_version_and_design_doc() -> None:

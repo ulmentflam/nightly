@@ -9,13 +9,22 @@ runner = CliRunner()
 
 
 def test_version_attribute_present() -> None:
-    assert nightly_core.__version__ == "0.0.1"
+    """`nightly_core.__version__` is exposed and non-empty.
+
+    Asserting against the literal version (e.g. `"0.0.1"`) couples
+    every version bump to a test edit — the existing pattern in
+    `test_cli.py::test_info_command_mentions_version_and_design_doc`
+    is to compare against the imported `__version__` symbol so the
+    test tracks the bump automatically.
+    """
+    assert nightly_core.__version__
+    assert isinstance(nightly_core.__version__, str)
 
 
 def test_cli_version_command() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "nightly 0.0.1" in result.stdout
+    assert f"nightly {nightly_core.__version__}" in result.stdout
 
 
 # `nightly info` is covered by
