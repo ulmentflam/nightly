@@ -90,7 +90,15 @@ class _FakeIntegration:
             ("init", self.init_skill_path(scope)),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"{kind} for {self._name}\n", encoding="utf-8")
+            # Include `seed-rfc` in the main skill so the doctor's
+            # content-drift check sees a non-stale install. Other skill
+            # surfaces are file-presence only — no token check applies.
+            payload = (
+                f'{kind} for {self._name}\n| `nightly seed-rfc "<title>"` | row |\n'
+                if kind == "main"
+                else f"{kind} for {self._name}\n"
+            )
+            path.write_text(payload, encoding="utf-8")
             self._installed_pieces.add(kind)
         self._installed_pieces.add("hook")
 
@@ -213,16 +221,18 @@ def test_host_repaired_when_main_skill_missing_but_companion_present(repo: Path)
 
 def test_host_ok_when_everything_present(repo: Path) -> None:
     claude = _FakeIntegration(repo, "claude")
-    # Pre-create every file the integration would write
-    for p in (
-        claude.skill_path("project"),
-        claude.conclude_skill_path("project"),
-        claude.update_skill_path("project"),
-        claude.bug_skill_path("project"),
-        claude.init_skill_path("project"),
+    # Pre-create every file the integration would write. The main
+    # skill carries `seed-rfc` so the RFC 005 §B4 content-drift check
+    # finds the install current.
+    for p, body in (
+        (claude.skill_path("project"), 'present\n| `nightly seed-rfc "<title>"` |\n'),
+        (claude.conclude_skill_path("project"), "present\n"),
+        (claude.update_skill_path("project"), "present\n"),
+        (claude.bug_skill_path("project"), "present\n"),
+        (claude.init_skill_path("project"), "present\n"),
     ):
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("present\n", encoding="utf-8")
+        p.write_text(body, encoding="utf-8")
 
     report = diagnose_and_repair(
         repo,
@@ -254,16 +264,18 @@ def test_soft_host_does_not_require_stop_hook(repo: Path) -> None:
         keepalive_support="soft",
         installed_pieces=(),  # no hook recorded
     )
-    # Pre-create every skill file so only the hook is theoretically missing
-    for p in (
-        opencode.skill_path("project"),
-        opencode.conclude_skill_path("project"),
-        opencode.update_skill_path("project"),
-        opencode.bug_skill_path("project"),
-        opencode.init_skill_path("project"),
+    # Pre-create every skill file so only the hook is theoretically
+    # missing. Main skill carries `seed-rfc` to keep RFC 005 §B4
+    # content-drift quiet.
+    for p, body in (
+        (opencode.skill_path("project"), 'present\n| `nightly seed-rfc "<title>"` |\n'),
+        (opencode.conclude_skill_path("project"), "present\n"),
+        (opencode.update_skill_path("project"), "present\n"),
+        (opencode.bug_skill_path("project"), "present\n"),
+        (opencode.init_skill_path("project"), "present\n"),
     ):
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("present\n", encoding="utf-8")
+        p.write_text(body, encoding="utf-8")
 
     report = diagnose_and_repair(
         repo,
@@ -368,3 +380,81 @@ def test_cli_doctor_all_flag_installs_every_host(repo: Path) -> None:
     assert (repo / ".claude" / "skills" / "nightly" / "SKILL.md").is_file()
     assert (repo / ".codex" / "skills" / "nightly" / "SKILL.md").is_file()
     assert (repo / ".cursor" / "commands" / "nightly.md").is_file()
+
+
+# ── RFC 005 §B4 — skill-content drift detection ───────────────────────────
+
+
+def test_doctor_detects_stale_skill_missing_seed_rfc_token(repo: Path) -> None:
+    """A pre-existing skill.md that lacks the `seed-rfc` token gets repaired.
+
+    RFC 005 §B4: file-presence check alone misses the upgrade-but-stale
+    failure mode. The content-drift token catches it.
+    """
+    integration = _FakeIntegration(repo, "claude")
+    # Pre-populate skill files at the expected paths but with stale
+    # content (no `seed-rfc` row in main skill).
+    for path in (
+        integration.skill_path("project"),
+        integration.conclude_skill_path("project"),
+        integration.update_skill_path("project"),
+        integration.bug_skill_path("project"),
+        integration.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale content from a prior Nightly version\n", encoding="utf-8")
+
+    report = diagnose_and_repair(repo, host_loader=_make_loaders({"claude": integration}))
+    host_check = next(c for c in report.checks if c.name == "host:claude")
+    assert host_check.status == "repaired", host_check
+    assert "RFC 005" in host_check.detail
+    assert integration.install_calls == 1
+    # After repair the file carries the token.
+    refreshed = integration.skill_path("project").read_text(encoding="utf-8")
+    assert "seed-rfc" in refreshed
+
+
+def test_doctor_skips_when_main_skill_already_has_seed_rfc(repo: Path) -> None:
+    """A skill.md that already carries the token is clean — no re-install."""
+    integration = _FakeIntegration(repo, "claude")
+    # Pre-populate with the token already present, so the content-drift
+    # check finds nothing to repair.
+    for path in (
+        integration.skill_path("project"),
+        integration.conclude_skill_path("project"),
+        integration.update_skill_path("project"),
+        integration.bug_skill_path("project"),
+        integration.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            'current content\n| `nightly seed-rfc "<title>"` | row |\n',
+            encoding="utf-8",
+        )
+
+    report = diagnose_and_repair(repo, host_loader=_make_loaders({"claude": integration}))
+    host_check = next(c for c in report.checks if c.name == "host:claude")
+    assert host_check.status == "ok", host_check
+    assert integration.install_calls == 0
+
+
+def test_doctor_dry_run_reports_seed_rfc_drift_without_writing(repo: Path) -> None:
+    """Dry-run surfaces the drift but doesn't trigger install."""
+    integration = _FakeIntegration(repo, "claude")
+    for path in (
+        integration.skill_path("project"),
+        integration.conclude_skill_path("project"),
+        integration.update_skill_path("project"),
+        integration.bug_skill_path("project"),
+        integration.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale\n", encoding="utf-8")
+
+    report = diagnose_and_repair(
+        repo, dry_run=True, host_loader=_make_loaders({"claude": integration})
+    )
+    host_check = next(c for c in report.checks if c.name == "host:claude")
+    assert host_check.status == "missing"
+    assert "RFC 005" in host_check.detail
+    assert integration.install_calls == 0

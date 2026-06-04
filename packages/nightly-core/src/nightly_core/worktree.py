@@ -235,8 +235,7 @@ def _lookup_open_pr_head_ref(pr_number: int, root: Path | None) -> str | None:
     """
     if shutil.which("gh") is None:
         _log.warning(
-            "plan declares depends_on_pr=%s but `gh` is unavailable; "
-            "falling back to default base",
+            "plan declares depends_on_pr=%s but `gh` is unavailable; falling back to default base",
             pr_number,
         )
         return None
@@ -250,9 +249,7 @@ def _lookup_open_pr_head_ref(pr_number: int, root: Path | None) -> str | None:
             timeout=30,
         )
     except (subprocess.SubprocessError, OSError) as exc:
-        _log.warning(
-            "gh pr view %s failed (%s); falling back to default base", pr_number, exc
-        )
+        _log.warning("gh pr view %s failed (%s); falling back to default base", pr_number, exc)
         return None
     if result.returncode != 0:
         _log.warning(

@@ -291,6 +291,19 @@ def _host_is_present(
     return any(p is not None and p.is_file() for p in paths)
 
 
+_REQUIRED_SKILL_TOKENS: tuple[tuple[str, str], ...] = (
+    ("seed-rfc", "seed-rfc toolkit row (RFC 005)"),
+)
+"""Substring tokens the main SKILL.md must contain.
+
+When the installed file exists but is missing a token, the doctor
+marks the host as needing repair so re-running `integration.install`
+refreshes the file from the package source. Catches the failure
+mode where a user upgraded the binary but their installed SKILL.md
+is still the previous version — the file-presence check wouldn't
+notice. Each tuple is `(token, human_label)`."""
+
+
 def _host_needs_repair(
     integration: NightlyHostIntegration,
     scope: InstallScope,
@@ -304,6 +317,16 @@ def _host_needs_repair(
     )
     if main is not None and not main.is_file():
         missing.append("main skill")
+    elif main is not None:
+        # File exists — check it carries the tokens current Nightly
+        # expects. Missing tokens trigger a re-install.
+        try:
+            content = main.read_text(encoding="utf-8")
+        except OSError:
+            content = ""
+        for token, label in _REQUIRED_SKILL_TOKENS:
+            if token not in content:
+                missing.append(label)
     conclude = integration.conclude_skill_path(scope)
     if conclude is not None and not conclude.is_file():
         missing.append("conclude skill")
