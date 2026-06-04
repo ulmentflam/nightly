@@ -198,19 +198,9 @@ def write_seed_rfc(
     rfcs = planning_dir(root) / "rfcs"
     rfcs.mkdir(parents=True, exist_ok=True)
 
-    number = next_rfc_number(root)
     chosen_slug = slugify(slug) if slug else slugify(title)
     if not chosen_slug:
         chosen_slug = "untitled"
-
-    filename = f"{number:03d}-{chosen_slug}.md"
-    path = rfcs / filename
-    if path.exists():
-        # Collision is pathological (caller raced with another writer
-        # or passed a slug that already exists at this number). Surface
-        # rather than overwrite — the operator can choose a fresh slug.
-        msg = f"RFC already exists: {path}"
-        raise FileExistsError(msg)
 
     stamp = (today or datetime.now(UTC).date()).isoformat()
     metadata = dict(RFC_FRONTMATTER_TEMPLATE)
@@ -219,6 +209,12 @@ def write_seed_rfc(
     metadata["accepted_on"] = stamp
     metadata["source"] = source
 
-    body = RFC_BODY_SKELETON.format(number=number, title=title)
-    path.write_text(render_frontmatter(metadata, body), encoding="utf-8")
+    with _rfc_write_lock(rfcs):
+        number = next_rfc_number(root)
+        filename = f"{number:03d}-{chosen_slug}.md"
+        path = rfcs / filename
+        body = RFC_BODY_SKELETON.format(number=number, title=title)
+        with path.open("x", encoding="utf-8") as f:
+            f.write(render_frontmatter(metadata, body))
+    return path
     return path
