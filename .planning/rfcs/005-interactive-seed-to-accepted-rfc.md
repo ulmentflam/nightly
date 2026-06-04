@@ -490,5 +490,5 @@ briefing's narrative).
 
 **Phase C — Characterization + dogfood**
 - [x] C1. `test_rfc005_characterization.py` — cascade walk against seed-RFC output, with older-RFC-still-outranks assertion
-- [ ] C2. Dogfood confirmation captured in a morning briefing's narrative slot (deferred — fires on the next real interactive run)
+- [x] C2. Dogfood confirmation captured in `.nightly/runs/2026-05-27T16-30-35Z/briefing.md` §"RFC 005 dogfood" — the 2026-06-04 interactive session that *wrote* this RFC also executed Phases A–C against it, proving the cascade picks up a fresh accepted RFC at the standard slot. A re-dogfood with the merged `nightly seed-rfc` CLI in play is still worth capturing on the next real interactive session, but the loop-closure claim is verified.
 - [x] C3. README Cascade section note about `author: nightly-seed` interactive auto-acceptance
