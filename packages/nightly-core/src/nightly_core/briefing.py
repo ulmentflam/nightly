@@ -76,6 +76,13 @@ class BriefingContext:
     approvals: list[dict[str, Any]]
     planning: list[dict[str, Any]]
     issues: list[dict[str, Any]]
+    issues_by_strategic_category: list[dict[str, Any]]
+    """RFC 009 §B4 — `issues` grouped by strategic category for the
+    template's category-headed rendering. Categories with no items
+    are omitted; ordering follows the operator-stated priority
+    sequence (cleaning → refactoring → housekeeping → convenience →
+    capability → static_analysis). Identical content to `issues`,
+    just bucketed."""
     ready_count: int
     generated_at: str
     session_narrative: Markup | None
@@ -148,6 +155,7 @@ def _load_issues(run: Run) -> list[dict[str, Any]]:
                 "path": str(entry),
                 "proposer": metadata.get("proposer", "?"),
                 "category": metadata.get("category", "?"),
+                "strategic_category": metadata.get("strategic_category", "housekeeping"),
                 "score": metadata.get("score", "0.000"),
                 "auto_pr_eligible": metadata.get("auto_pr_eligible", "false") == "true",
                 "estimated_loc": metadata.get("estimated_loc", "0"),
@@ -155,6 +163,62 @@ def _load_issues(run: Run) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _group_issues_by_strategic_category(
+    issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """RFC 009 §B4 — group `proposed/issues/` by strategic category for
+    the briefing's "Proposed issues" section.
+
+    Synthesis proposals (proposer `synthesis`) and Phase-5 narrow
+    proposals (todo_fixme / lint_debt / type_holes) are both grouped
+    here; the template renders synthesis output under the five
+    category sub-headers and the narrow output under a
+    "Static-analysis hits" sub-section.
+
+    Returns an ordered list of `{strategic_category, label, issues}`
+    dicts; categories with no issues are omitted from the output.
+    The list order is the operator-stated priority (cleaning →
+    refactoring → housekeeping → convenience → capability) plus a
+    final `"static_analysis"` pseudo-category for non-synthesis
+    proposals that share `strategic_category="housekeeping"` but are
+    deterministic nits rather than synthesized strategy.
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "cleaning": [],
+        "refactoring": [],
+        "housekeeping": [],
+        "convenience": [],
+        "capability": [],
+        "static_analysis": [],
+    }
+    for issue in issues:
+        proposer = issue.get("proposer", "")
+        strategic = issue.get("strategic_category", "housekeeping")
+        if proposer != "synthesis":
+            # The three Phase-5 narrow proposers collapse into their own
+            # sub-section to keep linter nits visually separate from the
+            # synthesis layer's strategic recommendations.
+            buckets["static_analysis"].append(issue)
+            continue
+        if strategic in buckets:
+            buckets[strategic].append(issue)
+        else:
+            buckets["housekeeping"].append(issue)
+    labels = {
+        "cleaning": "Cleaning",
+        "refactoring": "Refactoring",
+        "housekeeping": "Housekeeping",
+        "convenience": "Convenience",
+        "capability": "Capability",
+        "static_analysis": "Static-analysis hits",
+    }
+    return [
+        {"strategic_category": cat, "label": labels[cat], "issues": items}
+        for cat, items in buckets.items()
+        if items
+    ]
 
 
 def _extract_title(body: str) -> str | None:
@@ -197,6 +261,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
     approvals = _load_approvals(run)
     planning = _load_planning(run)
     issues = _load_issues(run)
+    issues_by_strategic_category = _group_issues_by_strategic_category(issues)
     ready = sum(1 for t in tasks if _is_ready(t))
     generated = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M UTC")
     current_branch, stacked = _load_stacked_geometry()
@@ -207,6 +272,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         approvals=approvals,
         planning=planning,
         issues=issues,
+        issues_by_strategic_category=issues_by_strategic_category,
         ready_count=ready,
         generated_at=generated,
         session_narrative=_render_markdown_file(run.path / "briefing.md"),
@@ -227,6 +293,7 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         approvals=ctx.approvals,
         planning=ctx.planning,
         issues=ctx.issues,
+        issues_by_strategic_category=ctx.issues_by_strategic_category,
         ready_count=ctx.ready_count,
         generated_at=ctx.generated_at,
         session_narrative=ctx.session_narrative,

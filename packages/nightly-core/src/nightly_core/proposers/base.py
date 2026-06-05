@@ -20,7 +20,13 @@ from typing import Literal
 
 from nightly_core.runs import slugify
 
-__all__ = ["Proposal", "Proposer", "ProposerCategory"]
+__all__ = [
+    "STRATEGIC_CATEGORIES",
+    "Proposal",
+    "Proposer",
+    "ProposerCategory",
+    "StrategicCategory",
+]
 
 
 ProposerCategory = Literal[
@@ -30,9 +36,49 @@ ProposerCategory = Literal[
     "dep_upgrade",
     "coverage_gap",
     "doc_drift",
+    "synthesis",
 ]
-"""Buckets the autonomy bar reads. Only `lint_debt` and `dep_upgrade` are
-auto-PR-eligible per the brainstorm §06 conservative defaults."""
+"""Proposer-kind eligibility bucket the autonomy bar reads. Only `lint_debt`
+and `dep_upgrade` are auto-PR-eligible per the brainstorm §06 conservative
+defaults. `synthesis` (RFC 009) is *not* auto-PR-eligible — its proposals
+always land as draft issues for human review."""
+
+
+StrategicCategory = Literal[
+    "cleaning",
+    "refactoring",
+    "housekeeping",
+    "convenience",
+    "capability",
+]
+"""RFC 009 §3 — five-category ordering the cascade respects when sorting
+proposals. Operators want output reviewed in this priority sequence:
+
+- `cleaning`     — dead code, redundant tests, abandoned scaffolding.
+- `refactoring`  — long functions, repeated patterns, boundary drift.
+- `housekeeping` — naming, layout, doc gaps, type-hint gaps, lint debt,
+                   TODO/FIXME audits. The three Phase-5 narrow proposers
+                   all backfill to `housekeeping` (they're individual-line
+                   nits, not structural review).
+- `convenience`  — CLI ergonomics, error messages, auto-completion.
+- `capability`   — new cascade sources / specialists / proposers /
+                   performance.
+
+The cascade sorts by `(STRATEGIC_CATEGORIES.index(strategic_category),
+-score)` so a `cleaning` proposal at score 1.2 outranks a `capability`
+proposal at score 1.8 — fixing what's broken before inventing new
+things. Operators can opt out via `ideate.category_ordering: false`
+in `.nightly/config.yml` (RFC 009 §B3)."""
+
+STRATEGIC_CATEGORIES: tuple[StrategicCategory, ...] = (
+    "cleaning",
+    "refactoring",
+    "housekeeping",
+    "convenience",
+    "capability",
+)
+"""Tuple form of the StrategicCategory Literal. The ordering IS the
+operator-stated priority — list index = strategic rank."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +110,14 @@ class Proposal:
     estimated_loc: int = 0
     """Rough LOC estimate (0 = unknown). The autonomy bar uses this."""
 
+    strategic_category: StrategicCategory = "housekeeping"
+    """RFC 009 §3 — operator-priority bucket for cascade ordering. The
+    cascade sorts by `(STRATEGIC_CATEGORIES.index(strategic_category),
+    -score)` so cleaning ships before capability even at a lower score.
+    Default `"housekeeping"` keeps backward compat for the three Phase-5
+    narrow proposers (lint_debt, todo_fixme, type_holes) — they're
+    individual-line nits, all housekeeping flavor."""
+
     @property
     def slug(self) -> str:
         """Filesystem-safe slug derived from the title."""
@@ -86,6 +140,12 @@ class Proposal:
         this, `type_holes` re-detected the same `Any` usages in the same
         file every cascade pass because the prior proposal's local
         branch never reached `main`.
+
+        RFC 009 §5 — synthesis proposals override this with a content-
+        hashed fingerprint so two non-deterministic LLM runs proposing
+        the same conceptual change dedupe correctly. That logic lives
+        in `SynthesisProposer` itself; this default suits the three
+        deterministic Phase-5 proposers.
         """
         primary_scope = self.file_scope[0] if self.file_scope else self.slug
         return f"{self.proposer}:{self.category}:{primary_scope}"

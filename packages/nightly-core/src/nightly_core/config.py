@@ -13,7 +13,7 @@ yields all-defaults rather than raising, so a typo in config.yml degrades to
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -154,4 +154,81 @@ def load_vault_config(root: Path) -> VaultConfig:
     return VaultConfig(
         enabled=bool(vault.get("enabled", defaults.enabled)),
         open_on_brief=bool(vault.get("open_on_brief", defaults.open_on_brief)),
+    )
+
+
+@dataclass(frozen=True)
+class SynthesisConfig:
+    """The `ideate.synthesis:` sub-block of `.nightly/config.yml` — RFC 009."""
+
+    enabled: bool = True
+    """Master switch for the LLM synthesis proposer. False = the three
+    Phase-5 narrow proposers still run; synthesis is skipped entirely
+    (no host CLI spawn). Cost-sensitive operators flip this off."""
+
+    timeout_seconds: int = 120
+    """Wall-clock cap on the synthesis spawn. The host CLI is killed
+    if it doesn't return within this many seconds; the proposer
+    degrades to empty proposals."""
+
+    max_proposals: int = 25
+    """Cap on synthesis output. The parser truncates at this count to
+    keep the morning briefing readable; the prompt template also
+    instructs the model to cap itself."""
+
+
+@dataclass(frozen=True)
+class IdeateConfig:
+    """The `ideate:` block of `.nightly/config.yml` — RFC 009 §8."""
+
+    category_ordering: bool = True
+    """RFC 009 §4. When True (the default), the cascade sorts ideated
+    proposals by `(strategic_category_rank, -score)` so cleaning
+    outranks capability even at lower numeric scores. When False, the
+    cascade reverts to score-only ordering (pre-v0.0.6 behavior).
+    Operators who don't want the category-first ordering can opt out
+    without disabling the synthesis proposer entirely."""
+
+    synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
+
+
+def load_ideate_config(root: Path | None = None) -> IdeateConfig:
+    """Parse the `ideate:` block from `<root>/.nightly/config.yml`.
+
+    Defaults whenever the file is missing, unreadable, malformed, or
+    has no `ideate:` block. Missing nested `synthesis:` sub-block
+    falls back to `SynthesisConfig()` defaults. `root=None` resolves
+    via `nightly_dir(None)` which uses the cwd-derived repo root —
+    matching the existing `load_*_config` shape.
+    """
+    defaults = IdeateConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+    ideate = data.get("ideate") if isinstance(data, dict) else None
+    if not isinstance(ideate, dict):
+        return defaults
+
+    synthesis_raw = ideate.get("synthesis")
+    if isinstance(synthesis_raw, dict):
+        synthesis = SynthesisConfig(
+            enabled=bool(synthesis_raw.get("enabled", defaults.synthesis.enabled)),
+            timeout_seconds=int(
+                synthesis_raw.get("timeout_seconds", defaults.synthesis.timeout_seconds)
+            ),
+            max_proposals=int(synthesis_raw.get("max_proposals", defaults.synthesis.max_proposals)),
+        )
+    else:
+        synthesis = defaults.synthesis
+
+    return IdeateConfig(
+        category_ordering=bool(ideate.get("category_ordering", defaults.category_ordering)),
+        synthesis=synthesis,
     )

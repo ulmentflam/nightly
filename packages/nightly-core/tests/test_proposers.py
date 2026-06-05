@@ -205,10 +205,14 @@ def test_type_holes_ranks_by_hit_count(tmp_path: Path) -> None:
 # ── default_proposers registry ────────────────────────────────────────────
 
 
-def test_default_proposers_returns_phase_5_set() -> None:
+def test_default_proposers_returns_phase_5_set_plus_synthesis() -> None:
+    """Phase 5 shipped three narrow proposers; RFC 009 added the
+    SynthesisProposer alongside them. The narrow trio still ships so
+    the morning briefing always has *something* in `proposed/issues/`
+    even if the synthesis LLM spawn fails."""
     proposers = default_proposers()
     ids = {p.id for p in proposers}
-    assert ids == {"todo_fixme", "lint_debt", "type_holes"}
+    assert ids == {"todo_fixme", "lint_debt", "type_holes", "synthesis"}
 
 
 def test_default_proposers_returns_fresh_list_each_call() -> None:

@@ -278,9 +278,15 @@
   {% endif %}
 
   <h2>Proposed issues</h2>
-  {% if issues %}
+  {% if issues_by_strategic_category %}
+    {# RFC 009 §B4 — group by strategic category so the operator reads the
+       synthesis pass's strategic recommendations separately from the
+       three Phase-5 proposers' static-analysis nits. Categories with no
+       items don't render. #}
+    {% for group in issues_by_strategic_category %}
+    <h3>{{ group.label }} <span class="pill notes">{{ group.issues|length }}</span></h3>
     <ul class="rows">
-    {% for i in issues %}
+    {% for i in group.issues %}
       <li>
         <div class="task-head">
           <span class="slug">{{ i.title }}</span>
@@ -295,6 +301,7 @@
       </li>
     {% endfor %}
     </ul>
+    {% endfor %}
   {% else %}
     <p class="empty">No issues ideated this run. Run <code>nightly ideate</code> to surface candidates.</p>
   {% endif %}

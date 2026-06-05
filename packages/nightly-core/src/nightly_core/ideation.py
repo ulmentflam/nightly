@@ -35,13 +35,23 @@ _log = logging.getLogger(__name__)
 def run_proposers(
     root: Path,
     proposers: list[Proposer] | None = None,
+    *,
+    force_synthesis: bool = False,
 ) -> list[Proposal]:
     """Run every proposer; merge + sort their output by score (desc).
 
     `proposers` is injectable for tests. None ⇒ use `default_proposers()`.
     A proposer that raises is logged and skipped; the rest still run.
+
+    `force_synthesis=True` (RFC 009 §C2) propagates to the default
+    proposer registry, which constructs the `SynthesisProposer` with
+    `force=True` so its `synthesis.json` cache lookup is bypassed.
+    Ignored when `proposers` is explicitly passed — callers controlling
+    the proposer list also control their own force behavior.
     """
-    chosen = proposers if proposers is not None else default_proposers()
+    chosen = (
+        proposers if proposers is not None else default_proposers(force_synthesis=force_synthesis)
+    )
     out: list[Proposal] = []
     for proposer in chosen:
         try:
@@ -74,6 +84,7 @@ def write_drafts(run: Run, proposals: list[Proposal]) -> list[Path]:
         metadata = {
             "proposer": proposal.proposer,
             "category": proposal.category,
+            "strategic_category": proposal.strategic_category,
             "score": f"{proposal.score:.3f}",
             "estimated_loc": str(proposal.estimated_loc),
             "file_scope": ", ".join(proposal.file_scope) or "(none)",

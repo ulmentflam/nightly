@@ -714,6 +714,44 @@ def _dedupe_proposals(proposals: list[Proposal], root: Path | None = None) -> li
     return [p for p in proposals if p.fingerprint not in blocked]
 
 
+_STRATEGIC_CATEGORY_RANK: dict[str, int] = {
+    "cleaning": 0,
+    "refactoring": 1,
+    "housekeeping": 2,
+    "convenience": 3,
+    "capability": 4,
+}
+"""RFC 009 §4 — cascade sort key. Cleaning at score 1.2 outranks
+capability at score 1.8 because cleaning ships first per the operator-
+stated priority. Mirrors `STRATEGIC_CATEGORIES` from `proposers/base.py`
+as a dict for O(1) rank lookup during the sort. Synced explicitly
+rather than imported because the test surface expects the values to
+match — if `STRATEGIC_CATEGORIES` ever changes shape, both this dict
+and the briefing grouping must move in lockstep."""
+
+
+def _ordered_proposals(proposals: list[Proposal], root: Path | None = None) -> list[Proposal]:
+    """Apply RFC 009 §4 sort: `(category_rank, -score)`, ties broken
+    by the proposal's original list position.
+
+    Honors the `ideate.category_ordering` config flag — when False,
+    falls back to score-only descending order (the pre-v0.0.6
+    behavior).
+    """
+    from nightly_core.config import load_ideate_config  # noqa: PLC0415 - lazy
+
+    config = load_ideate_config(root)
+    if not config.category_ordering:
+        return sorted(proposals, key=lambda p: -p.score)
+    return sorted(
+        proposals,
+        key=lambda p: (
+            _STRATEGIC_CATEGORY_RANK.get(p.strategic_category, len(_STRATEGIC_CATEGORY_RANK)),
+            -p.score,
+        ),
+    )
+
+
 def pick_ideated(root: Path | None = None) -> Proposal | None:
     """Run the proposer suite and return an auto-PR-eligible proposal, if any.
 
@@ -733,7 +771,7 @@ def pick_ideated(root: Path | None = None) -> Proposal | None:
 
 
 def pick_ideated_fallback(root: Path | None = None) -> Proposal | None:
-    """Highest-scoring proposal regardless of autonomy-bar eligibility.
+    """Highest-priority proposal regardless of autonomy-bar eligibility.
 
     The "make a recommendation, just go" lever. Only fires when the
     session is armed (SESSION_ACTIVE present) and the strict cascade
@@ -744,11 +782,16 @@ def pick_ideated_fallback(root: Path | None = None) -> Proposal | None:
 
     Same dedupe as `pick_ideated`: a re-proposal of already-landed work
     returns None instead of re-dispatching the duplicate.
+
+    v0.0.6+ (RFC 009 §4): sort by `(category_rank, -score)` so cleaning
+    proposals fire before capability proposals even at lower numeric
+    scores — fixing what's broken before inventing new things.
     """
     proposals = _dedupe_proposals(run_proposers(root or repo_root()), root)
     if not proposals:
         return None
-    return proposals[0]  # already score-sorted desc by run_proposers
+    ordered = _ordered_proposals(proposals, root)
+    return ordered[0]
 
 
 # ── the cascade itself ────────────────────────────────────────────────────
