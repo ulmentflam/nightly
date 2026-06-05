@@ -23,6 +23,19 @@ def _stub_fetch_via_gh(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _stub_fetch_open_pr_issue_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default: triage's open-PR overlap scan finds no PRs (no `gh` calls).
+
+    Tests exercising the issue #10 §bug-3 fix override this with their
+    own set of issue numbers — see `test_triage.py::test_rank_issues_skips_issue_with_open_pr_*`.
+    """
+    monkeypatch.setattr(
+        "nightly_core.triage.fetch_open_pr_issue_refs_via_gh",
+        lambda _root: frozenset(),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _stub_cascade_proposers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: cascade ideation finds no proposals (no filesystem scan).
 

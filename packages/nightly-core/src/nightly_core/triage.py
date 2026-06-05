@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -36,6 +37,8 @@ __all__ = [
     "IssueFetcher",
     "IssueRanking",
     "IssueRecord",
+    "OpenPRRefFetcher",
+    "fetch_open_pr_issue_refs_via_gh",
     "fetch_via_gh",
     "rank_issues",
     "score_issue",
@@ -120,13 +123,25 @@ def _age_weight(created_at: datetime, *, now: datetime | None = None) -> float:
     return min(_MAX_AGE_WEIGHT, 1.0 + math.log1p(age_days / 30.0))
 
 
-def _skip_reason(issue: IssueRecord) -> str | None:
+def _skip_reason(
+    issue: IssueRecord,
+    *,
+    open_pr_issue_refs: frozenset[int] = frozenset(),
+) -> str | None:
     label_set = {lab.lower() for lab in issue.labels}
     deny = label_set & _HARD_DENY_LABELS
     if deny:
         return f"hard-deny label: {sorted(deny)[0]}"
     if len(issue.body.strip()) < _MIN_BODY_CHARS:
         return f"no acceptance criterion (body < {_MIN_BODY_CHARS} chars)"
+    if issue.number in open_pr_issue_refs:
+        # Issue #10 §bug-3: cascade re-picked an issue forever because
+        # an open PR fixing it didn't appear in the ranker's skip list.
+        # We now scan open PR titles + bodies for closing references
+        # (`fixes #N` / `closes #N` / `resolves #N`) and skip matching
+        # issues. RFC 001 §A2's same-shape logic for RFC checklist items
+        # is the inspiration; this extends it to GitHub issues.
+        return "open PR already addresses this issue"
     return None
 
 
@@ -212,6 +227,78 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+# ── open-PR overlap detection (issue #10 §bug-3) ──────────────────────────
+
+OpenPRRefFetcher = Callable[[Path], frozenset[int]]
+"""Returns the set of issue numbers any open PR claims to close. Injectable
+for tests; production passes `fetch_open_pr_issue_refs_via_gh`."""
+
+
+_CLOSE_KEYWORD_RE = re.compile(
+    r"(?:close[ds]?|fix(?:e[ds])?|resolve[ds]?)\s*:?\s*#(\d+)",
+    re.IGNORECASE,
+)
+"""Match GitHub's documented closing-keyword grammar in PR titles + bodies.
+
+Covers: close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved.
+The optional colon (`closes: #93`) and optional whitespace before `#`
+accommodate the most common operator-typed variants. We don't try to
+match cross-repo refs (`closes owner/repo#93`) — that's a v2 concern;
+the same-repo case is the load-bearing one."""
+
+
+def fetch_open_pr_issue_refs_via_gh(root: Path) -> frozenset[int]:
+    """Scan open PRs for closing references to issue numbers.
+
+    Returns the set of issue numbers any open PR in `root` claims to
+    close via `fixes #N` / `closes #N` / `resolves #N` (and the
+    inflected variants the GitHub docs accept).
+
+    Best-effort: empty set when `gh` is missing, the repo has no
+    GitHub remote, the call fails, or the output isn't parseable.
+    The ranker treats empty-set as "no overlap" — i.e. degrades
+    cleanly to pre-fix behavior, never as a hard failure.
+    """
+    if shutil.which("gh") is None:
+        return frozenset()
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                "title,body",
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return frozenset()
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return frozenset()
+    refs: set[int] = set()
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        text = f"{entry.get('title') or ''}\n{entry.get('body') or ''}"
+        for match in _CLOSE_KEYWORD_RE.finditer(text):
+            try:
+                refs.add(int(match.group(1)))
+            except ValueError:
+                continue
+    return frozenset(refs)
+
+
 # ── public API ─────────────────────────────────────────────────────────────
 
 
@@ -219,6 +306,7 @@ def rank_issues(
     root: Path | None = None,
     *,
     fetcher: IssueFetcher | None = None,
+    pr_ref_fetcher: OpenPRRefFetcher | None = None,
     now: datetime | None = None,
 ) -> list[IssueRanking]:
     """Return open issues ranked by score, descending.
@@ -226,15 +314,25 @@ def rank_issues(
     `fetcher` is injectable — production passes `fetch_via_gh` by default;
     tests substitute a deterministic list. The cascade calls this with no
     args to get the live ranking.
+
+    `pr_ref_fetcher` returns the set of issue numbers any open PR claims
+    to close. Production passes `fetch_open_pr_issue_refs_via_gh`; tests
+    inject empty/explicit sets. Issues whose number is in the set get
+    `skip_reason="open PR already addresses this issue"` and never get
+    picked. This is the issue #10 §bug-3 fix: the cascade used to
+    re-pick #93 forever after fix PR #95 was open because the ranker
+    had no in-flight-PR guard.
     """
     root = (root or repo_root()).resolve()
     fetch = fetcher or fetch_via_gh
+    pr_refs_fn = pr_ref_fetcher or fetch_open_pr_issue_refs_via_gh
     issues = fetch(root)
+    open_pr_refs = pr_refs_fn(root)
     rankings = [
         IssueRanking(
             issue=issue,
             score=score_issue(issue, now=now),
-            skip_reason=_skip_reason(issue),
+            skip_reason=_skip_reason(issue, open_pr_issue_refs=open_pr_refs),
         )
         for issue in issues
     ]

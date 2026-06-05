@@ -35,6 +35,7 @@ __all__ = [
     "PlanRecord",
     "PlanStatus",
     "append_pr_feedback",
+    "find_rfc_status",
     "list_plans",
     "parse_frontmatter",
     "read_plan",
@@ -185,6 +186,67 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
         key, _, value = line.partition(":")
         metadata[key.strip()] = value.strip()
     return metadata, body
+
+
+_STATUS_LINE_RE = re.compile(
+    r"^\s*(?:\*\*\s*)?status\s*(?:\*\*)?\s*:\s*(?:\*\*\s*)?([^\s*\n][^*\n]*?)(?:\s*\*\*)?\s*$",
+    re.IGNORECASE,
+)
+"""Match a `Status: <value>` body line with tolerance for markdown bold
+decoration around either the key or the value.
+
+Cases handled:
+  - `status: accepted`
+  - `Status: accepted`
+  - `**Status**: accepted`
+  - `**Status:** accepted`
+  - `Status: **accepted**`
+  - `**Status**: **accepted**`
+
+Anything past the value (a trailing comment, punctuation) is captured
+verbatim; callers `.strip()` before comparing. The regex is anchored
+at line boundaries; multi-line scanning is the caller's job (we only
+search the head of the document to avoid matching `Status:`-shaped
+text deep in the body)."""
+
+_STATUS_BODY_SCAN_LINES = 50
+"""How many leading lines of the document `find_rfc_status` scans
+when no frontmatter status is present. 50 is generous enough to find
+the directive in any RFC convention (corpus-forge puts theirs in the
+first 5 lines; we just want to avoid scanning a 1000-line RFC body
+looking for `Status: accepted` matches in code samples or quoted
+text further down)."""
+
+
+def find_rfc_status(text: str) -> str | None:
+    """Best-effort RFC status extractor (issue #10 §1).
+
+    Two-tier lookup:
+    1. **Frontmatter path.** `parse_frontmatter` runs first; any key
+       that normalizes to `status` (after stripping markdown bold
+       decoration and case-folding) yields its value. Tolerates the
+       `**Status**: accepted` shape that corpus-forge's RFCs used
+       inside `---` fences.
+    2. **Body fallback.** When the frontmatter pass returns nothing,
+       scan the first `_STATUS_BODY_SCAN_LINES` lines for a
+       `Status: <value>` directive line via `_STATUS_LINE_RE`.
+       Catches the corpus-forge convention of `Status: accepted`
+       written as a bare body line outside any frontmatter fence —
+       the case that left the cascade blind to 4 P0 RFCs all night
+       (issue #10's regression).
+
+    Returns the raw status string (stripped) or None.
+    """
+    metadata, _body = parse_frontmatter(text)
+    for key, value in metadata.items():
+        normalized = key.strip().strip("*").strip().lower()
+        if normalized == "status" and value:
+            return value.strip()
+    for line in text.splitlines()[:_STATUS_BODY_SCAN_LINES]:
+        match = _STATUS_LINE_RE.match(line)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def render_frontmatter(metadata: dict[str, str], body: str) -> str:

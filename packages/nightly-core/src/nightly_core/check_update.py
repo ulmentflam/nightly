@@ -29,6 +29,7 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -86,9 +87,27 @@ class UpdateCheckResult:
 
     @property
     def is_outdated(self) -> bool:
+        """True iff `latest` is strictly greater than `current`.
+
+        Issue #10 §bug-2 regression guard: the prior `current != latest`
+        check produced a "downgrade recommendation" when `latest` lagged
+        `current` (stale cache after a release rollback, the `/tags`
+        fallback returning an unexpected order, or a beta install
+        pointing at a slow-moving channel). We now compare parsed
+        version tuples; semantically-equal versions and any case where
+        `current >= latest` return False. Unparseable versions fall
+        back to the prior equality check so unrecognized release-tag
+        shapes don't silently disable the nag — better to over-nag
+        than to silently miss real upgrades.
+        """
         if self.latest is None:
             return False
-        return _normalize_version(self.current) != _normalize_version(self.latest)
+        current_tuple = _version_tuple(self.current)
+        latest_tuple = _version_tuple(self.latest)
+        if current_tuple is None or latest_tuple is None:
+            # Unrecognized shape — fall back to "any difference → outdated".
+            return _normalize_version(self.current) != _normalize_version(self.latest)
+        return current_tuple < latest_tuple
 
     def recommendation(self) -> str | None:
         """One-line "type X to upgrade" message; None if up to date.
@@ -339,14 +358,44 @@ def _urllib_get_json(url: str) -> object | None:
 
 
 def _normalize_version(v: str) -> str:
-    """Strip leading `v` and surrounding whitespace.
+    """Strip leading `v` and surrounding whitespace for display purposes.
 
-    `v0.0.1` and `0.0.1` compare equal. We deliberately don't do
-    full semver parsing — release tags follow `v<semver>` and
-    `pyproject.toml` carries `<semver>` without the prefix; a
-    leading-`v` strip handles the only routine difference. If we
-    ever ship pre-release tags (`v0.1.0rc1`) the comparison stays
-    string-based and "any difference → outdated" is the right
-    default.
+    `v0.0.1` and `0.0.1` compare equal in the unparseable-fallback path
+    of `is_outdated`. For the canonical comparison, prefer
+    `_version_tuple` — it's stricter and handles ordering correctly.
     """
     return v.strip().lstrip("v")
+
+
+_VERSION_CORE_RE = re.compile(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+"""Match the leading `<major>[.<minor>[.<patch>]]` portion of a version
+string after `_normalize_version` has stripped the `v` prefix. Trailing
+pre-release suffixes (`-rc1`, `b3`, `+sha1234`) are intentionally not
+parsed — they're rare for this project and a strict-prefix match keeps
+the helper predictable without taking on the full semver grammar."""
+
+
+def _version_tuple(v: str) -> tuple[int, ...] | None:
+    """Parse `v0.0.2` / `0.0.2` / `0.1` → `(0, 0, 2)` / `(0, 1, 0)`.
+
+    Returns None when the leading numeric component can't be parsed —
+    e.g. a tag like `nightly-build-2026-06-05` or anything else outside
+    the documented `<major>[.<minor>[.<patch>]]` shape. Callers fall
+    back to the prior string-equality check for those, so unrecognized
+    tags still trigger the nag (over-nag is safer than silent-miss).
+
+    Pre-release suffixes are ignored at parse time — `0.0.2rc1` parses
+    as `(0, 0, 2)` and compares equal to `0.0.2`. That's a conservative
+    choice: a pre-release should not advertise itself as "newer" than
+    the corresponding GA. If/when Nightly ships pre-release channels,
+    this helper can be refined to honor PEP 440 ordering.
+    """
+    cleaned = _normalize_version(v)
+    match = _VERSION_CORE_RE.match(cleaned)
+    if match is None:
+        return None
+    parts = match.groups()
+    try:
+        return tuple(int(p) if p is not None else 0 for p in parts)
+    except ValueError:
+        return None
