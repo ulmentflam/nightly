@@ -10,6 +10,7 @@ import pytest
 
 from nightly_core.triage import (
     IssueRecord,
+    fetch_open_pr_issue_refs_via_gh,
     fetch_via_gh,
     rank_issues,
     score_issue,
@@ -171,3 +172,99 @@ def test_fetch_via_gh_without_gh_returns_empty(
 
     monkeypatch.setattr(shutil, "which", lambda _: None)
     assert fetch_via_gh(tmp_path) == []
+
+
+# ── issue #10 §bug-3: open-PR overlap guard ──────────────────────────────
+
+
+def test_rank_issues_skips_issue_with_open_pr_fixing_it(tmp_path: Path) -> None:
+    """Issue #93 has an open PR (#95) with body 'fixes #93'.
+
+    Regression guard for issue #10's livelock failure: the cascade
+    re-picked #93 forever because the ranker had no in-flight-PR
+    guard. With the fix, #93 is skipped with a clear reason while
+    issues without overlapping PRs are still pickable.
+    """
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(93), _issue(94)]),
+        pr_ref_fetcher=lambda _root: frozenset({93}),
+        now=_NOW,
+    )
+    by_num = {r.number: r for r in rankings}
+    assert by_num[93].skip_reason == "open PR already addresses this issue"
+    assert by_num[94].skip_reason is None
+    # Eligible issues come first; #94 is the only eligible one, so it leads.
+    assert rankings[0].number == 94
+
+
+def test_rank_issues_recognizes_all_close_keywords(tmp_path: Path) -> None:
+    """The closing-keyword regex matches the full GitHub-documented set:
+    close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved —
+    case-insensitive, optional colon, optional whitespace before `#`."""
+    from nightly_core.triage import _CLOSE_KEYWORD_RE
+
+    cases = {
+        "close #1": 1,
+        "Closes #2": 2,
+        "CLOSED #3": 3,
+        "fix #4": 4,
+        "Fixes #5": 5,
+        "fixed: #6": 6,
+        "resolve #7": 7,
+        "Resolves #8": 8,
+        "resolved #9": 9,
+        "closes:  #10": 10,
+    }
+    for text, expected in cases.items():
+        match = _CLOSE_KEYWORD_RE.search(text)
+        assert match is not None, f"failed to match: {text!r}"
+        assert int(match.group(1)) == expected, f"wrong number for {text!r}"
+
+
+def test_rank_issues_overlap_guard_silent_when_no_prs(tmp_path: Path) -> None:
+    """Empty open-PR set leaves all eligible issues pickable —
+    the guard never produces a false positive."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(1), _issue(2)]),
+        pr_ref_fetcher=lambda _root: frozenset(),
+        now=_NOW,
+    )
+    assert all(r.skip_reason is None for r in rankings)
+
+
+def test_fetch_open_pr_issue_refs_via_gh_without_gh_returns_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without `gh`, the helper degrades silently to empty — no exceptions."""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    assert fetch_open_pr_issue_refs_via_gh(tmp_path) == frozenset()
+
+
+def test_fetch_open_pr_issue_refs_via_gh_parses_fixes_keyword(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a `gh pr list` payload with `fixes #93` in the body
+    yields `{93}` from the helper. Imports `fetch_open_pr_issue_refs_via_gh`
+    via the module-top import (a local binding the autouse stub
+    cannot retroactively override)."""
+    import subprocess as subprocess_module
+
+    payload = (
+        '[{"title": "Fix the daemon pull tick", "body": "This PR fixes #93\\n\\nAlso closes #94."}]'
+    )
+
+    def _fake_run(*_args, **_kwargs):
+        class _R:
+            stdout = payload
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(subprocess_module, "run", _fake_run)
+    refs = fetch_open_pr_issue_refs_via_gh(tmp_path)
+    assert refs == frozenset({93, 94})
