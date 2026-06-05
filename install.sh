@@ -75,29 +75,40 @@ if [ -d "$NIGHTLY_HOME/.git" ]; then
     git -C "$NIGHTLY_HOME" checkout --quiet "$NIGHTLY_VERSION"
     # Only fast-forward if we're tracking a branch; tags/commits skip this.
     if git -C "$NIGHTLY_HOME" symbolic-ref --quiet HEAD >/dev/null 2>&1; then
-        # Surface pull failures instead of silently swallowing them with
-        # `|| true` — a failed fast-forward used to leave the install
-        # pinned to an old commit while the script reported success.
-        # Captures stderr to a temp file; on failure prints the last line
-        # plus a recovery hint, then continues so the rest of the install
-        # (uv sync, shim) still runs against whatever HEAD is at.
+        # Try the fast-forward first; capture stderr so we can surface
+        # the failure reason as part of the auto-resolve note below.
+        # The pull may legitimately fail (unstaged changes, divergent
+        # history, etc.) — that's exactly when the auto-rescue kicks in.
         _pull_stderr="$(mktemp -t nightly-pull-stderr.XXXXXX)"
         if ! git -C "$NIGHTLY_HOME" pull --quiet --ff-only origin "$NIGHTLY_VERSION" \
             2>"$_pull_stderr"; then
-            _detail="$(tail -n 1 "$_pull_stderr" 2>/dev/null || echo '(no stderr)')"
-            warn "pull --ff-only origin $NIGHTLY_VERSION failed: ${_detail:-(no stderr)}"
-            warn "  local HEAD unchanged — run 'git -C $NIGHTLY_HOME pull --rebase origin $NIGHTLY_VERSION' to resolve"
+            _pull_detail="$(tail -n 1 "$_pull_stderr" 2>/dev/null || echo '(no stderr)')"
+            info "pull --ff-only failed (${_pull_detail:-(no stderr)}); will auto-resolve via stash + reset"
         fi
         rm -f "$_pull_stderr"
     fi
-    # Cross-check: if origin/<version> is ahead of HEAD post-fetch, the
-    # update didn't actually advance the install. Catches the silently-
-    # stuck case (detached HEAD, suppressed pull, etc).
+
+    # Auto-resolve drift: if HEAD is still behind origin/<version> after
+    # fetch + checkout + pull (because the pull failed, or because we're
+    # on a detached HEAD that doesn't pull), stash any local edits and
+    # hard-reset to the remote tip. Safe for `~/.local/share/nightly`
+    # because it's a runtime install dir, not a development workspace —
+    # the stash gives anyone hand-patching the install a recovery path.
     _local="$(git -C "$NIGHTLY_HOME" rev-parse --short HEAD 2>/dev/null || true)"
     _remote="$(git -C "$NIGHTLY_HOME" rev-parse --short "refs/remotes/origin/$NIGHTLY_VERSION" 2>/dev/null || true)"
     if [ -n "$_local" ] && [ -n "$_remote" ] && [ "$_local" != "$_remote" ]; then
-        warn "origin/$NIGHTLY_VERSION is at $_remote but HEAD is at $_local — install may be behind"
-        warn "  run 'git -C $NIGHTLY_HOME status' to investigate divergence"
+        _stash_label="nightly-install auto-rescue $(date -u +%Y%m%dT%H%M%SZ)"
+        _stash_out="$(git -C "$NIGHTLY_HOME" stash push --include-untracked -m "$_stash_label" 2>/dev/null || true)"
+        if printf '%s' "$_stash_out" | grep -q "Saved working"; then
+            warn "stashed pre-update edits as '$_stash_label' (recover via 'git -C $NIGHTLY_HOME stash list')"
+        fi
+        if git -C "$NIGHTLY_HOME" reset --hard "origin/$NIGHTLY_VERSION" --quiet; then
+            _new="$(git -C "$NIGHTLY_HOME" rev-parse --short HEAD 2>/dev/null || true)"
+            ok "auto-resolved drift: hard-reset to origin/$NIGHTLY_VERSION ($_local → $_new)"
+        else
+            warn "auto-resolve failed: 'git -C $NIGHTLY_HOME reset --hard origin/$NIGHTLY_VERSION' errored"
+            warn "  run 'git -C $NIGHTLY_HOME status' to investigate manually"
+        fi
     fi
 else
     mkdir -p "$(dirname "$NIGHTLY_HOME")"

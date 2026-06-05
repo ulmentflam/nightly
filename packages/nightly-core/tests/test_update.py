@@ -192,15 +192,23 @@ def _stub_update_machinery(
 
     `head_sequence` is consumed by `git_head_commit` calls in order —
     use `["before_sha", "after_sha"]` to simulate a real update, or
-    `["sha", "sha"]` to simulate an already-current install.
+    `["sha", "sha"]` to simulate an already-current install. When the
+    sequence is exhausted, the last entry is returned indefinitely
+    (auto-resolve and the post-uv_sync read both poke `git_head_commit`
+    after the canonical before/after pair, so allowing repeats keeps
+    pre-rescue tests stable).
     """
     method = InstallMethod(kind="git", root=tmp_path)
     monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
     seq = list(head_sequence)
-    monkeypatch.setattr(
-        "nightly_core.update.git_head_commit",
-        lambda _root: seq.pop(0) if seq else "",
-    )
+    last_sha: list[str] = [""]
+
+    def _next_head(_root: Path | None) -> str:
+        if seq:
+            last_sha[0] = seq.pop(0)
+        return last_sha[0]
+
+    monkeypatch.setattr("nightly_core.update.git_head_commit", _next_head)
     monkeypatch.setattr("nightly_core.update._git", lambda _args, *, cwd: None)
     monkeypatch.setattr("nightly_core.update._uv_sync", lambda _cwd: None)
     return method
@@ -287,100 +295,192 @@ def test_update_install_post_reexec_skips_work(
     assert sentinel_called == {"git": False, "uv_sync": False}
 
 
-# ── pull-failure surfacing (silently-stuck install) ──────────────────────
+# ── auto-rescue from a silently-stuck install ────────────────────────────
 
 
-def test_update_install_records_pull_failure_in_notes(
+def test_update_install_auto_rescues_when_pull_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When `pull --ff-only` fails, the user sees a note instead of a
-    misleading "already current" report.
+    """When `pull --ff-only` fails and origin is ahead, auto-resolve
+    via stash + hard reset rather than leaving the install stuck.
 
     Regression guard for the install observed at commit `c98b35b` that
-    was stuck a week behind `main`: `pull --ff-only` failed (suppressed),
-    `before == after`, and the CLI rendered "already current" — leaving
-    the user thinking nothing was wrong.
+    was stuck a week behind `main`: `pull --ff-only` failed because of
+    unstaged local changes, `before == after`, and the CLI rendered
+    "already current." With auto-rescue, the install gets brought back
+    in sync automatically and the report shows the actual delta.
     """
+    from nightly_core.update import _RescueResult
+
     method = InstallMethod(kind="git", root=tmp_path)
     monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
-    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "stale_sha")
+    # HEAD sequence: before-pull / after-failed-pull (still stale) / post-rescue+uv_sync.
+    # Pull failure means HEAD doesn't move from "stale_sha" until rescue's
+    # hard-reset; uv_sync runs after rescue and surfaces "new_sha".
+    seq = iter(["stale_sha", "stale_sha", "new_sha"])
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: next(seq, "new_sha"))
     monkeypatch.setattr("nightly_core.update._uv_sync", lambda _cwd: None)
-    # _remote_ref_sha returning empty disables the second-tier check —
-    # we only want to exercise the pull-exception path here.
-    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "")
+    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "new_sha")
 
     def git_with_failing_pull(args: list[str], *, cwd: Path) -> None:
         if args[:2] == ["pull", "--quiet"]:
             raise subprocess.CalledProcessError(
                 returncode=1,
                 cmd=["git", *args],
-                stderr="fatal: Not possible to fast-forward, aborting.\n",
+                stderr="error: cannot pull with rebase: You have unstaged changes.\n",
             )
-        # All other git calls succeed silently.
 
     monkeypatch.setattr("nightly_core.update._git", git_with_failing_pull)
 
+    rescue_calls: list[tuple[Path, str, str]] = []
+
+    def fake_rescue(root: Path, *, version: str, current_sha: str) -> _RescueResult:
+        rescue_calls.append((root, version, current_sha))
+        return _RescueResult(
+            summary=(
+                f"Auto-resolved drift: hard-reset to origin/{version} ({current_sha} → new_sha)."
+            ),
+            after_sha="new_sha",
+            stashed=True,
+        )
+
+    monkeypatch.setattr("nightly_core.update._auto_rescue_to_remote", fake_rescue)
+
     notes: list[str] = []
-    update_install(version="main", notes=notes)
+    # Auto-rescue moves the source (stale_sha → new_sha), so the re-exec
+    # path must fire — `update_install` won't return normally after the
+    # source change is committed to disk. The fake re-exec raises so
+    # the test process doesn't actually exec itself.
+    fake_reexec = _FakeReexec()
+    with pytest.raises(_FakeReexec._Reexeced):
+        update_install(version="main", notes=notes, reexec=fake_reexec)
+    assert rescue_calls == [(tmp_path, "main", "stale_sha")]
     assert any("pull --ff-only" in n for n in notes), notes
-    assert any("Not possible to fast-forward" in n for n in notes), notes
+    assert any("Auto-resolved drift" in n for n in notes), notes
+    assert fake_reexec.called_with == "stale_sha"
 
 
-def test_update_install_records_pull_failure_recovery_hint(
+def test_update_install_no_rescue_when_already_current(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pull-failure note includes the resolve-it command the operator
-    should run, so the failure path is actionable not just informative."""
-    method = InstallMethod(kind="git", root=tmp_path)
-    monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
-    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "stale")
-    monkeypatch.setattr("nightly_core.update._uv_sync", lambda _cwd: None)
-    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "")
-
-    def git_with_failing_pull(args: list[str], *, cwd: Path) -> None:
-        if args[:2] == ["pull", "--quiet"]:
-            raise subprocess.CalledProcessError(returncode=128, cmd=args, stderr="fatal: refusing")
-
-    monkeypatch.setattr("nightly_core.update._git", git_with_failing_pull)
-    notes: list[str] = []
-    update_install(version="main", notes=notes)
-    assert any("pull --rebase" in n for n in notes), notes
-
-
-def test_update_install_no_notes_when_pull_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Happy path: every git call returns clean, no pull note emitted."""
-    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["same", "same"])
+    """Happy path: HEAD matches origin/<version>, no rescue triggered."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["same", "same", "same"])
     monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "same")
+    rescue_called = False
+
+    def fake_rescue(*_args, **_kwargs):
+        nonlocal rescue_called
+        rescue_called = True
+
+    monkeypatch.setattr("nightly_core.update._auto_rescue_to_remote", fake_rescue)
     notes: list[str] = []
     update_install(version="main", notes=notes, reexec=_FakeReexec())
+    assert not rescue_called
     assert notes == []
 
 
-def test_update_install_surfaces_divergence_when_remote_ahead(
+def test_update_install_skips_rescue_when_remote_ref_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If pull didn't raise but origin/<version> is still ahead of HEAD
-    (e.g. a tag checkout, a detached HEAD, or a silent suppress earlier
-    in the pipeline), the divergence check should still fire."""
-    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["stuck", "stuck"])
-    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "newer")
-    notes: list[str] = []
-    update_install(version="main", notes=notes, reexec=_FakeReexec())
-    assert any("origin/main" in n and "stuck" in n and "newer" in n for n in notes), notes
-
-
-def test_update_install_skips_divergence_when_remote_ref_unknown(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When `_remote_ref_sha` returns empty (tag/SHA checkout, no remote
-    ref), the divergence check stays silent — no false positive."""
-    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["any", "any"])
+    """Tag/SHA checkout (no `refs/remotes/origin/<ref>`) skips the
+    auto-resolve path — we don't reset a tag onto a branch tip."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["tag", "tag", "tag"])
     monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "")
+    rescue_called = False
+
+    def fake_rescue(*_args, **_kwargs):
+        nonlocal rescue_called
+        rescue_called = True
+
+    monkeypatch.setattr("nightly_core.update._auto_rescue_to_remote", fake_rescue)
     notes: list[str] = []
-    update_install(version="main", notes=notes, reexec=_FakeReexec())
+    update_install(version="v0.0.1", notes=notes, reexec=_FakeReexec())
+    assert not rescue_called
     assert notes == []
+
+
+def test_auto_rescue_stashes_then_resets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_auto_rescue_to_remote` runs `git stash push --include-untracked`
+    before `git reset --hard` so local edits aren't silently lost."""
+    from nightly_core.update import _auto_rescue_to_remote
+
+    calls: list[list[str]] = []
+
+    class _FakeCompleted:
+        def __init__(self, returncode: int, stdout: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(args: list[str], **_kwargs) -> _FakeCompleted:
+        calls.append(args)
+        if args[:3] == ["git", "stash", "push"]:
+            return _FakeCompleted(0, stdout="Saved working directory and index state\n")
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr("nightly_core.update.subprocess.run", fake_run)
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "new_sha")
+
+    result = _auto_rescue_to_remote(tmp_path, version="main", current_sha="old_sha")
+    stash_idx = next(i for i, c in enumerate(calls) if c[:3] == ["git", "stash", "push"])
+    reset_idx = next(i for i, c in enumerate(calls) if c[:3] == ["git", "reset", "--hard"])
+    assert stash_idx < reset_idx
+    assert result.stashed is True
+    assert result.after_sha == "new_sha"
+    assert "Auto-resolved drift" in result.summary
+    assert "stash" in result.summary
+
+
+def test_auto_rescue_reports_when_reset_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the hard-reset itself errors, summary surfaces the failure
+    instead of claiming a successful rescue."""
+    from nightly_core.update import _auto_rescue_to_remote
+
+    class _FakeCompleted:
+        def __init__(self, stdout: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(args: list[str], **_kwargs):
+        if args[:3] == ["git", "reset", "--hard"]:
+            raise subprocess.CalledProcessError(
+                returncode=128, cmd=args, stderr="fatal: ambiguous argument\n"
+            )
+        return _FakeCompleted()
+
+    monkeypatch.setattr("nightly_core.update.subprocess.run", fake_run)
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "old_sha")
+    result = _auto_rescue_to_remote(tmp_path, version="main", current_sha="old_sha")
+    assert result.after_sha == ""
+    assert "Auto-resolve failed" in result.summary
+
+
+def test_auto_rescue_handles_clean_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clean tree: stash reports nothing-to-save, `stashed=False`,
+    but reset still proceeds."""
+    from nightly_core.update import _auto_rescue_to_remote
+
+    class _FakeCompleted:
+        def __init__(self, stdout: str = "") -> None:
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def fake_run(args: list[str], **_kwargs):
+        if args[:3] == ["git", "stash", "push"]:
+            return _FakeCompleted(stdout="No local changes to save\n")
+        return _FakeCompleted()
+
+    monkeypatch.setattr("nightly_core.update.subprocess.run", fake_run)
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "new_sha")
+    result = _auto_rescue_to_remote(tmp_path, version="main", current_sha="old_sha")
+    assert result.stashed is False
+    assert result.after_sha == "new_sha"
+    assert "stash" not in result.summary
+    assert "Auto-resolved drift" in result.summary
 
 
 def test_reexec_helper_sets_sentinel_env(monkeypatch: pytest.MonkeyPatch) -> None:

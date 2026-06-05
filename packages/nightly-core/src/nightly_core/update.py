@@ -144,6 +144,92 @@ def git_head_commit(root: Path | None) -> str:
     return result.stdout.strip()
 
 
+@dataclass(frozen=True)
+class _RescueResult:
+    """Outcome of an auto-rescue hard-reset.
+
+    `summary` is the human-readable note appended to the update report;
+    `after_sha` is the short HEAD SHA after the reset (empty if the
+    reset itself failed). `stashed` indicates whether a stash entry
+    was created — `False` means the working tree was already clean or
+    `git stash` declined the operation."""
+
+    summary: str
+    after_sha: str
+    stashed: bool
+
+
+def _auto_rescue_to_remote(root: Path, *, version: str, current_sha: str) -> _RescueResult:
+    """Stash any local state, then `git reset --hard origin/<version>`.
+
+    Safe for runtime installs (`~/.local/share/nightly` is bootstrap-
+    owned, not a developer workspace). Local edits — staged, unstaged,
+    or untracked — are saved as a `git stash` entry labeled with the
+    current UTC timestamp so the user can recover them via
+    `git stash list` if they were intentional.
+
+    Errors during the stash step are non-fatal: we still attempt the
+    reset because the goal is to bring the install in sync; a stashable-
+    state that doesn't stash is rare and shouldn't block the rescue.
+    Errors during the reset itself are fatal — we capture them in the
+    summary so the operator sees what blocked the auto-resolve.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415 - lazy, no module-load cost
+
+    stash_label = f"nightly-update auto-rescue {datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    stashed = False
+    try:
+        stash_result = subprocess.run(
+            ["git", "stash", "push", "--include-untracked", "-m", stash_label],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        # `git stash push` exits 0 even when there's nothing to stash;
+        # the stdout phrase distinguishes "saved" from "no local changes."
+        stashed = stash_result.returncode == 0 and "Saved working" in (stash_result.stdout or "")
+    except (subprocess.TimeoutExpired, OSError):
+        stashed = False
+
+    try:
+        subprocess.run(
+            ["git", "reset", "--hard", f"origin/{version}"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        # Reset itself failed — surface the error verbatim so the user
+        # can debug. The install stays at its drifted state.
+        stderr = getattr(exc, "stderr", "") or ""
+        return _RescueResult(
+            summary=(
+                f"Auto-resolve failed: `git reset --hard origin/{version}` errored "
+                f"({stderr.strip().splitlines()[-1:] or ['(no stderr)']}[0]). "
+                f"Local HEAD still at {current_sha}. Manual recovery: "
+                f"`git -C {root} status` then `git -C {root} reset --hard origin/{version}`."
+            ),
+            after_sha="",
+            stashed=stashed,
+        )
+
+    after = git_head_commit(root)
+    note = (
+        f"Auto-resolved drift: hard-reset to origin/{version} "
+        f"({current_sha or '?'} → {after or '?'})."
+    )
+    if stashed:
+        note += (
+            f" Pre-reset state saved as stash '{stash_label}' — "
+            f"recover via `git -C {root} stash list` and `git stash apply <ref>` if intentional."
+        )
+    return _RescueResult(summary=note, after_sha=after, stashed=stashed)
+
+
 def _remote_ref_sha(root: Path, version: str) -> str:
     """Short SHA of `refs/remotes/origin/<version>`, or empty if absent.
 
@@ -272,48 +358,50 @@ def update_install(
         on_branch = True
     except subprocess.CalledProcessError:
         on_branch = False
+    pull_note: str | None = None
     if on_branch:
-        # Non-ff or branch mismatch — capture the failure as a note rather
-        # than silently swallowing it. The user's install ends up pinned
-        # to the previous commit while the report claims "already current,"
-        # which is exactly the misleading state the silent suppress used
-        # to produce.
+        # Capture pull failure for the auto-resolve note. We don't bail
+        # — the divergence check below will hard-reset to the remote
+        # tip regardless of whether the fast-forward succeeded.
         try:
             _git(["pull", "--quiet", "--ff-only", "origin", version], cwd=method.root)
         except subprocess.CalledProcessError as exc:
-            if notes is not None:
-                detail = (exc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
-                notes.append(
-                    f"pull --ff-only origin {version} failed (exit {exc.returncode}): "
-                    f"{detail[0]}. Local HEAD is unchanged — run `git -C "
-                    f"{method.root} pull --rebase origin {version}` to resolve "
-                    "or check `git status` for divergent history."
-                )
+            detail = (exc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
+            pull_note = (
+                f"pull --ff-only origin {version} failed (exit {exc.returncode}): {detail[0]}"
+            )
+
+    # Auto-resolve drift: if HEAD is still behind origin/<version>
+    # after fetch+checkout+pull, hard-reset to the remote tip. This is
+    # safe for a runtime install (`~/.local/share/nightly` is owned by
+    # Nightly's own bootstrap, not a development workspace), and the
+    # user explicitly opted into "auto-resolve, don't just warn."
+    # Local edits are stashed first so anyone who was hand-patching
+    # the install can recover via `git stash list`.
+    remote_tip = _remote_ref_sha(method.root, version)
+    after = git_head_commit(method.root)
+    drifted = bool(
+        remote_tip
+        and after
+        and not remote_tip.startswith(after)
+        and not after.startswith(remote_tip)
+    )
+    if drifted:
+        rescue = _auto_rescue_to_remote(method.root, version=version, current_sha=after)
+        after = rescue.after_sha or after
+        if notes is not None:
+            if pull_note is not None:
+                notes.append(pull_note)
+            notes.append(rescue.summary)
+    elif pull_note is not None and notes is not None:
+        # Pull failed but the divergence check came back clean —
+        # unusual (likely an offline failure), surface it anyway.
+        notes.append(pull_note + f". Local HEAD ({after}) matches origin/{version} — proceeding.")
 
     _uv_sync(method.root)
+    # Re-read HEAD after uv sync (sync itself doesn't move HEAD, but
+    # any earlier rescue may have); this is the canonical "after" SHA.
     after = git_head_commit(method.root)
-
-    # Even if the pull "succeeded" (no exception), the local HEAD may
-    # still be behind the freshly-fetched remote — e.g. when the user
-    # is on a detached HEAD that didn't trigger the on-branch pull
-    # path, or when an earlier checkout silently picked up a stale
-    # local branch. Compare HEAD against the post-fetch remote ref
-    # and add a note if they diverge. This catches the "already
-    # current" misreport even when no exception fires.
-    if notes is not None:
-        remote_tip = _remote_ref_sha(method.root, version)
-        if (
-            remote_tip
-            and after
-            and not remote_tip.startswith(after)
-            and not after.startswith(remote_tip)
-        ):
-            notes.append(
-                f"origin/{version} is at {remote_tip} but local HEAD is at {after}. "
-                "The update may have been blocked by divergent history or a "
-                f"local edit in {method.root}. Run `git -C {method.root} status` "
-                "to investigate."
-            )
 
     # Re-exec only when the source moved — same-SHA syncs (idempotent
     # re-runs) reuse the current process. The downstream refresh step
