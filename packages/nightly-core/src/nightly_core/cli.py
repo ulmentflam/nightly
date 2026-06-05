@@ -161,6 +161,23 @@ vault:
 worktree:
   probe_enabled:     true
   remediate_enabled: true
+
+# ideate governs the proposer suite (RFC 009).
+# - `category_ordering: false` reverts the cascade to score-only ordering
+#   (pre-v0.0.6 behavior). With it on, cleaning proposals outrank
+#   capability proposals even at lower scores — "fix what's broken
+#   before inventing new things."
+# - `synthesis.enabled: false` disables the LLM-driven SynthesisProposer
+#   entirely; the three Phase-5 narrow proposers still run.
+# - `synthesis.timeout_seconds` caps the host CLI spawn wall-clock.
+# - `synthesis.max_proposals` caps total synthesis output so the morning
+#   briefing stays readable.
+ideate:
+  category_ordering: true
+  synthesis:
+    enabled:          true
+    timeout_seconds:  120
+    max_proposals:    25
 """
 
 
@@ -818,6 +835,17 @@ def propose(
         int,
         typer.Option("--top", "-n", help="Show only the top N proposals."),
     ] = 20,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Bypass the `synthesis.json` cache and force a fresh LLM "
+                "spawn (RFC 009 §C2). Useful when the strategic review "
+                "should refresh against new code mid-session."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the proposer suite as a dry-run — list candidates without writing.
 
@@ -825,7 +853,7 @@ def propose(
     `<run>/proposed/issues/` for human review.
     """
     root = repo_root()
-    proposals = run_proposers(root)
+    proposals = run_proposers(root, force_synthesis=force)
     if not proposals:
         typer.echo("· no proposals — every proposer came up empty")
         return
@@ -961,7 +989,20 @@ def headless(
 
 
 @app.command()
-def ideate() -> None:
+def ideate(
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Bypass the `synthesis.json` cache and force a fresh LLM "
+                "spawn (RFC 009 §C2). Useful when the strategic review "
+                "should refresh against new code mid-session — without "
+                "the flag, synthesis is throttled to once per session."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Run the proposer suite and write draft issues to the current run.
 
     Writes one markdown file per proposal under
@@ -980,7 +1021,7 @@ def ideate() -> None:
 
     root = repo_root()
     run = _require_current_run(root)
-    all_proposals = run_proposers(root)
+    all_proposals = run_proposers(root, force_synthesis=force)
     if not all_proposals:
         typer.echo("· no proposals — every proposer came up empty")
         return

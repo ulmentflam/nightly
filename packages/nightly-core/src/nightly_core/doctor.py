@@ -95,6 +95,16 @@ pr_feedback:
   enabled:              true
   review_bots:          []
   treat_bots_as_human:  []
+
+# ideate governs the proposer suite (RFC 009).
+# - `category_ordering: false` reverts to score-only ordering.
+# - `synthesis.enabled: false` disables the LLM-driven proposer.
+ideate:
+  category_ordering: true
+  synthesis:
+    enabled:          true
+    timeout_seconds:  120
+    max_proposals:    25
 """
 
 
@@ -291,6 +301,69 @@ def _host_is_present(
     return any(p is not None and p.is_file() for p in paths)
 
 
+_REQUIRED_SYNTHESIS_PROMPT_ANCHORS: tuple[str, ...] = (
+    "objectives",
+    "rationale",
+    "JSON array",
+    "`cleaning`",
+    "`refactoring`",
+    "`housekeeping`",
+    "`convenience`",
+    "`capability`",
+    "Destructive git",
+    "Production state",
+    "Scope creep",
+)
+"""RFC 009 §C3 — sanity anchors the installed `synthesis_prompt.md`
+must contain. If any are missing the prompt has drifted from the
+shape the parser + cascade expect; the doctor reports it as
+`missing` and the remediation is `nightly update` (the prompt
+ships inside the wheel so per-package update is the canonical
+refresh)."""
+
+
+def _check_synthesis_prompt() -> DoctorCheck:
+    """RFC 009 §C3 — verify the installed synthesis prompt template
+    still contains the load-bearing constraint strings.
+
+    The template ships inside the `nightly-core` wheel via
+    `importlib.resources`, so the only realistic drift mode is "the
+    operator's installed Nightly is stale" — which the existing
+    `nightly update` + `check_update` chain already handles. This
+    check is a sanity tripwire: if the prompt is on disk but missing
+    the anchor strings (manual edit, monkey-patched fixture leak,
+    future RFC accidentally dropping a constraint), the doctor flags
+    it so the operator knows synthesis output may be untrustworthy.
+    """
+    from nightly_core.proposers.synthesis import load_synthesis_prompt  # noqa: PLC0415
+
+    try:
+        prompt = load_synthesis_prompt()
+    except (OSError, FileNotFoundError) as exc:
+        return DoctorCheck(
+            name="synthesis_prompt",
+            description="RFC 009 synthesis_prompt.md",
+            status="error",
+            detail=f"unable to load: {exc!r}",
+        )
+    missing = [token for token in _REQUIRED_SYNTHESIS_PROMPT_ANCHORS if token not in prompt]
+    if not missing:
+        return DoctorCheck(
+            name="synthesis_prompt",
+            description="RFC 009 synthesis_prompt.md",
+            status="ok",
+        )
+    return DoctorCheck(
+        name="synthesis_prompt",
+        description="RFC 009 synthesis_prompt.md",
+        status="missing",
+        detail=(
+            f"prompt missing required anchors: {', '.join(missing)}. "
+            "Re-install via `nightly update` to refresh."
+        ),
+    )
+
+
 _REQUIRED_SKILL_TOKENS: tuple[tuple[str, str], ...] = (
     ("seed-rfc", "seed-rfc toolkit row (RFC 005)"),
 )
@@ -450,6 +523,7 @@ def diagnose_and_repair(
     checks.append(_check_config(root, dry_run=dry_run))
     checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))
+    checks.append(_check_synthesis_prompt())
 
     for host_id, loader in loaders.items():
         try:

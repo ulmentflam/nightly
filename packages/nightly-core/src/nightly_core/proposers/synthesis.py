@@ -47,7 +47,21 @@ from nightly_core.proposers.base import (
     StrategicCategory,
 )
 
-__all__ = ["SynthesisProposer", "SynthesisRunner", "load_synthesis_prompt"]
+__all__ = [
+    "SYNTHESIS_CACHE_FILENAME",
+    "SynthesisProposer",
+    "SynthesisRunner",
+    "load_synthesis_prompt",
+]
+
+
+SYNTHESIS_CACHE_FILENAME = "synthesis.json"
+"""RFC 009 §C1 — cache lives under `.nightly/runs/<id>/synthesis.json`.
+Shape: `{"head_sha": "<short>", "ran_at": "<ISO>", "proposals": [...]}`.
+The proposer reads this before spawning; on hit + matching head_sha,
+returns cached proposals without invoking the runner. Cache lives per
+run so a new run gets a fresh cache by default. Operators bypass via
+`--force` on `nightly ideate` / `nightly propose`."""
 
 
 # Caller-injectable so tests stub the LLM spawn. Real runs use
@@ -284,8 +298,114 @@ def _parse_synthesis_output(raw: str, *, max_proposals: int) -> list[Proposal]:
     return proposals
 
 
+def _current_run_dir(root: Path) -> Path | None:
+    """Return the active run dir under `<root>/.nightly/runs/<CURRENT>`
+    or None if no run is active. Used for the synthesis cache lookup."""
+    pointer = root / ".nightly" / "runs" / "CURRENT"
+    if not pointer.is_file():
+        return None
+    try:
+        run_id = pointer.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not run_id:
+        return None
+    run_dir = root / ".nightly" / "runs" / run_id
+    return run_dir if run_dir.is_dir() else None
+
+
+def _read_synthesis_cache(root: Path, *, head_sha: str) -> list[Proposal] | None:  # noqa: PLR0911 - one return per validation gate keeps this readable
+    """RFC 009 §C1 — read the cache; return cached proposals on a SHA
+    match, or None if the cache is missing / stale / unparseable.
+
+    Cache shape: `{"head_sha": "<short>", "ran_at": "<ISO>",
+    "proposals": [<list-of-proposal-dicts>]}`. The proposal dicts are
+    in the same shape the synthesis LLM emits (so the parser can
+    round-trip them through `_parse_synthesis_output`).
+    """
+    run_dir = _current_run_dir(root)
+    if run_dir is None:
+        return None
+    cache_path = run_dir / SYNTHESIS_CACHE_FILENAME
+    if not cache_path.is_file():
+        return None
+    try:
+        envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get("head_sha") != head_sha:
+        return None
+    proposals_raw = envelope.get("proposals")
+    if not isinstance(proposals_raw, list):
+        return None
+    return _parse_synthesis_output(json.dumps(proposals_raw), max_proposals=_DEFAULT_MAX_PROPOSALS)
+
+
+def _write_synthesis_cache(root: Path, *, head_sha: str, raw_output: str) -> None:
+    """RFC 009 §C1 — write the LLM's raw JSON output to the cache so
+    subsequent within-session ideate runs read the cache instead of
+    re-spawning the host CLI.
+
+    Best-effort: silently no-ops when no run is active (the cache only
+    makes sense within a run) or when the raw output isn't a valid
+    JSON array (don't pollute the cache with garbage).
+    """
+    run_dir = _current_run_dir(root)
+    if run_dir is None:
+        return
+    try:
+        parsed = json.loads(raw_output)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(parsed, list):
+        return
+    from datetime import UTC, datetime  # noqa: PLC0415 - lazy
+
+    envelope = {
+        "head_sha": head_sha,
+        "ran_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "proposals": parsed,
+    }
+    cache_path = run_dir / SYNTHESIS_CACHE_FILENAME
+    with contextlib.suppress(OSError):
+        cache_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+
+
+def _git_head_short_sha(root: Path) -> str:
+    """Best-effort: read the short HEAD SHA, or empty string on failure.
+
+    The cache invalidates when the SHA changes — a new commit on the
+    branch invalidates so a stale synthesis run doesn't carry past a
+    fresh code change. Empty string is fine too; the cache lookup
+    treats `""` as "no valid SHA, refresh."
+    """
+    if shutil.which("git") is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return ""
+    return result.stdout.strip()
+
+
 class SynthesisProposer(Proposer):
-    """LLM-driven strategic proposer (RFC 009 §A3)."""
+    """LLM-driven strategic proposer (RFC 009 §A3 + Phase C cache).
+
+    Two behavior knobs beyond the runner:
+
+    - `force`: bypass the cache lookup and always re-spawn the host.
+      Driven from `nightly propose --force` / `nightly ideate --force`.
+    - `max_proposals`: ceiling on parser output.
+    """
 
     id = "synthesis"
 
@@ -294,14 +414,36 @@ class SynthesisProposer(Proposer):
         *,
         runner: SynthesisRunner | None = None,
         max_proposals: int = _DEFAULT_MAX_PROPOSALS,
+        force: bool = False,
     ) -> None:
         self._runner = runner or _default_synthesis_runner
         self._max_proposals = max_proposals
+        self._force = force
 
     def propose(self, root: Path) -> Iterable[Proposal]:
+        # Config opt-out: `ideate.synthesis.enabled: false` disables the
+        # LLM spawn entirely. The three narrow Phase-5 proposers still
+        # run alongside via the registry; this short-circuit just keeps
+        # synthesis quiet for cost-sensitive operators.
+        from nightly_core.config import load_ideate_config  # noqa: PLC0415
+
+        config = load_ideate_config(root)
+        if not config.synthesis.enabled:
+            return ()
+
         prompt = self._build_prompt(root)
         if not prompt:
             return ()
+
+        # Cache lookup (RFC 009 §C1). Skipped on `--force`. Cache hits
+        # bypass the host spawn entirely — once-per-session throttle
+        # for the default config.
+        head_sha = _git_head_short_sha(root)
+        if not self._force:
+            cached = _read_synthesis_cache(root, head_sha=head_sha)
+            if cached is not None:
+                return tuple(self._with_content_fingerprint(p) for p in cached)
+
         with contextlib.suppress(Exception):
             # The runner contract says it returns "" on failure; this
             # `suppress` is a belt-and-braces guard for runners that
@@ -309,9 +451,12 @@ class SynthesisProposer(Proposer):
             # crash the broader proposer pass.
             raw = self._runner(prompt, root)
             parsed = _parse_synthesis_output(raw, max_proposals=self._max_proposals)
-            # Override the default fingerprint with the content-hashed
-            # variant (RFC 009 §5). Proposals from the parser are immutable
-            # `Proposal` dataclasses, so rebuild with the override.
+            if parsed:
+                # Only cache non-empty results — an empty parse means
+                # the spawn failed or the LLM produced unusable output;
+                # we'd rather re-spawn next time than burn the cache
+                # on noise.
+                _write_synthesis_cache(root, head_sha=head_sha, raw_output=raw)
             return tuple(self._with_content_fingerprint(p) for p in parsed)
         return ()
 
