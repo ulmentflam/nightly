@@ -46,7 +46,8 @@ def _make_result(
     )
 
 
-def test_is_outdated_when_versions_differ() -> None:
+def test_is_outdated_when_latest_is_strictly_newer() -> None:
+    """current=0.0.1, latest=0.0.2 → outdated (the canonical case)."""
     assert _make_result(current="0.0.1", latest="v0.0.2").is_outdated
 
 
@@ -58,6 +59,64 @@ def test_is_outdated_handles_v_prefix() -> None:
 def test_is_outdated_false_when_latest_unknown() -> None:
     """`latest=None` means network probe failed — silent, not outdated."""
     assert not _make_result(latest=None).is_outdated
+
+
+def test_is_outdated_false_when_current_is_ahead_of_latest() -> None:
+    """Issue #10 §bug-2 regression guard: in the field, `nightly check-update`
+    surfaced `Nightly upgrade available: 0.0.2 → 0.0.1` — i.e. a *downgrade*
+    nag — because the prior `current != latest` check treated any difference
+    as outdated. With proper version comparison, `current >= latest` is
+    never outdated, so the misleading downgrade nag is impossible.
+    """
+    assert not _make_result(current="0.0.2", latest="v0.0.1").is_outdated
+    assert not _make_result(current="0.1.0", latest="v0.0.9").is_outdated
+    assert not _make_result(current="1.0.0", latest="v0.99.99").is_outdated
+
+
+def test_is_outdated_handles_multi_digit_components() -> None:
+    """0.0.9 → 0.0.10 must be outdated (lexicographic order would say no)."""
+    assert _make_result(current="0.0.9", latest="v0.0.10").is_outdated
+    # Inverse: a multi-digit minor against a single-digit patch.
+    assert not _make_result(current="0.10.0", latest="v0.9.99").is_outdated
+
+
+def test_is_outdated_falls_back_to_inequality_for_unparseable_versions() -> None:
+    """Unrecognized tag shapes (`nightly-build-…`, hashes, etc.) still
+    trigger the nag via the prior string-inequality check — over-nag is
+    safer than silent-miss for unknown release-tag conventions."""
+    # Both unparseable but different → outdated (fallback fires).
+    assert _make_result(current="abc123", latest="def456").is_outdated
+    # Both unparseable and equal → not outdated.
+    assert not _make_result(current="weird-tag", latest="weird-tag").is_outdated
+
+
+# ── _version_tuple unit tests ────────────────────────────────────────────
+
+
+def test_version_tuple_parses_canonical_shapes() -> None:
+    assert cu._version_tuple("0.0.1") == (0, 0, 1)
+    assert cu._version_tuple("v0.0.1") == (0, 0, 1)
+    assert cu._version_tuple("  v1.2.3  ") == (1, 2, 3)
+
+
+def test_version_tuple_defaults_missing_components_to_zero() -> None:
+    """Two-component versions (`0.1`) parse as `(0, 1, 0)` so they
+    compare cleanly against three-component tags (`0.1.0`)."""
+    assert cu._version_tuple("0.1") == (0, 1, 0)
+    assert cu._version_tuple("v3") == (3, 0, 0)
+
+
+def test_version_tuple_ignores_prerelease_suffix() -> None:
+    """`0.0.2rc1` parses as `(0, 0, 2)` — conservative choice that
+    prevents a pre-release tag from advertising as newer than GA."""
+    assert cu._version_tuple("0.0.2rc1") == (0, 0, 2)
+    assert cu._version_tuple("v1.0.0-beta") == (1, 0, 0)
+
+
+def test_version_tuple_returns_none_for_unparseable() -> None:
+    assert cu._version_tuple("nightly-build-2026-06-05") is None
+    assert cu._version_tuple("abc") is None
+    assert cu._version_tuple("") is None
 
 
 def test_recommendation_silent_when_up_to_date() -> None:
