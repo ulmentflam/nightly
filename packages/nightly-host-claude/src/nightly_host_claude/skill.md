@@ -159,24 +159,29 @@ first hit:
    what's started outranks picking new work.
 2. **unblocked_approval** — a previously parked plan whose approval has
    been granted. The human already started it; honour that.
-3. **accepted_rfc** — an accepted RFC in `.planning/rfcs/` with an
+3. **pr_rescue (blocking)** — a Nightly-authored open PR has *blocking*
+   feedback: a failed CI check or a `CHANGES_REQUESTED` review. v0.0.5+
+   preempts `accepted_rfc` for this case because getting open PRs to
+   green is the priority; draft and ready PRs alike must stay green.
+   The driver appends a `## Feedback round N` section to the plan body,
+   refreshes the reconcile stamp, and dispatches the existing plan
+   again — so you read the latest feedback as part of the plan body
+   and iterate on the same branch + PR until CI is green. Repeat
+   until clean.
+4. **accepted_rfc** — an accepted RFC in `.planning/rfcs/` with an
    unchecked task-list item. Human-blessed scope.
-4. **github_issue** — highest-ranked open issue. The ranking is simple
+5. **github_issue** — highest-ranked open issue. The ranking is simple
    (`label × age`) with hard gates for `do-not-automate`, `needs-secrets`,
    and empty bodies.
-5. **pr_rescue** — a Nightly-authored open PR has feedback newer than
-   the plan's `pr_last_reconciled_at` stamp (human reviews, CodeRabbit /
-   Cursor / Copilot bot comments, or failed CI checks). The driver
-   appends a `## Feedback round N` section to the plan body, refreshes
-   the reconcile stamp, and dispatches the existing plan again — so the
-   agent reads the latest feedback as part of its plan body and acts on
-   it. Blocking feedback (CHANGES_REQUESTED reviews, failed checks)
-   outranks non-blocking. Finishing what's started beats starting fresh.
-6. **ideate** — when no human-sourced work exists, the proposer suite
+6. **pr_rescue (non-blocking)** — a Nightly-authored open PR has
+   advisory feedback (informational bot comments, non-changes-requested
+   reviewer notes). Lower priority than fresh RFC / issue work because
+   the PR isn't actively broken; the operator can still merge it as-is.
+7. **ideate** — when no human-sourced work exists, the proposer suite
    runs and the cascade returns the top proposal that clears the
    conservative autonomy bar (single-file, < 80 LOC, lint_debt or
    dep_upgrade category). If no proposal clears the bar, fall through.
-7. **nothing** — empty backlog. Run `nightly ideate` to write drafts
+8. **nothing** — empty backlog. Run `nightly ideate` to write drafts
    for human review, then write narrative + brief + exit.
 
 Always run `nightly next` at the top of every iteration. Don't second-
@@ -353,7 +358,11 @@ through another implementer dispatch; move Disclose items into
 
 - If `git remote` includes a GitHub URL: `gh pr create --draft` with the
   proposal body in the PR description. Flip to ready only after CI is
-  green.
+  green. **Draft PRs are not a CI-free zone** — v0.0.5+ Rule 8 treats
+  red CI on a draft the same as red CI on a ready PR; the cascade will
+  preempt fresh work to fix it. Run `nightly verify` before every push
+  (draft or not); never push a commit you wouldn't push to a ready PR.
+  If CI is going to come back red, fix it locally before pushing.
 - Otherwise: write `tasks/<n>-<slug>/proposal.md` and save the diff to
   `tasks/<n>-<slug>/diff.patch`.
 

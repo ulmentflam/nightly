@@ -197,3 +197,27 @@ def test_rules_body_documents_pr_consolidation_directive() -> None:
     # current behavior. Check that the v0.0.3 removal note is present.
     assert "v0.0.3" in body
     assert "MAX_OPEN_PRS" in body  # mentioned as the removed constant
+
+
+# ── v0.0.5: Rule 8 — getting CI green is the priority ────────────────────
+
+
+def test_rules_body_documents_blocking_pr_rescue_preempts_accepted_rfc() -> None:
+    """Rule 8 (v0.0.5+): blocking pr_rescue outranks accepted_rfc.
+
+    The operator's "make sure nightly prioritizes getting CI into a
+    green state with a pull request" directive shows up in the
+    contract as the new cascade order. Rule 8 also reinforces that
+    draft PRs aren't exempt from the rule.
+    """
+    body = NIGHTLY_RULES_BODY
+    # Positive: rule 8 names the new ordering directive.
+    assert "preempt" in body.lower()
+    assert "blocking" in body.lower()
+    # Positive: names the cascade ordering by reference so an operator
+    # reading the contract can trace the priority chain.
+    assert "pr_rescue (blocking only) → accepted_rfc" in body
+    # Positive: draft PRs are explicitly named.
+    assert "Draft PRs count too" in body or "draft" in body.lower()
+    # Positive: `nightly verify` reminder before push.
+    assert "nightly verify" in body

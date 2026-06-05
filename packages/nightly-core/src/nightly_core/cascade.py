@@ -757,13 +757,27 @@ def pick_ideated_fallback(root: Path | None = None) -> Proposal | None:
 def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0912 - one return per cascade step is the whole point
     """Walk the cascade and return the first hit.
 
-    The order is fixed:
+    The order is fixed (v0.0.5+):
     0. CONCLUDE marker present → return `concluded` (drain, no new work)
-    1. resume an `in_progress` plan
-    2. resume a `blocked: approval` plan whose approval has been granted
-    3. start the next unchecked item from an accepted RFC
-    4. pick the highest-ranked open GitHub issue
-    5. nothing — caller decides whether to ideate (Phase 5) or stop
+    1. worktree_blocked (RFC 002) → ungate before any other work
+    2. resume an `in_progress` plan (resume_in_flight)
+    3. resume a `blocked: approval` plan whose approval has been granted
+    4. **blocking pr_rescue** — open Nightly PR has failed CI or a
+       CHANGES_REQUESTED review. Getting open PRs to green outranks
+       fresh-work picks; draft and ready PRs alike must stay green.
+    5. start the next unchecked item from an accepted RFC
+    6. pick the highest-ranked open GitHub issue
+    7. **non-blocking pr_rescue** — open Nightly PR has advisory feedback
+       (informational bot comments, non-changes-requested reviewer notes).
+    8. ideate / ideate_fallback (proposer suite)
+    9. nothing — caller decides whether to keep alive or render briefing
+
+    The pr_rescue split landed in v0.0.5 per the operator directive:
+    "make sure nightly prioritizes getting CI into a green state with
+    a pull request." Blocking feedback (failed CI checks,
+    CHANGES_REQUESTED reviews) preempts accepted_rfc; non-blocking
+    feedback (advisory comments) keeps its prior slot below
+    github_issue. Pre-v0.0.5 unified the two at slot 5.
     """
     root = (root or repo_root()).resolve()
 
@@ -817,6 +831,31 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0
             ),
         )
 
+    # Compute pr_rescue once and split by blocking severity.
+    # Blocking rescue (failed CI, CHANGES_REQUESTED reviews) outranks
+    # accepted_rfc — getting an open PR back to green is the priority.
+    # Non-blocking rescue (advisory bot comments, non-changes-requested
+    # reviewer notes) sits below github_issue, where it shipped originally
+    # before v0.0.5. Issue #10 §3's open-PR skip on `accepted_rfc` keeps
+    # the cascade from queueing duplicate work while a PR is in flight;
+    # this new ordering closes the parallel concern for *failing* PRs.
+    rescue = pick_pr_rescue(root)
+    if rescue is not None and rescue.has_blocking:
+        return CascadeChoice(
+            source="pr_rescue",
+            summary=rescue.summary,
+            target_path=rescue.plan_path,
+            rationale=(
+                f"Nightly-authored PR {rescue.pr_url} has blocking feedback "
+                "since the last reconcile (failed CI check or "
+                "CHANGES_REQUESTED review). v0.0.5+ contract: red CI on a "
+                "Nightly PR preempts every fresh-work cascade step — "
+                "draft and ready PRs alike must be kept green. "
+                "Driver will append the feedback to the plan body before dispatch."
+            ),
+            pr_feedback=rescue.feedback,
+        )
+
     rfc = pick_accepted_rfc(root)
     if rfc is not None:
         rationale = (
@@ -849,16 +888,17 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0
             score=issue.score,
         )
 
-    rescue = pick_pr_rescue(root)
+    # Non-blocking rescue lands here (the blocking branch above
+    # short-circuited if has_blocking was True).
     if rescue is not None:
         return CascadeChoice(
             source="pr_rescue",
             summary=rescue.summary,
             target_path=rescue.plan_path,
             rationale=(
-                f"Nightly-authored PR {rescue.pr_url} has new feedback since "
-                "the last reconcile — finishing beats starting. "
-                f"{'Blocking' if rescue.has_blocking else 'Non-blocking'}: "
+                f"Nightly-authored PR {rescue.pr_url} has non-blocking "
+                "feedback since the last reconcile (advisory bot comment, "
+                "informational reviewer note). Finishing beats starting; "
                 f"{len(rescue.feedback)} item(s). "
                 "Driver will append the feedback to the plan body before dispatch."
             ),
