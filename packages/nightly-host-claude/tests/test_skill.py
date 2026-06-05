@@ -143,10 +143,18 @@ def test_skill_md_off_ramp_list_is_marked_human_only() -> None:
     assert "operator controls" in text.lower() or "never invoke them yourself" in text.lower()
 
 
-def test_skill_md_documents_pr_backlog_cap() -> None:
-    """Skill must mirror rules.py rule 11: PR-backlog cap is an
-    automatic host-level off-ramp the agent doesn't operate."""
+def test_skill_md_documents_pr_consolidation_not_a_cap() -> None:
+    """Skill mirrors rules.py rule 11 (v0.0.3+): consolidate, don't cap.
+
+    The cap-based off-ramp was removed in v0.0.3 — the skill must now
+    describe the consolidation policy (pr_rescue / extend recent PR /
+    bundle adjacent phases) and note that the cap is gone, so the agent
+    doesn't reach for a behavior that no longer exists.
+    """
     text = SKILL_MD
-    assert "PR-backlog cap" in text or "backlog cap" in text.lower()
-    # The skill must clarify this is automatic, not an agent command.
-    assert "automatic" in text.lower() or "not a command" in text.lower()
+    # The new directive surfaces in the skill body.
+    assert "PR-count gating was removed in v0.0.3" in text
+    assert "consolidation" in text.lower()
+    # The preference-order language matches Rule 11.
+    assert "pr-rescue feedback" in text.lower() or "pr_rescue" in text.lower()
+    assert "extend" in text.lower()

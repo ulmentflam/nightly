@@ -54,12 +54,14 @@ this repo are unaffected). With it, the hook re-injects a "continue on
 X" prompt whenever you'd otherwise end your turn. Idempotent: re-running
 just refreshes the 4-hour TTL.
 
-The keep-alive has three operator-driven off-ramps so the human can
-always shut you down, plus one host-level off-ramp the hook fires on
-its own (PR-backlog cap). **The operator-driven off-ramps are
-operator controls — never invoke them yourself.** The agent's normal
-wrap-up is `nightly ideate` → `nightly brief` → end turn (and let
-the Stop hook decide whether to release or force-continue):
+The keep-alive has only **human-triggered** off-ramps in v0.0.3+ —
+every automatic release (`MAX_TURNS` runaway cap, 4h `SESSION_ACTIVE`
+staleness, `cascade_loop` repeated-pick guard, `MAX_OPEN_PRS` cap)
+has been removed. **The operator-driven off-ramps are operator
+controls — never invoke them yourself.** The agent's normal wrap-up
+is `nightly ideate` → `nightly brief` → end turn (and let the Stop
+hook force-continue unless the operator has placed a CONCLUDE /
+STOP marker):
 
 - **`nightly conclude`** — graceful drain: the *human* runs this when
   they're back in the morning and want to inspect the work. The
@@ -74,12 +76,20 @@ the Stop hook decide whether to release or force-continue):
   hook entirely; the session ends immediately. Always available.
 - **`nightly bug`** — file an issue against Nightly itself when the
   agent's behavior looks broken. Human-only by the same rule.
-- **PR-backlog cap** (automatic, not a command) — when 5+ open
-  Nightly PRs are awaiting review, the Stop hook allows the session
-  to end at the next turn boundary unless the cascade has resume-
-  priority work (in-flight task, unblocked approval, PR rescue with
-  blocking feedback). You don't read or react to this — keep
-  running the cascade normally. The hook handles it.
+
+**PR-count gating was removed in v0.0.3.** Previous versions ended
+the session when 5+ open Nightly PRs were awaiting review; that
+produced mid-session stops with unblocked RFC work on disk. The
+replacement is *consolidation* — before opening a new PR, prefer to
+(1) finish PR-rescue feedback on an existing open PR, (2) extend
+the most recently-opened in-flight PR when the cascade pick is
+closely related (same RFC, same module, same feature), or (3)
+bundle naturally adjacent phases of the same RFC into one PR.
+Only when the cascade pick is genuinely orthogonal to every open
+PR should you open a new branch. The goal is review-ergonomic, not
+PR-count-minimal-at-all-costs — bundling unrelated work into one
+PR is worse than two focused PRs. See Rule 11 in
+`AGENTS.md` / `CLAUDE.md` for the canonical wording.
 
 ## Check for updates
 

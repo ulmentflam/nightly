@@ -273,7 +273,7 @@ wheels = [
 
 [[package]]
 name = "nightly"
-version = "0.0.2"
+version = "0.0.3"
 source = { virtual = "." }
 dependencies = [
     { name = "nightly-core" },
@@ -316,7 +316,7 @@ dev = [
 
 [[package]]
 name = "nightly-core"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-core" }
 dependencies = [
     { name = "jinja2" },
@@ -337,7 +337,7 @@ requires-dist = [
 
 [[package]]
 name = "nightly-host-antigravity"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-host-antigravity" }
 dependencies = [
     { name = "httpx" },
@@ -352,7 +352,7 @@ requires-dist = [
 
 [[package]]
 name = "nightly-host-claude"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-host-claude" }
 dependencies = [
     { name = "nightly-core" },
@@ -363,7 +363,7 @@ requires-dist = [{ name = "nightly-core", editable = "packages/nightly-core" }]
 
 [[package]]
 name = "nightly-host-codex"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-host-codex" }
 dependencies = [
     { name = "nightly-core" },
@@ -374,7 +374,7 @@ requires-dist = [{ name = "nightly-core", editable = "packages/nightly-core" }]
 
 [[package]]
 name = "nightly-host-cursor"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-host-cursor" }
 dependencies = [
     { name = "httpx" },
@@ -389,7 +389,7 @@ requires-dist = [
 
 [[package]]
 name = "nightly-host-gemini"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-host-gemini" }
 dependencies = [
     { name = "nightly-core" },
@@ -400,7 +400,7 @@ requires-dist = [{ name = "nightly-core", editable = "packages/nightly-core" }]
 
 [[package]]
 name = "nightly-host-opencode"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "packages/nightly-host-opencode" }
 dependencies = [
     { name = "httpx" },

@@ -1,6 +1,6 @@
 [project]
 name = "nightly-host-gemini"
-version = "0.0.2"
+version = "0.0.3"
 description = "Nightly host integration for vanilla Gemini CLI (.gemini/commands)."
 readme = "README.md"
 requires-python = ">=3.12"

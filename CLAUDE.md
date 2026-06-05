@@ -96,18 +96,38 @@ recommendation, execute it.** Everything below is consequences.
    `nightly brief` on their own to "tidy up" — which freezes the
    cascade short-circuit at `concluded` and ends the session with
    unblocked RFC items still on disk.
-11. **PR-backlog backpressure is a host-level concern, not yours.**
-   The Stop hook independently watches the count of open Nightly PRs
-   and allows the session to end when the operator already has a
-   queue waiting for review — unless the cascade has resume-priority
-   work (in-flight task, unblocked approval, PR rescue with blocking
-   feedback). You don't read this count, don't measure it, and don't
-   change behavior because of it. Keep running the cascade and ending
-   the turn after `nightly brief`; the hook decides whether to
-   release or force-continue. Past failure: agent shipped a 6th
-   stacked paperwork PR while PRs #54-#58 were still unreviewed
-   because the cascade kept finding RFC-checkbox / lint-fallback work
-   and the hook had no signal for operator saturation.
+11. **Minimize PR count by consolidating; never stop because of it.**
+   The orchestrator does **not** gate on a PR-backlog count — there
+   is no "too many PRs open" off-ramp. Monotonic forward progress
+   across the whole overnight session is the contract; reaching any
+   number of open PRs never ends a session on its own. The previous
+   `MAX_OPEN_PRS=5` cap was removed in v0.0.3 because it produced
+   mid-session stops with unblocked RFC work still on disk — the
+   wrong tradeoff. The replacement is *consolidation*, not gating.
+   Before opening a new PR, prefer in this order:
+   - **`pr_rescue`** — when an existing Nightly PR has new feedback
+     (CI failure, reviewer comments, bot suggestions), finishing it
+     beats starting fresh. This is already cascade slot 5; honor it.
+   - **Extend the most recently-opened in-flight PR** when the
+     current cascade pick is closely related to its scope — same
+     RFC, same module, same feature. Check out its branch in a
+     worktree, commit the additional change, push. The PR grows
+     into one reviewable unit instead of becoming PR N+1.
+   - **Bundle adjacent phases of the same RFC** into one PR when
+     the phases naturally compose. Phase A + B of a small RFC ships
+     as one PR; truly independent phases of a large RFC stay
+     separate.
+   Only when none of the above applies — the cascade pick is
+   genuinely orthogonal to every open PR — open a new branch. The
+   goal is review-ergonomic, not PR-count-minimal-at-all-costs:
+   bundling unrelated work into one PR is worse than two focused
+   PRs. Bias: when uncertain, extend the most recent related PR.
+   Past failure (now removed): agent shipped a 6th stacked paperwork
+   PR while #54-#58 were still unreviewed because the cascade kept
+   finding RFC-checkbox / lint-fallback work; the v0.0.2-and-earlier
+   solution was the cap, which then created the new failure of
+   ending sessions early. v0.0.3+ instead consolidates without
+   capping.
 
 ### Human shutdown intervention
 
@@ -125,15 +145,29 @@ are commands the agent runs** — they are human controls (see Rule 10):
 - **Ctrl-C / `/quit`** — interrupt. Bypasses the Stop hook entirely
   and kills the session immediately. Always available as the
   emergency stop.
-- **Open-PR backlog cap** — when the count of open Nightly-authored
-  PRs reaches the cap (default 5), the Stop hook treats human review
-  as the bottleneck and allows the next turn boundary to end the
-  session (`reason_code=pr_backlog` in `keepalive.log`). Resume-
-  priority cascade picks (in-flight task, unblocked approval, PR
-  rescue with blocking feedback) override the cap and keep the
-  session running, because that's *finishing* shipped work rather
-  than adding more to the queue. No operator action needed — this
-  fires automatically when the queue saturates.
+
+**As of v0.0.3, the only voluntary termination is human
+intervention.** All automatic off-ramps were removed:
+
+- `pr_backlog` — `MAX_OPEN_PRS=5` cap, replaced by skill-side
+  consolidation (Rule 11).
+- `max_turns` — 500-turn safety cap on force-continues, removed
+  outright. The turn counter is still incremented for telemetry.
+- `stale` — 4-hour `SESSION_ACTIVE` freshness check, removed. A
+  marker that survived from earlier today still force-continues.
+- `cascade_loop` — repeated-pick guard, removed. The history file
+  is still written for post-mortem diagnostics but doesn't release.
+
+Two structural preconditions remain (these are "nothing to keep
+alive" not "voluntarily released"): `no_run` (no active run) and
+`inactive` (`SESSION_ACTIVE` marker absent — non-Nightly sessions
+are untouched). One host-level override also remains and cannot be
+fought from Python: `host_cap`, where Claude Code's own
+9-consecutive-block safety overrides us regardless. RFC 009
+(planned) addresses `host_cap` with a respawn supervisor that
+starts a fresh host session on disk-state continuity, so the
+operator-visible session looks unbroken across the host's
+internal session boundaries.
 
 ### Filing a bug against Nightly itself
 

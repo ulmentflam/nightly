@@ -171,20 +171,29 @@ def test_rules_body_documents_nightly_bug_off_ramp() -> None:
     assert "Filing a bug" in body or "file a bug" in body.lower()
 
 
-# ── Phase 9p: PR-backlog backpressure rule ────────────────────────────────
+# ── v0.0.3: Rule 11 reframed from "host caps" to "consolidate, never stop" ──
 
 
-def test_rules_body_documents_pr_backlog_backpressure() -> None:
-    """Rule 11: PR-backlog backpressure is a host-level concern.
+def test_rules_body_documents_pr_consolidation_directive() -> None:
+    """Rule 11 (v0.0.3+): the orchestrator never stops because of PR count.
 
-    Regression guard for the 2026-05 stacked-paperwork-PR incident: 5
-    open Nightly PRs sat unreviewed while the agent shipped a 6th
-    paperwork PR because the cascade kept finding RFC-checkbox /
-    lint-fallback work and the hook had no signal for operator
-    saturation.
+    Regression guard for the 2026-06-05 directive that ripped out the
+    `MAX_OPEN_PRS=5` Stop-hook cap: the cap was producing mid-session
+    stops with unblocked RFC work still on disk. Rule 11 now mandates
+    consolidation (pr_rescue → extend existing PR → bundle adjacent
+    RFC phases) instead of gating on count. The cap reference should be
+    gone from the agent-facing contract.
     """
     body = NIGHTLY_RULES_BODY
-    assert "PR-backlog backpressure" in body or "backlog backpressure" in body
-    assert "host-level" in body.lower()
-    # The operator-facing off-ramp list must also mention the cap.
-    assert "Open-PR backlog cap" in body or "backlog cap" in body.lower()
+    # Positive: rule 11 names the new directive.
+    assert "Minimize PR count" in body or "consolidating" in body
+    assert "never stop because of it" in body or "monotonic forward progress" in body.lower()
+    # Positive: the rule names the preference order.
+    assert "pr_rescue" in body
+    assert "Extend the most recently-opened" in body
+    # Negative: the cap-based off-ramp must NOT appear as an active rule.
+    # The historical mention may still appear inside a "previous cap was
+    # removed in v0.0.3" sentence; we just want to be sure it's not the
+    # current behavior. Check that the v0.0.3 removal note is present.
+    assert "v0.0.3" in body
+    assert "MAX_OPEN_PRS" in body  # mentioned as the removed constant

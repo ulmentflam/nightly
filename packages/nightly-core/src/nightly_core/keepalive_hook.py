@@ -1,49 +1,49 @@
 """Claude Code `Stop` hook glue — keep the interactive session alive.
 
-Loop guard (cascade_loop):
-The keepalive log is an append-only audit trail, but the hook also writes
-a per-run `keepalive.history` file containing the last N cascade-pick
-fingerprints. When the same fingerprint shows up `LOOP_THRESHOLD` times
-consecutively, the hook treats the cascade as wedged (e.g. proposer
-re-detects the same source signal because nothing landed on `main`) and
-yields with `reason_code="cascade_loop"`. Without this guard, the
-operator's only signal that the cascade is looping is the host's own
-9-consecutive-block override — which silences the model mid-task and
-leaves no clean audit marker. See `.planning/issues/2` for the failure
-mode that motivated this.
-
-Claude Code stopped my Nightly session last night despite the AGENTS.md /
-CLAUDE.md "never stop" rule (see the screenshot in PR review). The rules
-text alone isn't sufficient because Claude Code emits a Stop event at the
-end of every turn — the model's "stay alive" intent is overridden by the
-turn boundary. The Stop hook is the host-level lever: when Claude tries
-to end a turn, the hook can return:
+Claude Code emits a Stop event at the end of every turn — the model's
+"stay alive" intent is overridden by the turn boundary. The Stop hook
+is the host-level lever: when Claude tries to end a turn, the hook can
+return:
 
     {"decision": "block", "reason": "<prompt>"}
 
 …which forces Claude to keep going with `reason` as the next user message.
 This module computes that decision based on disk state.
 
-Off-ramps (any one of these lets the session stop):
+Off-ramps (v0.0.3+): **only human intervention terminates a session.**
+
+- `.nightly/runs/<id>/CONCLUDE` exists — `nightly conclude` requested
+  graceful drain (the human ran the command).
+- `.nightly/runs/<id>/STOP` exists — `nightly stop` requested immediate
+  hard stop (the human ran the command).
+
+Plus three preconditions that aren't voluntary releases — they reflect
+"there is nothing to keep alive" or "the host is overriding us
+regardless":
 
 - The session was never `nightly session start`ed (`SESSION_ACTIVE`
   marker absent) — non-Nightly sessions are untouched.
-- The `SESSION_ACTIVE` marker is older than `SESSION_TTL_SECONDS`
-  (default 4h) — handles stale markers from yesterday.
-- `.nightly/runs/<id>/CONCLUDE` exists — `nightly conclude` requested
-  graceful drain.
-- `.nightly/runs/<id>/STOP` exists — `nightly stop` requested immediate
-  hard stop.
-- The repo has `MAX_OPEN_PRS` or more open `nightly/*` PRs and the next
-  cascade pick isn't resume-priority — operator review throughput is
-  the bottleneck, so producing PR N+1 is anti-helpful. Resume-priority
-  picks (in-flight task, unblocked approval, PR rescue with blocking
-  feedback) override the backpressure so already-shipped work still
-  gets finished.
-- Turn count has exceeded `MAX_TURNS` (default 500) — safety cap so a
-  runaway loop can't burn through the credentialed account forever.
+- No active run (`.nightly/runs/CURRENT` missing) — `no_run`.
+- Claude Code's own 9-consecutive-block safety: the host calls our
+  hook with `stop_hook_active=True` to signal "I'm about to override
+  you regardless." We bow out cleanly per the docs. The clever bypass
+  for this is a respawn supervisor that watches for the cap and starts
+  a fresh host session — see RFC 009 (planned).
 
-The hook also unconditionally appends a one-line heartbeat to
+Removed in v0.0.3 (per the operator's "the only termination should be
+human intervention" directive):
+
+- `stale` — the 4-hour SESSION_ACTIVE freshness check is gone. A
+  marker that survived from earlier today can still force-continue.
+- `max_turns` — the 500-turn safety cap on force-continues is gone.
+  The turn counter is still incremented for telemetry but no longer
+  gates termination.
+- `cascade_loop` — repeated cascade picks no longer release. The
+  history file is still written for post-mortem diagnostics.
+- `pr_backlog` — the `MAX_OPEN_PRS=5` cap was removed in the same
+  v0.0.3 cut; the replacement is skill-side consolidation (Rule 11).
+
+The hook still unconditionally appends a one-line heartbeat to
 `.nightly/runs/<id>/keepalive.log` so post-mortems can see exactly
 when each turn boundary fired and why the hook allowed (or blocked)
 stop. Audit trail is non-negotiable when a hook is overriding the
@@ -55,21 +55,17 @@ from __future__ import annotations
 import contextlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nightly_core.cascade import CascadeChoice, count_open_nightly_prs, next_task
+from nightly_core.cascade import CascadeChoice, next_task
 from nightly_core.runs import current_run
 
 __all__ = [
     "HOOK_FORMATS",
     "LOOP_HISTORY_FILENAME",
-    "LOOP_THRESHOLD",
-    "MAX_OPEN_PRS",
-    "MAX_TURNS",
     "SESSION_ACTIVE_FILENAME",
-    "SESSION_TTL_SECONDS",
     "STOP_FILENAME",
     "HookFormat",
     "StopHookDecision",
@@ -108,60 +104,22 @@ SESSION_ACTIVE_FILENAME = "SESSION_ACTIVE"
 STOP_FILENAME = "STOP"
 """Marker file under the run dir. Presence = immediate hard stop requested."""
 
-SESSION_TTL_SECONDS = 4 * 60 * 60
-"""SESSION_ACTIVE markers older than this are treated as stale (4h)."""
-
-MAX_TURNS = 500
-"""Safety cap on how many times the Stop hook will force-continue per run."""
-
-LOOP_THRESHOLD = 3
-"""Yield with `cascade_loop` when the cascade has returned the same pick
-this many times in a row. 3 = "twice was a coincidence, three times is a
-loop." Configurable enough to raise if a real workflow legitimately
-re-dispatches the same plan three turns in a row (rare — most rescues
-mutate the plan body, which changes the summary)."""
-
 LOOP_HISTORY_FILENAME = "keepalive.history"
 """Per-run file of cascade-pick fingerprints, newline-delimited. Trimmed
-to the last LOOP_THRESHOLD + 4 lines so the file never grows unbounded.
+to the last `_LOOP_HISTORY_KEEP` lines so the file never grows unbounded.
 Lives next to keepalive.log; both are audit artifacts, neither is on the
-hot path."""
+hot path.
 
-_LOOP_HISTORY_KEEP = LOOP_THRESHOLD + 4
-"""How many lines of history to retain on disk. Keep a few extra over
-the threshold so a post-mortem can see the prior context."""
+The history file is still written in v0.0.3+ for post-mortem diagnostics
+(operator looking at why a cascade kept returning the same pick), but
+no longer triggers a `cascade_loop` release — the contract is "always
+advance," so a stuck cascade is the operator's signal to investigate,
+not the hook's signal to yield."""
 
-
-MAX_OPEN_PRS = 5
-"""Operator-review-throughput cap: when the repo has this many open `nightly/*`
-PRs, the Stop hook treats human review as the bottleneck and allows the
-session to end at the next turn boundary — unless the cascade still has
-resume-priority work (see ``_BACKLOG_OVERRIDE_SOURCES``).
-
-The agent never reads this constant; it's a host-level backpressure signal
-the hook exercises on its own, so the no-self-conclude rule stays intact.
-"""
-
-_BACKLOG_OVERRIDE_SOURCES: frozenset[str] = frozenset(
-    {
-        "resume_in_flight",
-        "unblocked_approval",
-    }
-)
-"""Cascade sources that keep force-continuing even when PR backlog is at cap.
-
-`pr_rescue` is *conditionally* an override — only when the rescue feedback is
-blocking (failed CI, CHANGES_REQUESTED review). That decision is made in
-``_pr_rescue_is_blocking`` rather than the static set, because the cascade
-choice carries the feedback details we need to consult.
-"""
-
-
-def _pr_rescue_is_blocking(choice: CascadeChoice) -> bool:
-    """True iff this is a `pr_rescue` pick with at least one blocking item."""
-    if choice.source != "pr_rescue" or not choice.pr_feedback:
-        return False
-    return any(f.is_blocking for f in choice.pr_feedback)
+_LOOP_HISTORY_KEEP = 7
+"""How many lines of history to retain on disk. 7 ≈ "enough context for
+a post-mortem without unbounded growth"; the constant used to derive
+from the now-retired LOOP_THRESHOLD so we hard-code a similar value."""
 
 
 @dataclass(frozen=True)
@@ -172,7 +130,9 @@ class StopHookDecision:
     (`{"decision": "block", "reason": ...}` to force continue, or `{}`
     to allow the stop). `reason_code` is a stable short slug for logs:
     `host_cap`, `no_run`, `inactive`, `stale`, `conclude`, `stop`,
-    `pr_backlog`, `max_turns`, `force_continue`.
+    `max_turns`, `force_continue`. (`pr_backlog` is retired as of
+    v0.0.3 — the PR-count cap was removed in favor of skill-side
+    consolidation guidance per Rule 11.)
     `message` is a one-line human-readable explanation suitable for
     `keepalive.log`.
     """
@@ -186,7 +146,7 @@ class StopHookDecision:
         return self.payload.get("decision") == "block"
 
 
-def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off-ramp is the whole point
+def compute_stop_hook_decision(
     root: Path | None = None,
     *,
     now: datetime | None = None,
@@ -204,6 +164,7 @@ def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off
     in a real session. We still record a heartbeat so operators can see
     *why* we yielded.
     """
+    del now  # no longer used — the staleness check that consumed `now` was retired in v0.0.3
     if stop_hook_active:
         return StopHookDecision(
             payload={},
@@ -213,7 +174,6 @@ def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off
                 "consecutive-block cap; will not force-continue this turn."
             ),
         )
-    moment = now or datetime.now(UTC)
     run = current_run(root)
     if run is None:
         return StopHookDecision(
@@ -227,16 +187,6 @@ def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off
             payload={},
             reason_code="inactive",
             message=f"run {run.id} has no SESSION_ACTIVE marker; allowing stop.",
-        )
-
-    if _marker_is_stale(run.path / SESSION_ACTIVE_FILENAME, moment):
-        return StopHookDecision(
-            payload={},
-            reason_code="stale",
-            message=(
-                f"run {run.id} SESSION_ACTIVE marker is older than "
-                f"{SESSION_TTL_SECONDS // 3600}h; allowing stop."
-            ),
         )
 
     if (run.path / "CONCLUDE").is_file():
@@ -253,51 +203,23 @@ def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off
             message=f"run {run.id} has STOP sentinel; allowing stop (hard).",
         )
 
-    # PR-backlog backpressure. When the operator already has MAX_OPEN_PRS
-    # or more Nightly-authored PRs awaiting review, human review throughput
-    # is the bottleneck — producing another paperwork PR makes the queue
-    # worse, not better. We compute the cascade choice once and check it
-    # against the override set so resume-priority work (in-flight task,
-    # unblocked approval, blocking PR rescue) still keeps the session
-    # moving. Anything else (accepted_rfc, github_issue, ideate,
-    # ideate_fallback, nothing) lets us release. Past failure: 5 stacked
-    # paperwork PRs on top of an unblock PR while the operator slept.
-    open_prs = count_open_nightly_prs(root)
-    if open_prs >= MAX_OPEN_PRS:
-        try:
-            choice = next_task(root)
-        except Exception:  # cascade must never crash the hook
-            choice = None
-        is_override = choice is not None and (
-            choice.source in _BACKLOG_OVERRIDE_SOURCES or _pr_rescue_is_blocking(choice)
-        )
-        if not is_override:
-            source = choice.source if choice is not None else "unknown"
-            return StopHookDecision(
-                payload={},
-                reason_code="pr_backlog",
-                message=(
-                    f"run {run.id}: {open_prs} open Nightly PR(s) awaiting "
-                    f"review (cap {MAX_OPEN_PRS}); next cascade pick "
-                    f"`{source}` is not resume-priority — allowing stop "
-                    "(operator review is the bottleneck)."
-                ),
-            )
-
+    # v0.0.3: every automatic off-ramp other than host-level overrides
+    # has been removed per the operator's "the only termination should
+    # be human intervention" directive. The 4h SESSION_ACTIVE staleness
+    # check, the 500-turn MAX_TURNS safety cap, the LOOP_THRESHOLD
+    # cascade-loop guard, and the MAX_OPEN_PRS PR-backlog cap are all
+    # gone. Only `conclude` / `stop` markers (human-placed) and
+    # `host_cap` / `no_run` / `inactive` (host- or precondition-level,
+    # not voluntary releases) can end the session now. The turn counter
+    # is still incremented for telemetry but no longer gates termination.
     turn_count = _bump_and_read_turn_count(run.path)
-    if turn_count >= MAX_TURNS:
-        return StopHookDecision(
-            payload={},
-            reason_code="max_turns",
-            message=(
-                f"run {run.id} hit MAX_TURNS={MAX_TURNS}; allowing stop "
-                "(safety cap — investigate runaway loop)."
-            ),
-        )
 
-    # Compute the cascade pick once and reuse it for both the loop guard
-    # and the continuation prompt — `next_task` walks plans + proposers,
-    # not a cost we want to pay twice per hook firing.
+    # The cascade pick is still computed and recorded in the loop
+    # history file (`keepalive.history`) for post-mortem diagnostics,
+    # but a repeated fingerprint no longer releases the session — the
+    # contract is "always advance," so a stuck cascade is the
+    # operator's signal to investigate, not the hook's signal to
+    # yield.
     try:
         choice = next_task(root)
     except Exception as exc:  # cascade must never crash the hook
@@ -306,26 +228,9 @@ def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off
     else:
         cascade_error = None
 
-    # Loop guard: if the cascade has surfaced the same pick LOOP_THRESHOLD
-    # times in a row, the proposer suite has fallen into a re-detect /
-    # re-dispatch cycle the model can't break by force-continuing. Yield
-    # so the operator sees `decision=cascade_loop` instead of hitting the
-    # host's 9-consecutive-block override mid-task.
     if choice is not None:
-        fingerprint = _cascade_fingerprint(choice)
-        repeats = _record_and_count_repeats(run.path, fingerprint)
-        if repeats >= LOOP_THRESHOLD:
-            return StopHookDecision(
-                payload={},
-                reason_code="cascade_loop",
-                message=(
-                    f"run {run.id}: cascade pick "
-                    f"`{choice.source}/{choice.summary[:60]}` has repeated "
-                    f"{repeats} turns running — yielding to break the loop "
-                    "(landed local proposals are re-detected by the "
-                    "proposer suite; see issue #2)."
-                ),
-            )
+        # Record for diagnostics; result is intentionally unused.
+        _record_and_count_repeats(run.path, _cascade_fingerprint(choice))
 
     reason = _build_continue_reason_from(
         choice=choice,
@@ -337,8 +242,7 @@ def compute_stop_hook_decision(  # noqa: PLR0911, PLR0912 — one return per off
         payload={"decision": "block", "reason": reason},
         reason_code="force_continue",
         message=(
-            f"run {run.id} turn {turn_count}/{MAX_TURNS}: blocking stop and "
-            "injecting continuation prompt."
+            f"run {run.id} turn {turn_count}: blocking stop and injecting continuation prompt."
         ),
     )
 
@@ -387,14 +291,6 @@ def _record_and_count_repeats(run_path: Path, fingerprint: str) -> int:
         else:
             break
     return repeats
-
-
-def _marker_is_stale(marker: Path, now: datetime) -> bool:
-    try:
-        age = now - datetime.fromtimestamp(marker.stat().st_mtime, tz=UTC)
-    except OSError:
-        return True
-    return age > timedelta(seconds=SESSION_TTL_SECONDS)
 
 
 _TURN_FILENAME = "keepalive.turns"
@@ -518,9 +414,9 @@ def format_decision(
 def arm_session(root: Path | None = None, *, now: datetime | None = None) -> Path | None:
     """Touch SESSION_ACTIVE under the current run. Returns the marker path.
 
-    Idempotent — re-touching just refreshes the mtime, extending the TTL
-    by another `SESSION_TTL_SECONDS`. Returns None if no run is active
-    (the caller should `nightly start` first).
+    Idempotent — re-touching just refreshes the mtime. The marker has
+    no TTL in v0.0.3+ (the 4h staleness check was removed); the mtime
+    is preserved only for post-mortem audits.
     """
     run = current_run(root)
     if run is None:

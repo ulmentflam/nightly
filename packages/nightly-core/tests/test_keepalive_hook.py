@@ -11,11 +11,7 @@ import pytest
 from nightly_core.cascade import CascadeChoice
 from nightly_core.keepalive_hook import (
     LOOP_HISTORY_FILENAME,
-    LOOP_THRESHOLD,
-    MAX_OPEN_PRS,
-    MAX_TURNS,
     SESSION_ACTIVE_FILENAME,
-    SESSION_TTL_SECONDS,
     STOP_FILENAME,
     arm_session,
     compute_stop_hook_decision,
@@ -24,7 +20,6 @@ from nightly_core.keepalive_hook import (
     parse_hook_input,
     request_stop,
 )
-from nightly_core.pr_feedback import PRFeedback, PRReference
 from nightly_core.runs import start_run
 
 
@@ -78,29 +73,39 @@ def test_stop_sentinel_overrides_active_session(initialized_repo: Path) -> None:
     assert decision.reason_code == "stop"
 
 
-def test_stale_marker_allows_stop(initialized_repo: Path) -> None:
-    """If SESSION_ACTIVE is older than the TTL, the hook lets the session die."""
+def test_stale_marker_no_longer_releases(initialized_repo: Path) -> None:
+    """v0.0.3: the SESSION_TTL_SECONDS staleness check was removed.
+
+    A SESSION_ACTIVE marker backdated by days still force-continues —
+    the only voluntary terminations are human-placed CONCLUDE / STOP.
+    """
     arm_session(initialized_repo)
     run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
     marker = run_dir / SESSION_ACTIVE_FILENAME
-    # Backdate the marker by 5h (TTL is 4h)
+    # Backdate the marker by 5h — would have been stale under v0.0.2's 4h TTL.
     stale_time = (datetime.now(UTC) - timedelta(hours=5)).timestamp()
     import os
 
     os.utime(marker, (stale_time, stale_time))
     decision = compute_stop_hook_decision(initialized_repo)
-    assert not decision.should_block
-    assert decision.reason_code == "stale"
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
 
 
-def test_max_turns_caps_force_continue(initialized_repo: Path) -> None:
+def test_max_turns_no_longer_caps_force_continue(initialized_repo: Path) -> None:
+    """v0.0.3: the MAX_TURNS=500 safety cap was removed.
+
+    Even when the turn counter has run high, the hook keeps force-
+    continuing. The turn counter is still bumped for telemetry, but
+    no longer gates termination.
+    """
     arm_session(initialized_repo)
     run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
-    # Pre-seed the turn counter at the cap.
-    (run_dir / "keepalive.turns").write_text(f"{MAX_TURNS}\n", encoding="utf-8")
+    # Pre-seed the counter at what used to be the cap.
+    (run_dir / "keepalive.turns").write_text("500\n", encoding="utf-8")
     decision = compute_stop_hook_decision(initialized_repo)
-    assert not decision.should_block
-    assert decision.reason_code == "max_turns"
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
 
 
 def test_force_continue_increments_turn_counter(initialized_repo: Path) -> None:
@@ -166,211 +171,95 @@ def test_parse_hook_input_handles_empty_and_garbage() -> None:
     assert parse_hook_input('{"session_id": "x"}') == {"session_id": "x"}
 
 
-def test_session_ttl_constant_is_4_hours() -> None:
-    """Lock in the TTL — changing this is a behavior change worth a code review."""
-    assert SESSION_TTL_SECONDS == 4 * 60 * 60
+def test_session_ttl_constant_removed_from_public_api() -> None:
+    """v0.0.3: `SESSION_TTL_SECONDS` is no longer exported. The 4-hour
+    staleness check it gated is gone — only human-placed markers
+    terminate a session now."""
+    import nightly_core.keepalive_hook as kh
+
+    assert not hasattr(kh, "SESSION_TTL_SECONDS")
 
 
-def test_max_turns_constant_is_500() -> None:
-    """Lock in the safety cap — changing this changes the runaway-loop behavior."""
-    assert MAX_TURNS == 500
+def test_max_turns_constant_removed_from_public_api() -> None:
+    """v0.0.3: `MAX_TURNS` is no longer exported. The 500-turn cap was
+    removed; the counter is still incremented for telemetry but no
+    longer gates termination."""
+    import nightly_core.keepalive_hook as kh
+
+    assert not hasattr(kh, "MAX_TURNS")
 
 
-def test_max_open_prs_constant_is_5() -> None:
-    """Lock in the PR-backlog cap — changing this changes when the hook releases."""
-    assert MAX_OPEN_PRS == 5
+def test_loop_threshold_constant_removed_from_public_api() -> None:
+    """v0.0.3: `LOOP_THRESHOLD` is no longer exported. The
+    cascade-loop guard was removed; the history file still gets
+    written for diagnostics but no longer triggers a release."""
+    import nightly_core.keepalive_hook as kh
+
+    assert not hasattr(kh, "LOOP_THRESHOLD")
 
 
-# ── Phase 9p: PR-backlog backpressure off-ramp ───────────────────────────
+# ── v0.0.3: PR-backlog cap removed (was Phase 9p) ────────────────────────
+# The previous MAX_OPEN_PRS=5 cap and its `pr_backlog` reason_code were
+# removed per the operator's "always advance, always" directive. These
+# regression tests confirm the hook no longer reads the PR count and no
+# longer emits `pr_backlog` regardless of how many PRs are open.
 
 
-def _patch_backlog(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    open_prs: int,
-    choice: CascadeChoice | None,
-) -> None:
-    """Stub the cascade primitives the Stop hook consults for backpressure."""
-    monkeypatch.setattr(
-        "nightly_core.keepalive_hook.count_open_nightly_prs",
-        lambda _root=None: open_prs,
-    )
-    if choice is not None:
-        monkeypatch.setattr(
-            "nightly_core.keepalive_hook.next_task",
-            lambda _root=None: choice,
-        )
+def test_pr_backlog_constant_removed_from_public_api() -> None:
+    """`MAX_OPEN_PRS` is no longer exported from `nightly_core.keepalive_hook`.
+
+    Anyone reaching for it after v0.0.3 should get an ImportError — the
+    constant doesn't exist and the gating it implemented is gone.
+    """
+    import nightly_core.keepalive_hook as kh
+
+    assert not hasattr(kh, "MAX_OPEN_PRS")
 
 
-def _blocking_pr_feedback() -> PRFeedback:
-    """Construct a single CHANGES_REQUESTED review for the blocking-rescue test."""
-    pr = PRReference(
-        branch="nightly/example-20260524",
-        number=99,
-        url="https://github.com/org/repo/pull/99",
-        state="OPEN",
-        title="example",
-    )
-    return PRFeedback(
-        pr=pr,
-        kind="review",
-        author_login="reviewer",
-        author_is_bot=False,
-        body="please change X",
-        state="CHANGES_REQUESTED",
-        file_ref=None,
-        line_ref=None,
-        created_at=datetime.now(UTC),
-        url="https://github.com/org/repo/pull/99#pullrequestreview-1",
-    )
-
-
-def _non_blocking_pr_feedback() -> PRFeedback:
-    """A non-blocking COMMENTED review (e.g. a Greptile nit)."""
-    pr = PRReference(
-        branch="nightly/example-20260524",
-        number=99,
-        url="https://github.com/org/repo/pull/99",
-        state="OPEN",
-        title="example",
-    )
-    return PRFeedback(
-        pr=pr,
-        kind="review",
-        author_login="greptile-apps[bot]",
-        author_is_bot=True,
-        body="consider renaming",
-        state="COMMENTED",
-        file_ref=None,
-        line_ref=None,
-        created_at=datetime.now(UTC),
-        url="https://github.com/org/repo/pull/99#pullrequestreview-2",
-    )
-
-
-def test_pr_backlog_saturated_allows_stop(
+def test_hook_force_continues_regardless_of_open_pr_count(
     initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When 5+ Nightly PRs are open and the pick is paperwork, the hook releases."""
-    arm_session(initialized_repo)
-    _patch_backlog(
-        monkeypatch,
-        open_prs=MAX_OPEN_PRS,
-        choice=CascadeChoice(
-            source="ideate_fallback",
-            summary="ship lint cleanup",
-            rationale="armed-session fallback",
-        ),
-    )
-    decision = compute_stop_hook_decision(initialized_repo)
-    assert not decision.should_block
-    assert decision.reason_code == "pr_backlog"
-    assert "5 open Nightly PR" in decision.message
-    assert "operator review is the bottleneck" in decision.message
-
-
-def test_pr_backlog_overridden_by_in_flight(
-    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Resume-priority cascade picks keep the session running even at cap."""
-    arm_session(initialized_repo)
-    _patch_backlog(
-        monkeypatch,
-        open_prs=MAX_OPEN_PRS + 2,
-        choice=CascadeChoice(
-            source="resume_in_flight",
-            summary="resume 0003-retry-plan",
-            target_path=initialized_repo / "plan.md",
-            rationale="finishing what's started",
-        ),
-    )
-    decision = compute_stop_hook_decision(initialized_repo)
-    assert decision.should_block
-    assert decision.reason_code == "force_continue"
-
-
-def test_pr_backlog_overridden_by_blocking_pr_rescue(
-    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A pr_rescue pick with at least one blocking feedback item overrides backpressure."""
-    arm_session(initialized_repo)
-    _patch_backlog(
-        monkeypatch,
-        open_prs=MAX_OPEN_PRS,
-        choice=CascadeChoice(
-            source="pr_rescue",
-            summary="rescue #42 — CHANGES_REQUESTED",
-            rationale="reviewer asked for changes",
-            pr_feedback=(_blocking_pr_feedback(),),
-        ),
-    )
-    decision = compute_stop_hook_decision(initialized_repo)
-    assert decision.should_block
-    assert decision.reason_code == "force_continue"
-
-
-def test_pr_backlog_non_blocking_rescue_allows_stop(
-    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A pr_rescue pick with only non-blocking feedback does NOT override backpressure."""
-    arm_session(initialized_repo)
-    _patch_backlog(
-        monkeypatch,
-        open_prs=MAX_OPEN_PRS,
-        choice=CascadeChoice(
-            source="pr_rescue",
-            summary="rescue #99 — Greptile nit",
-            rationale="non-blocking review comment",
-            pr_feedback=(_non_blocking_pr_feedback(),),
-        ),
-    )
-    decision = compute_stop_hook_decision(initialized_repo)
-    assert not decision.should_block
-    assert decision.reason_code == "pr_backlog"
-
-
-def test_pr_backlog_below_cap_force_continues(
-    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Below the cap, the backpressure branch doesn't fire — normal force-continue."""
-    arm_session(initialized_repo)
-    _patch_backlog(
-        monkeypatch,
-        open_prs=MAX_OPEN_PRS - 1,
-        choice=CascadeChoice(
-            source="ideate_fallback",
-            summary="ship lint cleanup",
-            rationale="armed-session fallback",
-        ),
-    )
-    decision = compute_stop_hook_decision(initialized_repo)
-    assert decision.should_block
-    assert decision.reason_code == "force_continue"
-
-
-def test_pr_backlog_with_cascade_exception_still_releases(
-    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """If next_task raises while backlog is saturated, the hook releases anyway.
-
-    The hook must never crash, and a cascade exception is not evidence of
-    resume-priority work — so the backpressure should still allow stop.
+    """Even with 100 open Nightly PRs, the hook still force-continues an
+    armed session against a paperwork cascade pick. The PR-count cap
+    that used to release here is gone in v0.0.3+.
     """
     arm_session(initialized_repo)
+    # Stub the cascade pick to a non-resume-priority source so the previous
+    # cap-aware behavior *would* have released. We're asserting it doesn't.
     monkeypatch.setattr(
-        "nightly_core.keepalive_hook.count_open_nightly_prs",
-        lambda _root=None: MAX_OPEN_PRS,
+        "nightly_core.keepalive_hook.next_task",
+        lambda _root=None: CascadeChoice(
+            source="ideate_fallback",
+            summary="ship lint cleanup",
+            rationale="armed-session fallback",
+        ),
     )
-
-    def _boom(_root: Path | None = None) -> CascadeChoice:
-        msg = "synthetic cascade failure"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr("nightly_core.keepalive_hook.next_task", _boom)
     decision = compute_stop_hook_decision(initialized_repo)
-    assert not decision.should_block
-    assert decision.reason_code == "pr_backlog"
-    assert "`unknown`" in decision.message
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+
+
+def test_hook_does_not_call_count_open_nightly_prs(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook must no longer reach for the PR count helper at all.
+
+    Patches the helper to raise — if the hook still touches it, the
+    decision computation will crash. Confirms the dependency was fully
+    removed, not just the gating logic.
+    """
+    arm_session(initialized_repo)
+
+    def _explode(_root: Path | None = None) -> int:
+        msg = "count_open_nightly_prs must not be called from the Stop hook"
+        raise AssertionError(msg)
+
+    # Patch on the cascade module since the hook no longer re-imports it.
+    monkeypatch.setattr("nightly_core.cascade.count_open_nightly_prs", _explode)
+    decision = compute_stop_hook_decision(initialized_repo)
+    # No crash; normal force-continue.
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
 
 
 def test_decision_payload_is_valid_json() -> None:
@@ -495,34 +384,33 @@ def test_heartbeat_log_records_host_cap_yield(initialized_repo: Path) -> None:
     assert "session=abc" in content
 
 
-# ── cascade-loop guard — issue #2 ────────────────────────────────────────
+# ── v0.0.3: cascade-loop guard removed; history-only diagnostics retained ─
 
 
-def test_cascade_loop_guard_yields_after_threshold_repeats(
-    initialized_repo: Path,
-) -> None:
-    """When the cascade returns the same pick LOOP_THRESHOLD times in a
-    row, the hook yields with `cascade_loop` instead of force-continuing
-    indefinitely. Regression guard for issue #2 (corpus-forge runaway
-    ideate_fallback re-dispatch loop)."""
+def test_repeated_picks_no_longer_release(initialized_repo: Path) -> None:
+    """v0.0.3: repeated cascade picks no longer release the session.
+
+    The previous LOOP_THRESHOLD-based guard was removed per the
+    operator's "the only termination should be human intervention"
+    directive. A stuck cascade now keeps force-continuing; the
+    operator must place a CONCLUDE / STOP marker to end the session
+    (or wait for the host's 9-block override, which is out of our
+    control and addressed by RFC 009's respawn supervisor).
+    """
     arm_session(initialized_repo)
-    # Empty repo → cascade returns `nothing` every turn. Same pick each time.
-    for i in range(LOOP_THRESHOLD - 1):
+    # Empty repo → cascade returns the same `nothing` pick every turn.
+    # In v0.0.2 this would have released after 3 consecutive same-picks.
+    # In v0.0.3+ it just keeps force-continuing.
+    for i in range(10):
         d = compute_stop_hook_decision(initialized_repo)
         assert d.should_block, f"turn {i + 1} should still force-continue"
         assert d.reason_code == "force_continue"
 
-    # Threshold-th call yields with cascade_loop
-    final = compute_stop_hook_decision(initialized_repo)
-    assert not final.should_block
-    assert final.reason_code == "cascade_loop"
-    assert "repeated" in final.message
-    assert "issue #2" in final.message
 
-
-def test_cascade_loop_guard_writes_history_file(initialized_repo: Path) -> None:
-    """The fingerprint history must be persisted so a post-mortem can
-    see what was repeating, not just that we yielded."""
+def test_loop_history_still_written_for_diagnostics(initialized_repo: Path) -> None:
+    """The fingerprint history file is still written even though it
+    no longer triggers a release — operators can inspect it after a
+    session to see what the cascade was returning."""
     arm_session(initialized_repo)
     compute_stop_hook_decision(initialized_repo)
     run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
@@ -530,44 +418,15 @@ def test_cascade_loop_guard_writes_history_file(initialized_repo: Path) -> None:
     assert history.is_file()
     lines = history.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
-    # Fingerprint shape: source|target|summary
     assert lines[0].startswith("nothing|") or lines[0].startswith("ideate")
 
 
-def test_cascade_loop_guard_resets_on_different_pick(
-    initialized_repo: Path,
-) -> None:
-    """A change in the cascade pick (e.g. the operator added a task)
-    resets the loop counter — we should NOT yield just because the
-    earlier history was full."""
-    arm_session(initialized_repo)
-    # Seed the history file as if we'd already repeated 2 times.
-    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
-    (run_dir / LOOP_HISTORY_FILENAME).write_text(
-        "nothing|-|no work — backlog is empty\n" * (LOOP_THRESHOLD - 1),
-        encoding="utf-8",
-    )
-    # Inject a different cascade pick by creating an RFC with a task.
-    rfc_dir = initialized_repo / ".planning" / "rfcs"
-    rfc_dir.mkdir(parents=True, exist_ok=True)
-    (rfc_dir / "fresh.md").write_text(
-        "---\nstatus: accepted\n---\n# Fresh\n\n- [ ] new work\n",
-        encoding="utf-8",
-    )
-    decision = compute_stop_hook_decision(initialized_repo)
-    # Should still force-continue: the new pick is different from
-    # what's in history, so consecutive-repeat count resets to 1.
-    assert decision.should_block
-    assert decision.reason_code == "force_continue"
-
-
-def test_cascade_loop_guard_trims_history(initialized_repo: Path) -> None:
-    """The history file must be bounded — long runs can't be allowed to
-    grow it without limit."""
+def test_loop_history_remains_bounded(initialized_repo: Path) -> None:
+    """The history file must still be bounded — long runs can't grow it
+    without limit even though it's diagnostic-only now."""
     from nightly_core.keepalive_hook import _LOOP_HISTORY_KEEP
 
     arm_session(initialized_repo)
-    # Pre-seed with many entries — far more than we should retain.
     run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
     (run_dir / LOOP_HISTORY_FILENAME).write_text(
         "\n".join(f"old|-|entry {i}" for i in range(50)) + "\n",
@@ -576,29 +435,6 @@ def test_cascade_loop_guard_trims_history(initialized_repo: Path) -> None:
     compute_stop_hook_decision(initialized_repo)
     lines = (run_dir / LOOP_HISTORY_FILENAME).read_text(encoding="utf-8").splitlines()
     assert len(lines) <= _LOOP_HISTORY_KEEP
-
-
-def test_cascade_loop_guard_records_log_entry(initialized_repo: Path) -> None:
-    """When we yield with `cascade_loop`, the keepalive.log audit trail
-    must record it so an operator can distinguish it from `conclude` /
-    `host_cap` (all three look the same on the wire — empty `{}`)."""
-    arm_session(initialized_repo)
-    for _ in range(LOOP_THRESHOLD):
-        compute_stop_hook_decision(initialized_repo)
-    # Last decision should be cascade_loop.
-    final = compute_stop_hook_decision(initialized_repo)
-    log_path = log_heartbeat(final, initialized_repo, hook_input={"session_id": "x"})
-    assert log_path is not None
-    content = log_path.read_text(encoding="utf-8")
-    assert "decision=cascade_loop" in content
-
-
-def test_cascade_loop_guard_constants_locked_in() -> None:
-    """The threshold lives below the host's 9-block override on purpose
-    — we yield before the host overrides us so the audit trail shows
-    `cascade_loop` rather than `host_cap`."""
-    assert LOOP_THRESHOLD < 9, "must yield before Claude Code's 9-block override"
-    assert LOOP_THRESHOLD >= 2, "<2 would make the guard fire on first repeat"
 
 
 def test_hook_stop_cli_honors_stop_hook_active(
