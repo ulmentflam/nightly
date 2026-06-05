@@ -26,7 +26,6 @@ public API (`update_install`) is shaped to accommodate either.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import shutil
 import subprocess
@@ -145,6 +144,30 @@ def git_head_commit(root: Path | None) -> str:
     return result.stdout.strip()
 
 
+def _remote_ref_sha(root: Path, version: str) -> str:
+    """Short SHA of `refs/remotes/origin/<version>`, or empty if absent.
+
+    Best-effort: returns "" rather than raising when the ref doesn't
+    exist locally (a tag/SHA checkout has no `origin/<ref>` ref), the
+    remote isn't `origin`, or git is missing. Callers use the empty
+    string as "no comparison possible — skip the divergence check."
+    """
+    if shutil.which("git") is None:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", f"refs/remotes/origin/{version}"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return ""
+    return result.stdout.strip()
+
+
 # ── upgrade ───────────────────────────────────────────────────────────────
 
 
@@ -178,6 +201,7 @@ def update_install(
     version: str = "main",
     dry_run: bool = False,
     reexec: Callable[[str], NoReturn] | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[InstallMethod, str, str]:
     """Update Nightly's source to `version`. Returns (method, before_sha, after_sha).
 
@@ -194,6 +218,15 @@ def update_install(
     runs with the freshly-synced modules loaded. The re-exec only
     fires when the source actually moved — same-SHA syncs reuse the
     current process to avoid pointless fork/exec overhead.
+
+    `notes` is an optional accumulator the caller can pass in; when
+    `pull --ff-only` fails (divergent history, network blip, ref
+    mismatch) or when the remote is ahead but HEAD didn't move, a
+    human-readable note is appended for the CLI to print. Without
+    this, the silently-suppressed pull failure surfaces only as
+    "already current" — exactly the failure mode that left a user's
+    install pinned at a week-old commit despite repeated `nightly
+    update` calls.
 
     Re-exec is the load-bearing piece: after `uv sync` swaps the
     nightly-core source on disk, the current process still holds the
@@ -240,14 +273,47 @@ def update_install(
     except subprocess.CalledProcessError:
         on_branch = False
     if on_branch:
-        # Non-ff or branch mismatch — leave the checkout where it is and
-        # let the after-SHA surface the actual state. The user can resolve
-        # manually if the pull would have rewritten history.
-        with contextlib.suppress(subprocess.CalledProcessError):
+        # Non-ff or branch mismatch — capture the failure as a note rather
+        # than silently swallowing it. The user's install ends up pinned
+        # to the previous commit while the report claims "already current,"
+        # which is exactly the misleading state the silent suppress used
+        # to produce.
+        try:
             _git(["pull", "--quiet", "--ff-only", "origin", version], cwd=method.root)
+        except subprocess.CalledProcessError as exc:
+            if notes is not None:
+                detail = (exc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
+                notes.append(
+                    f"pull --ff-only origin {version} failed (exit {exc.returncode}): "
+                    f"{detail[0]}. Local HEAD is unchanged — run `git -C "
+                    f"{method.root} pull --rebase origin {version}` to resolve "
+                    "or check `git status` for divergent history."
+                )
 
     _uv_sync(method.root)
     after = git_head_commit(method.root)
+
+    # Even if the pull "succeeded" (no exception), the local HEAD may
+    # still be behind the freshly-fetched remote — e.g. when the user
+    # is on a detached HEAD that didn't trigger the on-branch pull
+    # path, or when an earlier checkout silently picked up a stale
+    # local branch. Compare HEAD against the post-fetch remote ref
+    # and add a note if they diverge. This catches the "already
+    # current" misreport even when no exception fires.
+    if notes is not None:
+        remote_tip = _remote_ref_sha(method.root, version)
+        if (
+            remote_tip
+            and after
+            and not remote_tip.startswith(after)
+            and not after.startswith(remote_tip)
+        ):
+            notes.append(
+                f"origin/{version} is at {remote_tip} but local HEAD is at {after}. "
+                "The update may have been blocked by divergent history or a "
+                f"local edit in {method.root}. Run `git -C {method.root} status` "
+                "to investigate."
+            )
 
     # Re-exec only when the source moved — same-SHA syncs (idempotent
     # re-runs) reuse the current process. The downstream refresh step

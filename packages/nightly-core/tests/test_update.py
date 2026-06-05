@@ -287,6 +287,102 @@ def test_update_install_post_reexec_skips_work(
     assert sentinel_called == {"git": False, "uv_sync": False}
 
 
+# ── pull-failure surfacing (silently-stuck install) ──────────────────────
+
+
+def test_update_install_records_pull_failure_in_notes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `pull --ff-only` fails, the user sees a note instead of a
+    misleading "already current" report.
+
+    Regression guard for the install observed at commit `c98b35b` that
+    was stuck a week behind `main`: `pull --ff-only` failed (suppressed),
+    `before == after`, and the CLI rendered "already current" — leaving
+    the user thinking nothing was wrong.
+    """
+    method = InstallMethod(kind="git", root=tmp_path)
+    monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "stale_sha")
+    monkeypatch.setattr("nightly_core.update._uv_sync", lambda _cwd: None)
+    # _remote_ref_sha returning empty disables the second-tier check —
+    # we only want to exercise the pull-exception path here.
+    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "")
+
+    def git_with_failing_pull(args: list[str], *, cwd: Path) -> None:
+        if args[:2] == ["pull", "--quiet"]:
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["git", *args],
+                stderr="fatal: Not possible to fast-forward, aborting.\n",
+            )
+        # All other git calls succeed silently.
+
+    monkeypatch.setattr("nightly_core.update._git", git_with_failing_pull)
+
+    notes: list[str] = []
+    update_install(version="main", notes=notes)
+    assert any("pull --ff-only" in n for n in notes), notes
+    assert any("Not possible to fast-forward" in n for n in notes), notes
+
+
+def test_update_install_records_pull_failure_recovery_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pull-failure note includes the resolve-it command the operator
+    should run, so the failure path is actionable not just informative."""
+    method = InstallMethod(kind="git", root=tmp_path)
+    monkeypatch.setattr("nightly_core.update.detect_install_method", lambda: method)
+    monkeypatch.setattr("nightly_core.update.git_head_commit", lambda _root: "stale")
+    monkeypatch.setattr("nightly_core.update._uv_sync", lambda _cwd: None)
+    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "")
+
+    def git_with_failing_pull(args: list[str], *, cwd: Path) -> None:
+        if args[:2] == ["pull", "--quiet"]:
+            raise subprocess.CalledProcessError(returncode=128, cmd=args, stderr="fatal: refusing")
+
+    monkeypatch.setattr("nightly_core.update._git", git_with_failing_pull)
+    notes: list[str] = []
+    update_install(version="main", notes=notes)
+    assert any("pull --rebase" in n for n in notes), notes
+
+
+def test_update_install_no_notes_when_pull_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: every git call returns clean, no pull note emitted."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["same", "same"])
+    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "same")
+    notes: list[str] = []
+    update_install(version="main", notes=notes, reexec=_FakeReexec())
+    assert notes == []
+
+
+def test_update_install_surfaces_divergence_when_remote_ahead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If pull didn't raise but origin/<version> is still ahead of HEAD
+    (e.g. a tag checkout, a detached HEAD, or a silent suppress earlier
+    in the pipeline), the divergence check should still fire."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["stuck", "stuck"])
+    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "newer")
+    notes: list[str] = []
+    update_install(version="main", notes=notes, reexec=_FakeReexec())
+    assert any("origin/main" in n and "stuck" in n and "newer" in n for n in notes), notes
+
+
+def test_update_install_skips_divergence_when_remote_ref_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `_remote_ref_sha` returns empty (tag/SHA checkout, no remote
+    ref), the divergence check stays silent — no false positive."""
+    _stub_update_machinery(monkeypatch, tmp_path=tmp_path, head_sequence=["any", "any"])
+    monkeypatch.setattr("nightly_core.update._remote_ref_sha", lambda _root, _v: "")
+    notes: list[str] = []
+    update_install(version="main", notes=notes, reexec=_FakeReexec())
+    assert notes == []
+
+
 def test_reexec_helper_sets_sentinel_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """The default reexec helper passes the sentinel + before SHA via
     env so the post-re-exec process can pick up where the parent left

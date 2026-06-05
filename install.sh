@@ -75,7 +75,29 @@ if [ -d "$NIGHTLY_HOME/.git" ]; then
     git -C "$NIGHTLY_HOME" checkout --quiet "$NIGHTLY_VERSION"
     # Only fast-forward if we're tracking a branch; tags/commits skip this.
     if git -C "$NIGHTLY_HOME" symbolic-ref --quiet HEAD >/dev/null 2>&1; then
-        git -C "$NIGHTLY_HOME" pull --quiet --ff-only origin "$NIGHTLY_VERSION" || true
+        # Surface pull failures instead of silently swallowing them with
+        # `|| true` — a failed fast-forward used to leave the install
+        # pinned to an old commit while the script reported success.
+        # Captures stderr to a temp file; on failure prints the last line
+        # plus a recovery hint, then continues so the rest of the install
+        # (uv sync, shim) still runs against whatever HEAD is at.
+        _pull_stderr="$(mktemp -t nightly-pull-stderr.XXXXXX)"
+        if ! git -C "$NIGHTLY_HOME" pull --quiet --ff-only origin "$NIGHTLY_VERSION" \
+            2>"$_pull_stderr"; then
+            _detail="$(tail -n 1 "$_pull_stderr" 2>/dev/null || echo '(no stderr)')"
+            warn "pull --ff-only origin $NIGHTLY_VERSION failed: ${_detail:-(no stderr)}"
+            warn "  local HEAD unchanged — run 'git -C $NIGHTLY_HOME pull --rebase origin $NIGHTLY_VERSION' to resolve"
+        fi
+        rm -f "$_pull_stderr"
+    fi
+    # Cross-check: if origin/<version> is ahead of HEAD post-fetch, the
+    # update didn't actually advance the install. Catches the silently-
+    # stuck case (detached HEAD, suppressed pull, etc).
+    _local="$(git -C "$NIGHTLY_HOME" rev-parse --short HEAD 2>/dev/null || true)"
+    _remote="$(git -C "$NIGHTLY_HOME" rev-parse --short "refs/remotes/origin/$NIGHTLY_VERSION" 2>/dev/null || true)"
+    if [ -n "$_local" ] && [ -n "$_remote" ] && [ "$_local" != "$_remote" ]; then
+        warn "origin/$NIGHTLY_VERSION is at $_remote but HEAD is at $_local — install may be behind"
+        warn "  run 'git -C $NIGHTLY_HOME status' to investigate divergence"
     fi
 else
     mkdir -p "$(dirname "$NIGHTLY_HOME")"

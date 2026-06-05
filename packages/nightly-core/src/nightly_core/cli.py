@@ -1817,7 +1817,8 @@ def update_cmd(
     CLAUDE.md rules block all propagate without manual intervention.
     """
     try:
-        method, before, after = update_install(version=version, dry_run=dry_run)
+        notes: list[str] = []
+        method, before, after = update_install(version=version, dry_run=dry_run, notes=notes)
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -1831,7 +1832,6 @@ def update_cmd(
 
     refreshed: tuple[str, ...] = ()
     rules_action = "skipped"
-    notes: list[str] = []
     if refresh_repo and not dry_run:
         root = repo_root()
         try:
