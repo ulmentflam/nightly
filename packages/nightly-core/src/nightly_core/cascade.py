@@ -25,7 +25,7 @@ from typing import Literal
 from nightly_core.config import load_worktree_config
 from nightly_core.ideation import run_proposers, top_auto_pr
 from nightly_core.paths import planning_dir, repo_root
-from nightly_core.plans import PlanRecord, list_plans, parse_frontmatter
+from nightly_core.plans import PlanRecord, find_rfc_status, list_plans, parse_frontmatter
 from nightly_core.pr_feedback import FeedbackFetcher, PRFeedback, fetch_feedback
 from nightly_core.proposers.base import Proposal
 from nightly_core.runs import current_run
@@ -451,9 +451,15 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
     """Return the first unchecked task-list item from an `accepted` RFC,
     skipping items already addressed by an open Nightly PR (RFC 001).
 
-    Uses `parse_frontmatter` to read the `status:` field exactly. Calls
-    `gh pr list` once at the top of the walk to gather PR texts; items
-    that overlap any open PR's title or body are skipped.
+    Uses `find_rfc_status` to read the status across both frontmatter
+    and body-line conventions (issue #10 §1 fix). Calls `gh pr list`
+    once at the top of the walk to gather PR texts; items that overlap
+    any open PR's title or body are skipped.
+
+    Body for the unchecked-items walk comes from `parse_frontmatter`
+    when frontmatter is present, or the raw file text when it isn't —
+    so non-fenced RFCs (corpus-forge's convention) get their `- [ ]`
+    items walked the same as fenced RFCs.
     """
     planning = planning_dir(root)
     rfcs = planning / "rfcs"
@@ -465,11 +471,12 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
         if not entry.is_file() or entry.suffix != ".md":
             continue
         text = entry.read_text(encoding="utf-8")
-        metadata, body = parse_frontmatter(text)
-        if metadata.get("status", "").strip().lower() != "accepted":
+        status = find_rfc_status(text)
+        if status is None or status.strip().lower() != "accepted":
             continue
-        # Walk every unchecked item in this RFC and return the first one
-        # that isn't already addressed by an open PR.
+        _metadata, body = parse_frontmatter(text)
+        # When there's no frontmatter, `parse_frontmatter` returns the
+        # whole file as `body` already; this path covers both cases.
         for match in _RFC_UNCHECKED_RE.finditer(body):
             item_text = match.group(1).strip()
             if _is_item_in_flight(entry.name, item_text, pr_texts):

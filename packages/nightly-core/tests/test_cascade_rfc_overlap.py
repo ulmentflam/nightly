@@ -103,3 +103,63 @@ def test_pick_accepted_rfc_delegates_to_find(tmp_path, monkeypatch):
     _stage_accepted_rfc(tmp_path, name="004-w.md", items=["only item"])
     monkeypatch.setattr(shutil, "which", lambda _: None)
     assert pick_accepted_rfc(tmp_path) is not None
+
+
+# ── issue #10 §bug-1: cascade picks up RFCs without `---` frontmatter ─────
+
+
+def test_find_accepted_rfc_picks_up_bare_status_line_no_frontmatter(tmp_path, monkeypatch):
+    """Regression guard for issue #10's primary failure: corpus-forge had
+    four accepted P0 RFCs whose convention was a `status: accepted`
+    body line (no `---` frontmatter fences). The 0.0.2 cascade returned
+    "no RFC items" all night despite the RFCs being on disk and
+    operator-accepted.
+
+    With the body-line fallback in `find_rfc_status`, the cascade now
+    picks up the first unchecked item exactly as it would for a
+    frontmatter-fenced RFC.
+    """
+    rfcs = tmp_path / ".planning" / "rfcs"
+    rfcs.mkdir(parents=True)
+    (rfcs / "100-bare-status.md").write_text(
+        "# RFC 100 — Bare-status convention\n\n"
+        "status: accepted\n\n"
+        "## Sized checklist\n\n"
+        "- [ ] first item\n"
+        "- [ ] second item\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    match = _find_accepted_rfc(tmp_path)
+    assert match is not None
+    assert match.item_text == "first item"
+
+
+def test_find_accepted_rfc_picks_up_bold_status_line(tmp_path, monkeypatch):
+    """`**Status**: accepted` body line — markdown-decorated, no fences."""
+    rfcs = tmp_path / ".planning" / "rfcs"
+    rfcs.mkdir(parents=True)
+    (rfcs / "101-bold.md").write_text(
+        "# RFC 101 — Bold-decorated status\n\n"
+        "**Status**: accepted\n\n"
+        "## Sized checklist\n\n- [ ] only item\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    match = _find_accepted_rfc(tmp_path)
+    assert match is not None
+    assert match.item_text == "only item"
+
+
+def test_find_accepted_rfc_ignores_rfc_with_non_accepted_body_status(tmp_path, monkeypatch):
+    """A body-line status of `draft` (or anything other than `accepted`)
+    is correctly skipped — the body fallback doesn't make the cascade
+    over-eager."""
+    rfcs = tmp_path / ".planning" / "rfcs"
+    rfcs.mkdir(parents=True)
+    (rfcs / "102-draft.md").write_text(
+        "# RFC 102\n\nStatus: draft\n\n- [ ] item\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    assert _find_accepted_rfc(tmp_path) is None

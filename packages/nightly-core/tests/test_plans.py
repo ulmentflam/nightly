@@ -9,6 +9,7 @@ import pytest
 from nightly_core.plans import (
     PLAN_STATUSES,
     PlanRecord,
+    find_rfc_status,
     list_plans,
     parse_frontmatter,
     read_plan,
@@ -222,3 +223,73 @@ def test_plan_record_proposer_fingerprint_empty_string_returns_none(
     plan_path.write_text(render_frontmatter(metadata, plan.body), encoding="utf-8")
 
     assert read_plan(plan_path).proposer_fingerprint is None
+
+
+# ── issue #10 §bug-1: find_rfc_status across frontmatter & body conventions ─
+
+
+def test_find_rfc_status_reads_frontmatter() -> None:
+    """Canonical case: `---`-fenced YAML frontmatter with a status key."""
+    text = "---\nstatus: accepted\ntitle: foo\n---\n# body\n"
+    assert find_rfc_status(text) == "accepted"
+
+
+def test_find_rfc_status_reads_body_line_no_frontmatter() -> None:
+    """Issue #10 regression guard: corpus-forge's convention put
+    `status: accepted` as a bare body line outside any frontmatter.
+    The cascade was blind to all such RFCs; with the body fallback
+    they're picked up correctly."""
+    text = "# Some RFC\n\nstatus: accepted\n\n## Context\n\n- [ ] item\n"
+    assert find_rfc_status(text) == "accepted"
+
+
+def test_find_rfc_status_reads_bold_decorated_status() -> None:
+    """`**Status**: accepted` body line — markdown-decorated, no frontmatter."""
+    text = "# RFC\n\n**Status**: accepted\n\n## Foo\n"
+    assert find_rfc_status(text) == "accepted"
+
+
+def test_find_rfc_status_reads_bold_around_key_and_colon() -> None:
+    """`**Status:**` shape with the bold around the colon."""
+    text = "# RFC\n\n**Status:** accepted\n\n## Foo\n"
+    assert find_rfc_status(text) == "accepted"
+
+
+def test_find_rfc_status_reads_bold_decorated_value() -> None:
+    """`Status: **accepted**` — bold wrapping the value."""
+    text = "# RFC\n\nStatus: **accepted**\n\n## Foo\n"
+    assert find_rfc_status(text) == "accepted"
+
+
+def test_find_rfc_status_case_insensitive() -> None:
+    """`STATUS:` and `status:` both match."""
+    assert find_rfc_status("STATUS: accepted\n") == "accepted"
+    assert find_rfc_status("Status: Accepted\n") == "Accepted"
+
+
+def test_find_rfc_status_tolerates_bold_frontmatter_key() -> None:
+    """An RFC with `---` fences but `**Status**: accepted` inside still
+    parses correctly — the bold decoration on the key was the original
+    corpus-forge breakage (commit 063472e unbolded as the workaround)."""
+    text = "---\n**Status**: accepted\ntitle: foo\n---\n# body\n"
+    assert find_rfc_status(text) == "accepted"
+
+
+def test_find_rfc_status_returns_none_when_absent() -> None:
+    assert find_rfc_status("# Just a markdown file\n\nNo status.\n") is None
+    assert find_rfc_status("") is None
+
+
+def test_find_rfc_status_only_scans_head_of_document() -> None:
+    """A `Status:` line deep in a long body is intentionally ignored —
+    it's almost certainly quoted text or a code example, not the RFC's
+    own declaration. The scan window is 50 leading lines."""
+    text = "# RFC\n\n" + "\n".join(["body line"] * 60) + "\nStatus: accepted\n"
+    assert find_rfc_status(text) is None
+
+
+def test_find_rfc_status_frontmatter_wins_over_body() -> None:
+    """If both frontmatter and body declare a status, frontmatter wins —
+    that's the canonical place per RFCs 001-008 convention."""
+    text = "---\nstatus: accepted\n---\n# RFC\n\nStatus: draft  (this should be ignored)\n"
+    assert find_rfc_status(text) == "accepted"
