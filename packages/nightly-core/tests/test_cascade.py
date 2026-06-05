@@ -628,11 +628,12 @@ def test_next_task_pr_rescue_fires_between_issue_and_ideate(
     assert "feedback" in (choice.rationale or "").lower()
 
 
-def test_next_task_github_issue_still_outranks_pr_rescue(
+def test_next_task_github_issue_outranks_non_blocking_pr_rescue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fresh issues outrank rescue: starting beats finishing only when there's
-    nothing to start with. pr_rescue is below github_issue in the cascade."""
+    """Fresh issues outrank *non-blocking* rescue: starting beats finishing
+    only when the PR isn't actively broken. v0.0.5+ cascade order has
+    non-blocking pr_rescue below github_issue."""
     monkeypatch.setattr(
         "nightly_core.triage.fetch_via_gh",
         lambda _root, **_: [_issue(7, labels=["nightly-ready"])],
@@ -641,15 +642,108 @@ def test_next_task_github_issue_still_outranks_pr_rescue(
         "nightly_core.cascade._nightly_open_pr_branches",
         lambda _root=None, **_: [_pr_branch()],
     )
+    # Non-blocking: an issue_comment / advisory review — neither failed CI
+    # nor CHANGES_REQUESTED.
     monkeypatch.setattr(
         "nightly_core.cascade.fetch_feedback",
         lambda _b, root=None, fetcher=None, since=None: [
-            _feedback(is_blocking_state="CHANGES_REQUESTED", kind="review"),
+            _feedback(kind="issue_comment", is_blocking_state=None),
         ],
     )
     choice = next_task(tmp_path)
-    # Brainstorm §03 step 4 (github_issue) precedes step 5 (pr_rescue).
     assert choice.source == "github_issue"
+
+
+# ── v0.0.5: blocking pr_rescue (red CI) preempts accepted_rfc ────────────
+
+
+def test_next_task_blocking_pr_rescue_preempts_accepted_rfc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.0.5 cascade reorder: a Nightly PR with failed CI or
+    CHANGES_REQUESTED review outranks fresh accepted_rfc work. The
+    cascade preempts to get open PRs back to green — the operator's
+    "make sure nightly prioritizes getting CI into a green state"
+    directive.
+
+    Setup stages: an accepted RFC with unchecked items + an open Nightly
+    PR with a failed-CI feedback item. Pre-v0.0.5 would have picked the
+    RFC item (step 3 < step 5). v0.0.5+ picks the rescue (now step 3,
+    above step 4's accepted_rfc).
+    """
+    # Stage an accepted RFC with unchecked work.
+    rfcs = tmp_path / ".planning" / "rfcs"
+    rfcs.mkdir(parents=True)
+    (rfcs / "099-staged.md").write_text(
+        "---\nstatus: accepted\nsized: true\n---\n# RFC 099\n\n- [ ] do work\n",
+        encoding="utf-8",
+    )
+    # Stage an open Nightly PR with a blocking feedback item (failed CI).
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [
+            _feedback(kind="check_failure", is_blocking_state="failure"),
+        ],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "pr_rescue"
+    rationale = choice.rationale or ""
+    assert rationale.startswith("Nightly-authored PR")
+    assert "blocking feedback" in rationale
+
+
+def test_next_task_non_blocking_pr_rescue_does_NOT_preempt_accepted_rfc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart guard: only *blocking* rescue preempts accepted_rfc.
+    A non-blocking advisory comment must NOT preempt — the RFC item
+    still wins, and the rescue falls through to its lower slot."""
+    rfcs = tmp_path / ".planning" / "rfcs"
+    rfcs.mkdir(parents=True)
+    (rfcs / "099-staged.md").write_text(
+        "---\nstatus: accepted\nsized: true\n---\n# RFC 099\n\n- [ ] do work\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [
+            _feedback(kind="issue_comment", is_blocking_state=None),
+        ],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "accepted_rfc"
+
+
+def test_next_task_blocking_pr_rescue_rationale_mentions_v005_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CascadeChoice rationale for blocking pr_rescue must name
+    the v0.0.5 directive so an operator reading the briefing or `nightly
+    next` output understands why the preempt fired."""
+    monkeypatch.setattr(
+        "nightly_core.cascade._nightly_open_pr_branches",
+        lambda _root=None, **_: [_pr_branch()],
+    )
+    monkeypatch.setattr(
+        "nightly_core.cascade.fetch_feedback",
+        lambda _b, root=None, fetcher=None, since=None: [
+            _feedback(kind="check_failure", is_blocking_state="failure"),
+        ],
+    )
+    choice = next_task(tmp_path)
+    assert choice.source == "pr_rescue"
+    rationale = (choice.rationale or "").lower()
+    assert "v0.0.5" in rationale
+    assert "red ci" in rationale or "failed ci" in rationale
+    assert "draft" in rationale
 
 
 # ── auto-ideate fallback (armed-session lever) ────────────────────────────

@@ -96,15 +96,24 @@ recommendation, execute it.** Everything below is consequences.
    one) and re-verify until clean. Do not push code that fails the
    repo's own quality gates; that's exactly the contributor etiquette
    a human reviewer would apply.
-8. **Watch CI between tasks with `nightly ci`.** After a Nightly PR is
-   opened, CI on the remote runs asynchronously. Between tasks (or
-   after committing the current one), run `nightly ci` to see whether
-   any open Nightly PR has failed checks. **Do not block waiting on
-   CI** — keep picking up new work from the cascade. When CI fails,
-   the failure is already a `PRFeedback` kind and the cascade's
-   `pr_rescue` step will surface it on the next `nightly next`. The
-   `nightly ci` glance just lets you confirm there's nothing in-flight
-   that needs your attention before starting a brand-new investigation.
+8. **Getting open PRs to green is the priority — don't block, but
+   preempt.** After a Nightly PR is opened, CI on the remote runs
+   asynchronously. Don't block the session waiting on it: pick up
+   new work from the cascade while CI runs. *But* when CI comes
+   back red, the cascade's `pr_rescue` step routes you to fix it
+   on the next `nightly next` boundary — and as of v0.0.5+ that
+   routing now **preempts `accepted_rfc`** when the feedback is
+   blocking (failed CI checks, CHANGES_REQUESTED reviews). The
+   cascade order is `resume_in_flight → unblocked_approval →
+   pr_rescue (blocking only) → accepted_rfc → github_issue →
+   pr_rescue (non-blocking) → ideate`. Concretely: between tasks
+   you can run `nightly ci` for an eyeball check, but you don't
+   need to — `nightly next` will surface red CI automatically and
+   bump it above fresh RFC work. **Draft PRs count too.** A
+   not-yet-marked-ready PR with red CI is the same priority as a
+   ready one; don't push commits to a draft that you wouldn't
+   push to a ready PR. Always run `nightly verify` locally before
+   `git push`, draft or not.
 9. **Arm the host-level keep-alive at session start.** Run
    `nightly session start` as the first thing the /nightly skill does.
    This writes a `SESSION_ACTIVE` marker that the host's Stop-equivalent
