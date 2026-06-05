@@ -1,26 +1,64 @@
 # Nightly
 
 [![CI](https://github.com/ulmentflam/nightly/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ulmentflam/nightly/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/ulmentflam/nightly?include_prereleases&sort=semver)](https://github.com/ulmentflam/nightly/releases)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-> A continuously-running, host-native coding agent. Drops into the
-> coding CLI you already use, picks tasks off a priority cascade, runs
-> them in isolated worktrees, and lands review-shaped PRs by morning.
+## Work while you sleep.
 
-Nightly is a Python orchestrator that runs *inside* Claude Code, Codex,
-opencode, Cursor, Antigravity, or vanilla Gemini CLI — turning a chat
-session into a self-directed, drainable one. It picks work off a
-priority cascade (in-flight plans → approved RFCs → ranked GitHub
-issues → proposer suite), dispatches specialist sub-agents in isolated
-git worktrees, surfaces draft PRs for morning review, and stops
-cooperatively — never `SIGKILL`.
+Nightly is a host-native autonomous coding agent that runs *inside* the
+coding CLI you already use — Claude Code, Codex, opencode, Cursor,
+Antigravity, or Gemini CLI — and turns it into a self-directed,
+drainable session. You stop coding at 5pm, fire `/nightly`, and wake up
+to a stack of **draft PRs in review-ready shape**: each on its own
+worktree, each with its own commit history, each tied to a morning
+**briefing.html** that tells you what landed, what's blocked, and what
+needs your eyes.
 
-**Status:** six host integrations, headless dispatch, pre-commit hooks,
-GitHub Actions CI, type-clean tree. The full design lives in
-[`.planning/brainstorm.html`](.planning/brainstorm.html); this README is
-the operator's view.
+> **Scope:** Nightly opens draft PRs and writes a morning briefing. A
+> human still reviews and merges — the briefing is the review surface,
+> and the refusal policy is what keeps the surface safe. Refused
+> categories: destructive git, production state, external
+> communication, network egress to unknown hosts, scope creep, and
+> bypassing tests or type checks.
+
+The overnight loop is the intended shape, but the same machinery fits
+any block of step-away time: a long lunch, a meeting marathon, a
+flight. Anywhere your editor would otherwise sit idle.
+
+---
+
+## The overnight loop
+
+```
+17:00  you stop coding         → /nightly
+                                 the host's Stop hook keeps the
+                                 session alive across turn boundaries
+
+17:00–07:00  Nightly walks the priority cascade:
+             in-flight plans → unblocked approvals → accepted RFCs →
+             ranked GitHub issues → PR rescue → ideation
+             each pick lands on its own isolated git worktree
+             refused operations are recorded, not silently retried
+
+07:00  you wake up             → open .nightly/runs/<id>/briefing.html
+                                 review draft PRs · merge what you like ·
+                                 reject what you don't · the briefing
+                                 is the review surface
+```
+
+The cascade never invents work it can't justify. When the backlog is
+empty, the proposer suite scans for autofixable lint debt, TODO/FIXME
+audits, and `Any` type holes; only the smallest of these auto-promote
+to a draft PR (single file, < 80 LOC, category in `{lint_debt,
+dep_upgrade}`). Everything else lands as a *proposal* for you to
+approve in the morning.
+
+The mechanics — cascade ordering, plan lifecycle, worktree isolation,
+refusal policy, keep-alive plumbing — are documented in [How it
+works](#how-it-works) below.
 
 ---
 
@@ -72,12 +110,12 @@ for forks).
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew install --HEAD ulmentflam/tap/nightly
+brew install ulmentflam/tap/nightly
 ```
 
-Same shim shape as `install.sh`: the formula puts a `uv`-driven
-binary on PATH. `--HEAD` installs from `main` (the only channel
-until a tagged release lands); drop the flag once `v0.0.1` ships.
+Tagged releases land on the tap automatically; `brew upgrade nightly`
+pulls the latest. Released versions live under
+[github.com/ulmentflam/nightly/releases](https://github.com/ulmentflam/nightly/releases).
 After install, run `nightly init --scope user` as above.
 
 ### From source (development)
@@ -92,8 +130,9 @@ uv run nightly --help           # or `source .venv/bin/activate && nightly --hel
 
 ### Headless / unattended
 
-For cron, CI, or "drain the backlog while I sleep" runs, skip the host
-slash command and drive the cascade directly:
+For cron, CI, or genuinely-unattended overnight runs where no host
+session is open, skip the slash command and drive the cascade
+directly:
 
 ```bash
 cd <some-repo>
@@ -107,7 +146,9 @@ nightly vault open                            # open the knowledge-graph dashboa
 
 ### Slash commands
 
-Installed into every host alongside the main skill:
+`/nightly-init` writes these into every host alongside the main skill,
+so the overnight loop, the wind-down, and the bug-bundle are all one
+keystroke from inside the CLI:
 
 | Command              | Purpose                                                       |
 |----------------------|---------------------------------------------------------------|
@@ -119,11 +160,15 @@ Installed into every host alongside the main skill:
 
 ---
 
-## Hosts
+## Six hosts, one on-disk run state
 
-Six hosts ship with first-class integrations. The three *primary*
-hosts support full headless dispatch; the three *secondary* hosts ship
-the launcher only — their headless story is a remote queue, deferred.
+Because everything Nightly knows lives on disk under `.nightly/`, the
+host is interchangeable. Suspend a Claude Code run, resume it in Codex
+the next evening, render the briefing from opencode — same tasks, same
+plans, same vault. The three *primary* hosts support full headless
+dispatch; the three *secondary* hosts ship the launcher and the
+morning briefing, with their headless story deferred to a remote
+queue.
 
 | Host           | Tier      | Skill installed at                        | Sub-agent dispatch                 | OS sandbox                |
 | -------------- | --------- | ----------------------------------------- | ---------------------------------- | ------------------------- |
@@ -148,45 +193,65 @@ custom-command TOML under `.gemini/commands/`. Both register an
 `AfterAgent` Stop-style hook against `.gemini/settings.json` — the
 merge is idempotent if you co-install them.
 
+### Keep-alive plumbing
+
+Coding CLIs end their session the moment the model finishes its first
+response. The overnight loop only loops because Nightly registers a
+host-level Stop-equivalent hook that catches that boundary and
+re-injects a "continue" prompt. Five of the six hosts get a real hook;
+opencode is soft (rule-text only — the model is asked to never stop):
+
+| Host           | Hook              |
+|----------------|-------------------|
+| Claude Code    | `Stop`            |
+| Codex CLI      | `Stop`            |
+| Cursor 1.7+    | `stop`            |
+| Antigravity    | `AfterAgent`      |
+| Gemini CLI     | `AfterAgent`      |
+| opencode       | (soft / rule-text) |
+
+The hook checks a `SESSION_ACTIVE` marker on disk and re-injects a
+"continue on X" prompt at every turn boundary. The marker has a 4-hour
+TTL; `nightly session start` refreshes it. The human off-ramps
+(`nightly conclude`, `nightly stop`, `Ctrl-C`) take precedence and end
+the session cleanly.
+
 ---
 
 ## What it does
+
+### Finds work without being asked
 
 - **Priority cascade** — picks the next task automatically by walking a
   fixed precedence: resume in-flight plans → unblocked-by-approval plans
   → accepted RFCs in `.planning/rfcs/` → highest-ranked open GitHub
   issue (via `gh`) → PR rescue (new review feedback on open Nightly PRs)
   → ideation (proposer suite) → terminal *nothing*.
-- **Per-task isolation** — every task lives in its own `git worktree`
+- **Proposer suite** — when the backlog is empty, scans for TODO/FIXME
+  audits, autofixable lint debt (ruff), and `Any` type holes; writes
+  ranked draft issues to `<run>/proposed/issues/` for human review.
+- **Cascade PR-awareness** — the cascade skips RFC checkbox items whose
+  text appears in an open Nightly PR's title or body, so the agent
+  doesn't re-pick work that's already awaiting review. Both signals are
+  best-effort substring matches with a bias toward false negatives.
+
+### Runs tasks in isolation
+
+- **Per-task worktrees** — every task lives in its own `git worktree`
   forked from a base branch, so concurrent dispatches cannot stomp on
   each other.
 - **Specialists** — four sub-agent roles (`implementer`, `tester`,
   `reviewer`, `researcher`) with their own context windows, dispatched
   through each host's native primitive.
-- **Proposer suite** — when the backlog is empty, scans for TODO/FIXME
-  audits, autofixable lint debt (ruff), and `Any` type holes; writes
-  ranked draft issues to `<run>/proposed/issues/` for human review.
-- **Autonomy bar** — proposals are auto-promoted only when *single
-  file*, *< 80 LOC*, and category in `{lint_debt, dep_upgrade}`.
-  Everything else waits for human approval.
-- **Hybrid briefing** — Python owns the deterministic structural
-  skeleton (hero counts, task pills, approvals list); the agent owns
-  three narrative slots (`briefing.md`, per-task `notes.md`,
-  `lessons.md`) that survive context compaction.
-- **Headless mode** — `nightly run` drives the cascade in cron / CI
-  by spawning `claude -p` / `codex exec` / `opencode run` directly.
-  Opt-in `--concurrency N` parallelism via `asyncio.gather` + worktrees.
-- **Six-category refusal policy** — destructive git, production state,
-  external comms / publishing, network egress to unknown domains, scope
-  creep, bypassing test or type safety. Refused operations are recorded
-  retro (not blocking) for review in the morning briefing.
-- **Cooperative drain** — `nightly conclude` writes a marker the loop
-  honours at the next batch boundary. Never `SIGKILL`. Half-finished
-  work parks as `status: parked` on a dedicated branch.
-- **Cascade PR-awareness** — the cascade skips RFC checkbox items whose
-  text appears in an open Nightly PR's title or body, so the agent
-  doesn't re-pick work that's already awaiting review. Both signals are
-  best-effort substring matches with a bias toward false negatives.
+- **Headless parallelism** — `nightly run` drives the cascade in cron
+  or CI by spawning `claude -p` / `codex exec` / `opencode run`
+  directly. Opt-in `--concurrency N` parallelism via `asyncio.gather`
+  plus worktrees.
+- **Worktree readiness** — before any task dispatch, `nightly worktree
+  doctor` probes the repo's pre-commit infrastructure.
+  `missing_python_dep` and `missing_pre_commit_hook` are
+  auto-remediated; other failures surface as a `worktree_remediation`
+  proposal so a broken worktree can't silently waste a session turn.
 - **Stacked-PR prevention** — RFC 004 §C prevents accidental PR chains
   by forcing each new worktree to branch from `main`. A task can opt
   into a stacked geometry by declaring `depends_on_pr: <N>` in its
@@ -196,17 +261,33 @@ merge is idempotent if you co-install them.
   with a teal "declared dependency chain" panel and any accidental
   geometry with the existing rose "stacked PR geometry" panel (RFC
   001 §B2) so reviewers can distinguish the two at a glance.
-- **Worktree readiness** — before any task dispatch, `nightly worktree
-  doctor` probes the repo's pre-commit infrastructure. `missing_python_dep`
-  and `missing_pre_commit_hook` are auto-remediated; other failures surface
-  as a `worktree_remediation` proposal so a broken worktree can't silently
-  waste a session turn.
+
+### Refuses what it shouldn't do
+
+- **Six-category refusal policy** — destructive git, production state,
+  external comms / publishing, network egress to unknown domains, scope
+  creep, bypassing test or type safety. Refused operations are recorded
+  retro (non-blocking) for review in the morning briefing.
+- **Autonomy bar** — proposals are auto-promoted only when *single
+  file*, *< 80 LOC*, and category in `{lint_debt, dep_upgrade}`.
+  Everything else waits for human approval.
+- **Cooperative drain** — `nightly conclude` writes a marker the loop
+  honours at the next batch boundary. Never `SIGKILL`. Half-finished
+  work parks as `status: parked` on a dedicated branch.
+
+### Hands you a reviewable morning
+
+- **Hybrid briefing** — Python owns the deterministic structural
+  skeleton (hero counts, task pills, approvals list); the agent owns
+  three narrative slots (`briefing.md`, per-task `notes.md`,
+  `lessons.md`) that survive context compaction. This is the file you
+  open at 07:00.
 - **Knowledge graph (vault)** — `nightly brief` also builds a navigable
-  knowledge graph under `.nightly/vault/`: every run, task, lesson, and PR
-  becomes a node; parent/spawned/derived_from edges form a DAG. Open the
-  dashboard with `nightly vault open` — it runs in any browser, no server
-  needed (sql.js + wasm are vendored). The dashboard surfaces cross-run
-  patterns the briefing alone doesn't.
+  knowledge graph under `.nightly/vault/`: every run, task, lesson, and
+  PR becomes a node; parent / spawned / derived_from edges form a DAG.
+  Open the dashboard with `nightly vault open` — it runs in any
+  browser, no server needed (sql.js + wasm are vendored). The dashboard
+  surfaces cross-run patterns the briefing alone doesn't.
 
 ---
 
@@ -291,7 +372,7 @@ invokes `/nightly` interactively with a feature seed, the host skill
 calls `nightly seed-rfc "<title>"` to stub a new accepted RFC under
 `.planning/rfcs/` carrying `author: nightly-seed` in the frontmatter.
 The cascade then picks the stub's unchecked items via the standard
-`accepted_rfc` slot — same shape as hand-authored RFCs 001–004,
+`accepted_rfc` slot — same shape as hand-authored RFCs 001–008,
 distinguishable on retro audit by the `author` field. The
 seed-stubbed pathway is opt-in (the skill decides based on seed
 shape) and never fires for one-line bugfix seeds, which keep using
@@ -362,7 +443,7 @@ against the same repo can race on plan-status updates.
 ├── .planning/                        # human-authored design
 │   ├── brainstorm.html               # the full design doc (open with `make brief`)
 │   ├── decisions/
-│   └── rfcs/
+│   └── rfcs/                         # RFCs 001–008 accepted; 009 planned
 └── .nightly/                         # agent runtime state (gitignored by default)
 ```
 
@@ -433,8 +514,10 @@ enforces the merge gate): `git commit --no-verify`.
 
 The full design — architectural decisions, prior-art research, the
 refusal-policy rationale, host-comparison matrices, references — lives
-in [`.planning/brainstorm.html`](.planning/brainstorm.html). After
-cloning, open it with:
+in [`.planning/brainstorm.html`](.planning/brainstorm.html), with
+incremental decisions captured as RFCs 001–008 in
+[`.planning/rfcs/`](.planning/rfcs/). After cloning, open the
+brainstorm with:
 
 ```bash
 make brief
@@ -443,7 +526,8 @@ make brief
 The brainstorm covers the architecture, state machine, host-comparison
 matrix, refusal policy, and prior art (Devin · OpenHands · SWE-agent ·
 Sweep · AutoCodeRover · Copilot · Factory · Replit · Amp · Cosine and
-others) with inline references throughout.
+others) with inline references throughout. RFC 009 (host-cap respawn
+supervisor) is planned and not yet drafted.
 
 ---
 
