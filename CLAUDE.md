@@ -172,7 +172,7 @@ alive" not "voluntarily released"): `no_run` (no active run) and
 `inactive` (`SESSION_ACTIVE` marker absent — non-Nightly sessions
 are untouched). One host-level override also remains and cannot be
 fought from Python: `host_cap`, where Claude Code's own
-9-consecutive-block safety overrides us regardless. RFC 009
+9-consecutive-block safety overrides us regardless. RFC 010
 (planned) addresses `host_cap` with a respawn supervisor that
 starts a fresh host session on disk-state continuity, so the
 operator-visible session looks unbroken across the host's

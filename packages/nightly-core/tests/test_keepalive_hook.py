@@ -395,7 +395,7 @@ def test_repeated_picks_no_longer_release(initialized_repo: Path) -> None:
     directive. A stuck cascade now keeps force-continuing; the
     operator must place a CONCLUDE / STOP marker to end the session
     (or wait for the host's 9-block override, which is out of our
-    control and addressed by RFC 009's respawn supervisor).
+    control and addressed by RFC 010's respawn supervisor).
     """
     arm_session(initialized_repo)
     # Empty repo → cascade returns the same `nothing` pick every turn.

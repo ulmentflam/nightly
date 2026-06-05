@@ -28,7 +28,7 @@ regardless":
   hook with `stop_hook_active=True` to signal "I'm about to override
   you regardless." We bow out cleanly per the docs. The clever bypass
   for this is a respawn supervisor that watches for the cap and starts
-  a fresh host session — see RFC 009 (planned).
+  a fresh host session — see RFC 010 (planned).
 
 Removed in v0.0.3 (per the operator's "the only termination should be
 human intervention" directive):

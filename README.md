@@ -526,8 +526,11 @@ make brief
 The brainstorm covers the architecture, state machine, host-comparison
 matrix, refusal policy, and prior art (Devin · OpenHands · SWE-agent ·
 Sweep · AutoCodeRover · Copilot · Factory · Replit · Amp · Cosine and
-others) with inline references throughout. RFC 009 (host-cap respawn
-supervisor) is planned and not yet drafted.
+others) with inline references throughout. RFC 009 (synthesis-driven
+ideate — codebase-wide proposals across cleaning/refactoring/
+housekeeping/convenience/capability) is accepted and awaiting
+implementation. RFC 010 (host-cap respawn supervisor) is planned
+and not yet drafted.
 
 ---
 
