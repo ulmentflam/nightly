@@ -217,7 +217,9 @@ For each task the cascade hands you:
    --host opencode`. Backgrounds `opencode run` in a detached process
    so the operator's chat stays free; `dispatch.json` + `dispatch.log`
    capture state. Session-forking via `POST /session/:id/fork` is the
-   fallback when an unattended `nightly run` is in play.
+   fallback when an unattended `nightly run` is in play, or when
+   `.nightly/config.yml`'s `agents.background_dispatch: false` is set
+   (v0.0.7+ preference).
 4. **TEST** — `nightly dispatch start <slug> --role tester --host opencode`.
 5. **REVIEW** — `nightly dispatch start <slug> --role reviewer --host opencode`.
    Route Needs-changes back through another implementer dispatch.

@@ -1,6 +1,6 @@
 [project]
 name = "nightly-host-cursor"
-version = "0.0.6"
+version = "0.0.7"
 description = "Nightly host integration for Cursor (secondary host)."
 readme = "README.md"
 requires-python = ">=3.12"

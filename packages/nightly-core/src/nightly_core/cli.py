@@ -178,6 +178,20 @@ ideate:
     enabled:          true
     timeout_seconds:  120
     max_proposals:    25
+
+# agents governs how specialist sub-agents (implementer / tester /
+# reviewer / researcher) are dispatched in interactive sessions.
+# - `background_dispatch: true` (default) — specialists spawn as
+#   detached host processes via `nightly dispatch start` so the
+#   operator's chat stays free for other work. Poll via
+#   `nightly dispatch status / tail / wait`.
+# - `background_dispatch: false` — fall back to the host's native
+#   Task-tool surface (blocking the calling chat). Use only when you
+#   explicitly want to watch the specialist's progress in-band.
+# `nightly run` headless ignores this preference — each task gets its
+# own host process by construction.
+agents:
+  background_dispatch: true
 """
 
 
@@ -457,6 +471,14 @@ def status() -> None:
             mark = "✓" if integration.is_installed(scope) else "✗"
             path = integration.skill_path(scope)  # type: ignore[attr-defined]
             typer.echo(f"    {hid:<10} {scope:<7} {mark} {_format_path_for_display(path, root)}")
+
+    # Surface the v0.0.7+ agents preference so the operator can eyeball
+    # whether interactive specialist dispatch will background or block.
+    from nightly_core.config import load_agents_config  # noqa: PLC0415 - lazy
+
+    agents_cfg = load_agents_config(root)
+    mode = "background" if agents_cfg.background_dispatch else "foreground (Task tool)"
+    typer.echo(f"  agents:    dispatch={mode}")
 
     typer.echo("  runs:")
     run = current_run(root)

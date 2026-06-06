@@ -7,7 +7,7 @@
 
 [project]
 name = "nightly"
-version = "0.0.6"
+version = "0.0.7"
 description = "Turns your coding CLI (Claude Code, Codex, opencode, Cursor, Antigravity, Gemini) into a self-directed, drainable session that lands review-shaped PRs by morning."
 readme = "README.md"
 requires-python = ">=3.12"
