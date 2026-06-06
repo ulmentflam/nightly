@@ -300,8 +300,17 @@ audit that writes only to its own task dir doesn't qualify.
 
 ### 3. IMPLEMENT — background-dispatch the implementer specialist
 
-**Default for interactive sessions: background-dispatch every
-specialist** so the operator's chat stays free for other work. Use:
+**Dispatch mode preference (v0.0.7+).** Read
+`.nightly/config.yml`'s `agents.background_dispatch` setting before
+dispatching. **Default `true`** — specialists spawn as detached
+host processes so the operator's chat stays free. Flip to `false`
+in the config to fall back to the Task tool (blocking the chat
+while the sub-agent runs). `nightly status` prints the current
+value if you want a quick eyeball check; this paragraph + the
+config block carry the canonical wording. The rest of this step
+assumes `background_dispatch: true` since that's the default.
+
+With background-dispatch (the default), use:
 
 ```bash
 nightly dispatch start <slug> --role implementer
@@ -320,8 +329,9 @@ the chat; the spawned process writes to `dispatch.log` and
 finishes on its own.
 
 **When to fall back to the Task tool:** unattended runs (`nightly
-run` headless), or when the operator explicitly says "stay
-foreground." Both cases are rare in interactive sessions.
+run` headless), when `agents.background_dispatch: false` is set in
+config, or when the operator explicitly says "stay foreground."
+Outside those three cases, prefer background dispatch.
 
 **Polling:**
 

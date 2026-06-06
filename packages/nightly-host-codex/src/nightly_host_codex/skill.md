@@ -208,7 +208,8 @@ For each task the cascade hands you:
    the operator's chat stays free; `dispatch.json` + `dispatch.log`
    capture state. MCP-based dispatch via the host's blocking
    primitive is the fallback when an unattended `nightly run` is in
-   play.
+   play, or when `.nightly/config.yml`'s
+   `agents.background_dispatch: false` is set (v0.0.7+ preference).
 4. **TEST** — `nightly dispatch start <slug> --role tester --host codex`.
 5. **REVIEW** — `nightly dispatch start <slug> --role reviewer --host codex`.
 6. **LAND** — open PR (if GitHub remote) or write `proposal.md` locally.

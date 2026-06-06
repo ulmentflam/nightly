@@ -22,9 +22,11 @@ import yaml
 from nightly_core.paths import nightly_dir
 
 __all__ = [
+    "AgentsConfig",
     "GitConfig",
     "VaultConfig",
     "WorktreeConfig",
+    "load_agents_config",
     "load_git_config",
     "load_vault_config",
     "load_worktree_config",
@@ -231,4 +233,56 @@ def load_ideate_config(root: Path | None = None) -> IdeateConfig:
     return IdeateConfig(
         category_ordering=bool(ideate.get("category_ordering", defaults.category_ordering)),
         synthesis=synthesis,
+    )
+
+
+@dataclass(frozen=True)
+class AgentsConfig:
+    """The `agents:` block of `.nightly/config.yml`.
+
+    Governs how specialist sub-agents (implementer / tester / reviewer /
+    researcher) get dispatched in interactive sessions. The skill text
+    on each host reads this preference and chooses between
+    `nightly dispatch start` (background) and the host's native Task-
+    tool surface (foreground).
+    """
+
+    background_dispatch: bool = True
+    """When True (default), specialists spawn as detached host processes
+    via `nightly dispatch start <slug> --role <role>` — the operator's
+    chat stays free for other work while the sub-agent runs. State is
+    recorded under `.nightly/runs/<id>/tasks/<n>-<slug>/dispatch.json`;
+    `nightly dispatch status` / `tail` / `wait` poll the spawn.
+
+    When False, the skill falls back to the host's native Task-tool
+    surface, which blocks the calling chat until the sub-agent returns.
+    Use only when you explicitly want to watch the specialist's
+    progress in-band (debugging an unfamiliar host, eyeballing a
+    long-running review). Nightly's headless `nightly run` driver
+    ignores this preference — each task gets its own host process by
+    construction, so the chat-block concern doesn't apply."""
+
+
+def load_agents_config(root: Path | None = None) -> AgentsConfig:
+    """Parse the `agents:` block from `<root>/.nightly/config.yml`.
+
+    Defaults whenever the file is missing, unreadable, malformed, or
+    has no `agents:` block. Matches the shape of the other per-feature
+    `load_*_config` helpers."""
+    defaults = AgentsConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+    agents = data.get("agents") if isinstance(data, dict) else None
+    if not isinstance(agents, dict):
+        return defaults
+    return AgentsConfig(
+        background_dispatch=bool(agents.get("background_dispatch", defaults.background_dispatch)),
     )

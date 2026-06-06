@@ -105,6 +105,15 @@ ideate:
     enabled:          true
     timeout_seconds:  120
     max_proposals:    25
+
+# agents governs interactive specialist dispatch.
+# - `background_dispatch: true` (default) — `nightly dispatch start`
+#   spawns specialists as detached host processes so the operator's
+#   chat stays free.
+# - `background_dispatch: false` — fall back to the host's Task tool,
+#   which blocks the calling chat until the sub-agent returns.
+agents:
+  background_dispatch: true
 """
 
 

@@ -170,7 +170,10 @@ Update `plan.md` frontmatter as you transition between phases:
 3. **IMPLEMENT** — `nightly dispatch start <slug> --role implementer
    --host gemini`. Backgrounds `gemini --prompt` in a detached
    process so the operator's chat stays free; `dispatch.json` +
-   `dispatch.log` capture state.
+   `dispatch.log` capture state. When `.nightly/config.yml` sets
+   `agents.background_dispatch: false` (v0.0.7+ preference), fall
+   back to blocking dispatch via the host's headless sub-process
+   instead.
 4. **TEST** — `nightly dispatch start <slug> --role tester --host gemini`.
 5. **REVIEW** — `nightly dispatch start <slug> --role reviewer --host gemini`.
 6. **LAND** — open PR (if GitHub remote) or write `proposal.md`.
