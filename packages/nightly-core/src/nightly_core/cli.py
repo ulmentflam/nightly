@@ -491,6 +491,20 @@ def status() -> None:
     if len(all_runs) > 1:
         typer.echo(f"    ({len(all_runs)} run(s) total)")
 
+    # v0.0.8+: surface RESPAWN_REQUESTED prominently. If present, the
+    # prior session ended via host_cap with work pending — the operator
+    # (or the `/nightly` skill respawn-detection step) should resume
+    # the cascade rather than treat this as a fresh start. Mirrors how
+    # we already surface SESSION_ACTIVE state via the runs marker block.
+    from nightly_core.keepalive_hook import read_respawn_marker  # noqa: PLC0415 - lazy
+
+    respawn = read_respawn_marker(root)
+    if respawn is not None:
+        typer.echo("  respawn:")
+        typer.echo(f"    ⚠ RESPAWN_REQUESTED at {respawn or '(unknown time)'}")
+        typer.echo("    prior session stopped via host_cap with cascade work pending;")
+        typer.echo("    re-invoke `/nightly` (or run `nightly next`) to resume.")
+
 
 # ── run lifecycle ─────────────────────────────────────────────────────────
 
@@ -1790,15 +1804,30 @@ def session_start() -> None:
     The /nightly skill calls this at session start. Without it, the Stop
     hook treats the session as non-Nightly and lets it stop naturally —
     so this is the "opt in to keep-alive" switch. Idempotent.
+
+    v0.0.8+: surfaces RESPAWN_REQUESTED before clearing it. If the
+    prior session ended via `host_cap` (Claude Code's 9-consecutive-
+    block override — bug reports #13/#16), the marker tells the skill
+    to skip the seed-vs-cascade prelude and go straight to `nightly
+    next`. We print the notice from this verb (rather than relying on
+    the skill to call `nightly status`) so the signal is unmissable
+    in the same scrollback line as the arm acknowledgement.
     """
+    from nightly_core.keepalive_hook import read_respawn_marker  # noqa: PLC0415 - lazy
+
     root = repo_root()
-    marker = arm_session(root)
+    respawn = read_respawn_marker(root)
+    marker = arm_session(root)  # clears RESPAWN_REQUESTED as a side effect
     if marker is None:
         typer.echo(
             "no active run — `nightly start` first, then `nightly session start`.",
             err=True,
         )
         raise typer.Exit(code=1)
+    if respawn is not None:
+        typer.echo(f"⚠ RESPAWN_REQUESTED (host_cap stop at {respawn or 'unknown time'})")
+        typer.echo("  prior session ended involuntarily with cascade work pending —")
+        typer.echo("  skip the seed prelude and run `nightly next` immediately.")
     typer.echo(f"✓ armed keep-alive — {_format_path_for_display(marker, root)}")
     typer.echo("  The Stop hook will force-continue until CONCLUDE, STOP, or 4h idle.")
 

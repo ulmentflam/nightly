@@ -211,11 +211,20 @@ alive" not "voluntarily released"): `no_run` (no active run) and
 `inactive` (`SESSION_ACTIVE` marker absent — non-Nightly sessions
 are untouched). One host-level override also remains and cannot be
 fought from Python: `host_cap`, where Claude Code's own
-9-consecutive-block safety overrides us regardless. RFC 010
-(planned) addresses `host_cap` with a respawn supervisor that
-starts a fresh host session on disk-state continuity, so the
-operator-visible session looks unbroken across the host's
-internal session boundaries.
+9-consecutive-block safety overrides us regardless.
+
+**Partial mitigation in v0.0.8+ (bug reports #13 / #16).** When the
+hook yields to `host_cap`, it now drops a `RESPAWN_REQUESTED` marker
+under the current run dir before bowing out. `nightly status` and
+`nightly session start` both surface the marker prominently the
+next time someone enters the repo; the Claude skill reads
+`nightly session start`'s output and, on seeing the marker, skips
+its fresh-session prelude (seed parsing, briefing checks) and walks
+the cascade immediately. The operator's "re-invoke `/nightly`"
+becomes a clean continuation, not a restart. RFC 010 (planned) is
+the daemon-driven follow-up: a supervisor that re-invokes the host
+itself on `host_cap` so the operator never has to. The marker is
+the disk-state half of RFC 010 shipping early.
 
 ### Filing a bug against Nightly itself
 

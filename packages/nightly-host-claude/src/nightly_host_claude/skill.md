@@ -54,6 +54,20 @@ this repo are unaffected). With it, the hook re-injects a "continue on
 X" prompt whenever you'd otherwise end your turn. Idempotent: re-running
 just refreshes the 4-hour TTL.
 
+**Respawn-resume signal (v0.0.8+).** Watch the output of `nightly
+session start`. If it prints a `⚠ RESPAWN_REQUESTED` line, the prior
+session ended via `host_cap` (Claude Code's 9-consecutive-block
+override that no Stop hook can fight from Python — bug reports #13
+and #16) with cascade work still pending. The marker is the
+operator's "please continue where you left off" cue: do **not** treat
+this as a fresh session. Skip the seed-vs-cascade decision tree, do
+not re-render the briefing, do not write a narrative — go directly to
+`nightly next` and execute the cascade pick. The marker self-clears
+when `nightly session start` (re-arm) succeeds, so you only see it
+once per host_cap event. If `nightly session start` does **not**
+print that line, behave as described in the rest of this skill
+(fresh session, possibly with a seed).
+
 The keep-alive has only **human-triggered** off-ramps in v0.0.3+ —
 every automatic release (`MAX_TURNS` runaway cap, 4h `SESSION_ACTIVE`
 staleness, `cascade_loop` repeated-pick guard, `MAX_OPEN_PRS` cap)
