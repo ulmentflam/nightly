@@ -530,7 +530,11 @@ others) with inline references throughout. RFC 009 (synthesis-driven
 ideate — codebase-wide proposals across cleaning/refactoring/
 housekeeping/convenience/capability) is accepted and awaiting
 implementation. RFC 010 (host-cap respawn supervisor) is planned
-and not yet drafted.
+and not yet drafted — v0.0.8 ships its disk-state half (a
+`RESPAWN_REQUESTED` marker written on involuntary `host_cap`
+stops, surfaced at the next `nightly session start`), so the
+operator's manual re-invocation of `/nightly` resumes the cascade
+cleanly instead of restarting.
 
 ---
 

@@ -65,6 +65,7 @@ from nightly_core.runs import current_run
 __all__ = [
     "HOOK_FORMATS",
     "LOOP_HISTORY_FILENAME",
+    "RESPAWN_REQUESTED_FILENAME",
     "SESSION_ACTIVE_FILENAME",
     "STOP_FILENAME",
     "HookFormat",
@@ -74,6 +75,7 @@ __all__ = [
     "disarm_session",
     "format_decision",
     "log_heartbeat",
+    "read_respawn_marker",
     "request_stop",
 ]
 
@@ -103,6 +105,27 @@ SESSION_ACTIVE_FILENAME = "SESSION_ACTIVE"
 
 STOP_FILENAME = "STOP"
 """Marker file under the run dir. Presence = immediate hard stop requested."""
+
+RESPAWN_REQUESTED_FILENAME = "RESPAWN_REQUESTED"
+"""Marker file under the run dir. Written when `compute_stop_hook_decision`
+yields with `host_cap` — Claude Code's own 9-consecutive-block override
+that we can't fight from Python. The marker signals "this session ended
+involuntarily, not because the operator asked for it; the cascade still
+had work" so a respawn supervisor (RFC 010, planned) or the operator can
+pick up where we left off.
+
+Contents are a single ISO-8601 timestamp + cascade-pick summary (one
+line). The Claude skill reads this at session start: if the marker is
+present, treat the new session as a continuation of the prior — walk
+the cascade immediately, no fresh-session reset. `nightly status`
+surfaces the marker so the operator can see at a glance that a respawn
+is pending.
+
+Cleared on:
+- `nightly conclude` — the operator's explicit "we're done" signal.
+- `nightly stop` — the operator's explicit hard stop.
+- `nightly session start` — fresh-session re-arm.
+- Manually via `rm .nightly/runs/<id>/RESPAWN_REQUESTED`."""
 
 LOOP_HISTORY_FILENAME = "keepalive.history"
 """Per-run file of cascade-pick fingerprints, newline-delimited. Trimmed
@@ -166,12 +189,24 @@ def compute_stop_hook_decision(
     """
     del now  # no longer used — the staleness check that consumed `now` was retired in v0.0.3
     if stop_hook_active:
+        # Yield to the host's 9-consecutive-block override (we cannot
+        # fight it from Python — the documented protocol is to bow out
+        # cleanly), but drop a RESPAWN_REQUESTED marker on disk so the
+        # operator (or an RFC 010 supervisor) knows this stop was
+        # involuntary and the cascade still had work. Issues #13 and
+        # #16 both hit this exact failure mode: 1 force_continue
+        # followed by host_cap within ~17 minutes, work still pending.
+        run = current_run(root)
+        if run is not None:
+            _write_respawn_marker(run.path)
         return StopHookDecision(
             payload={},
             reason_code="host_cap",
             message=(
                 "host signaled stop_hook_active — yielding to the host's "
-                "consecutive-block cap; will not force-continue this turn."
+                "consecutive-block cap; will not force-continue this turn. "
+                "RESPAWN_REQUESTED marker written — re-invoke `/nightly` "
+                "to resume the cascade where this session left off."
             ),
         )
     run = current_run(root)
@@ -411,16 +446,74 @@ def format_decision(
 # ── session lifecycle helpers ─────────────────────────────────────────────
 
 
+def _write_respawn_marker(run_path: Path, *, now: datetime | None = None) -> Path:
+    """Drop the RESPAWN_REQUESTED marker for an involuntary host-cap stop.
+
+    Idempotent — a second write just refreshes the timestamp. The
+    Claude skill reads this on the next `/nightly` invocation; if
+    present, the new session picks up the cascade immediately
+    instead of doing a fresh-session handshake.
+
+    Best-effort: silently no-ops on OSError so the hook never crashes
+    the model's turn just because we couldn't drop a marker.
+    """
+    marker = run_path / RESPAWN_REQUESTED_FILENAME
+    payload = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ\n")
+    with contextlib.suppress(OSError):
+        marker.write_text(payload, encoding="utf-8")
+    return marker
+
+
+def read_respawn_marker(root: Path | None = None) -> str | None:
+    """Read the RESPAWN_REQUESTED marker's content, or None if absent.
+
+    The Claude skill calls this at session start. A non-None return
+    value means the previous session ended via `host_cap` with work
+    still on the cascade; the new session should walk `nightly next`
+    immediately rather than running through a fresh-session prelude.
+
+    Returns the trimmed content (ISO-8601 timestamp + optional
+    cascade-pick summary on second line). Empty string is treated as
+    "marker present but empty" — still a respawn signal."""
+    run = current_run(root)
+    if run is None:
+        return None
+    marker = run.path / RESPAWN_REQUESTED_FILENAME
+    if not marker.is_file():
+        return None
+    try:
+        return marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _clear_respawn_marker(run_path: Path) -> None:
+    """Remove the RESPAWN_REQUESTED marker. Called from `arm_session`
+    (fresh handshake), `disarm_session`, and `request_stop` — any path
+    that signals the operator has taken over reconciling state."""
+    marker = run_path / RESPAWN_REQUESTED_FILENAME
+    if marker.is_file():
+        with contextlib.suppress(OSError):
+            marker.unlink()
+
+
 def arm_session(root: Path | None = None, *, now: datetime | None = None) -> Path | None:
     """Touch SESSION_ACTIVE under the current run. Returns the marker path.
 
     Idempotent — re-touching just refreshes the mtime. The marker has
     no TTL in v0.0.3+ (the 4h staleness check was removed); the mtime
     is preserved only for post-mortem audits.
+
+    v0.0.8+: also clears any stale RESPAWN_REQUESTED marker. Arming
+    means "the session is now active again"; the operator (or the
+    Claude skill respawn-detection path) has acknowledged the prior
+    host_cap stop. Leaving a stale marker around would re-trigger the
+    respawn-resume path on every subsequent `nightly status` check.
     """
     run = current_run(root)
     if run is None:
         return None
+    _clear_respawn_marker(run.path)
     marker = run.path / SESSION_ACTIVE_FILENAME
     marker.write_text(
         (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ\n"),
@@ -430,10 +523,16 @@ def arm_session(root: Path | None = None, *, now: datetime | None = None) -> Pat
 
 
 def disarm_session(root: Path | None = None) -> Path | None:
-    """Remove SESSION_ACTIVE under the current run. Returns the marker path."""
+    """Remove SESSION_ACTIVE under the current run. Returns the marker path.
+
+    v0.0.8+: also clears RESPAWN_REQUESTED. Disarming is the
+    operator's explicit "session is over" signal; a leftover respawn
+    marker would re-trigger the resume path on the next `nightly
+    status` / `/nightly` invocation."""
     run = current_run(root)
     if run is None:
         return None
+    _clear_respawn_marker(run.path)
     marker = run.path / SESSION_ACTIVE_FILENAME
     if marker.is_file():
         marker.unlink()
@@ -446,10 +545,15 @@ def request_stop(root: Path | None = None) -> Path | None:
     Unlike `conclude`, this does not wait for the current task to drain
     — the next Stop hook firing will allow the model to end its turn
     cleanly. Used for "the human walked over and wants this off right now".
+
+    v0.0.8+: also clears any pending RESPAWN_REQUESTED — STOP is the
+    operator-explicit "do not resume" signal and overrides the
+    respawn-resume path.
     """
     run = current_run(root)
     if run is None:
         return None
+    _clear_respawn_marker(run.path)
     marker = run.path / STOP_FILENAME
     marker.write_text(
         datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ\n"),

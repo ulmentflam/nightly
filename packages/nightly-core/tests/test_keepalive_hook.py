@@ -11,6 +11,7 @@ import pytest
 from nightly_core.cascade import CascadeChoice
 from nightly_core.keepalive_hook import (
     LOOP_HISTORY_FILENAME,
+    RESPAWN_REQUESTED_FILENAME,
     SESSION_ACTIVE_FILENAME,
     STOP_FILENAME,
     arm_session,
@@ -18,6 +19,7 @@ from nightly_core.keepalive_hook import (
     disarm_session,
     log_heartbeat,
     parse_hook_input,
+    read_respawn_marker,
     request_stop,
 )
 from nightly_core.runs import start_run
@@ -369,6 +371,105 @@ def test_parse_hook_input_round_trips_stop_hook_active() -> None:
     assert parse_hook_input('{"stop_hook_active": false}') == {"stop_hook_active": False}
     # Missing field is fine — CLI defaults to False via bool().
     assert "stop_hook_active" not in parse_hook_input('{"session_id": "x"}')
+
+
+# ── RESPAWN_REQUESTED marker — v0.0.8+ (bug reports #13, #16) ─────────────
+
+
+def test_host_cap_writes_respawn_marker(initialized_repo: Path) -> None:
+    """The whole point of v0.0.8's host_cap branch: drop a marker
+    on disk so the operator (or RFC 010's daemon) can resume the
+    cascade where this session left off. Without this, bug reports
+    #13 and #16 stay un-mitigated: the session ends silently with
+    work pending and no clear "I left work for you" signal."""
+    arm_session(initialized_repo)
+    assert read_respawn_marker(initialized_repo) is None
+
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+
+    content = read_respawn_marker(initialized_repo)
+    assert content is not None
+    # ISO-8601 timestamp prefix, e.g. "2026-06-06T20:33:32Z"
+    assert content.startswith("20")
+    assert content.endswith("Z")
+
+
+def test_host_cap_marker_is_idempotent(initialized_repo: Path) -> None:
+    """A second host_cap firing should not crash and should leave a
+    valid marker. Hooks fire repeatedly and we cannot tell up front
+    which call is the "final" one before the operator re-enters."""
+    arm_session(initialized_repo)
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+
+    content = read_respawn_marker(initialized_repo)
+    assert content is not None
+
+
+def test_host_cap_message_mentions_respawn(initialized_repo: Path) -> None:
+    """The audit-trail message must mention the marker so a
+    post-mortem (`nightly bug`, `keepalive.log` tail) makes the
+    chain visible: host_cap → marker written → operator re-entry."""
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert "RESPAWN_REQUESTED" in decision.message
+
+
+def test_arm_session_clears_respawn_marker(initialized_repo: Path) -> None:
+    """Re-arming means the operator (or skill) has acknowledged the
+    prior host_cap stop. Without the clear, the marker would re-
+    trigger the resume path on every subsequent `nightly status`
+    check and the skill would keep skipping its fresh-session
+    prelude forever."""
+    arm_session(initialized_repo)
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert read_respawn_marker(initialized_repo) is not None
+
+    arm_session(initialized_repo)
+    assert read_respawn_marker(initialized_repo) is None
+
+
+def test_disarm_session_clears_respawn_marker(initialized_repo: Path) -> None:
+    """Disarming is the explicit "session over" signal — leftover
+    respawn marker must not survive into the next session."""
+    arm_session(initialized_repo)
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert read_respawn_marker(initialized_repo) is not None
+
+    disarm_session(initialized_repo)
+    assert read_respawn_marker(initialized_repo) is None
+
+
+def test_request_stop_clears_respawn_marker(initialized_repo: Path) -> None:
+    """STOP overrides the resume path: when the operator hard-stops
+    the session, we must not re-trigger the cascade on next entry."""
+    arm_session(initialized_repo)
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert read_respawn_marker(initialized_repo) is not None
+
+    request_stop(initialized_repo)
+    assert read_respawn_marker(initialized_repo) is None
+
+
+def test_read_respawn_marker_returns_none_without_run(tmp_path: Path) -> None:
+    """No active run → no marker possible. The reader must tolerate
+    this rather than crash; the CLI calls it from `nightly status`
+    and `nightly session start`, both of which can run in repos
+    that haven't been initialized yet."""
+    assert read_respawn_marker(tmp_path) is None
+
+
+def test_read_respawn_marker_returns_none_when_absent(initialized_repo: Path) -> None:
+    """Active run, no marker → None. The reader's None return is
+    the skill's signal to use the fresh-session prelude path."""
+    assert read_respawn_marker(initialized_repo) is None
+
+
+def test_respawn_marker_filename_is_stable() -> None:
+    """The filename is the public contract — RFC 010's daemon, the
+    Claude skill, and `nightly bug`'s state-snapshot all key off
+    this exact name. Pin it down."""
+    assert RESPAWN_REQUESTED_FILENAME == "RESPAWN_REQUESTED"
 
 
 def test_heartbeat_log_records_host_cap_yield(initialized_repo: Path) -> None:
