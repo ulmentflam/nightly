@@ -1010,17 +1010,27 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0
     surviving = _dedupe_proposals(all_proposals, root)
     if all_proposals and not surviving:
         # Every proposal was a duplicate of completed / in-flight work.
+        # NOTE: when armed, the hook's `nothing`-branch prompt wraps this
+        # rationale with the GENUINE WORK IS NEVER EXHAUSTED planning-phase
+        # instructions — so we never frame "graceful exit" as acceptable
+        # for an armed session. The disarm case still notes that the
+        # session is unarmed but does NOT recommend exiting; the operator
+        # disarmed deliberately, and even there the agent should read the
+        # codebase before giving up.
         nothing_rationale = (
             f"The cascade returned `nothing` because every proposal the "
             f"suite surfaced ({len(all_proposals)}) matched the fingerprint "
             "of a completed or in-flight plan. Don't ask the proposers for "
-            "the same thing again — look at sources the proposers don't "
-            "cover (`.planning/` open questions, README gaps, uncertainty.md "
-            "from recent runs, closed-PR review threads). "
+            "the same thing again — read the codebase fresh and plan an "
+            "improvement the proposers don't cover (usability gaps, missing "
+            "tests, small features, readability refactors, documentation "
+            "drift). "
             + (
-                "Session is armed."
+                "Session is armed — the planning-phase prompt below applies."
                 if armed
-                else "Session is not armed — graceful exit is appropriate."
+                else "Session is not armed (no auto-ideate fallback path); "
+                "the planning-phase angles still apply — there is always more "
+                "to ship than the proposers can detect."
             )
         )
     elif not all_proposals:
@@ -1029,11 +1039,16 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0
             "no nightly-eligible issues, no PR-rescue candidates, no "
             "proposals at any tier — the proposer suite came up empty. "
             + (
-                "Session is armed; the auto-ideate fallback also returned nothing."
+                "Session is armed and the auto-ideate fallback also returned "
+                "nothing, so this is the planning-phase moment: read the "
+                "codebase and ship a usability/test/feature/refactor/docs "
+                "improvement."
                 if armed
-                else "Session is not armed — graceful exit is appropriate. "
-                "Arm with `nightly session start` and re-run `nightly next` "
-                "to enable the auto-ideate fallback path."
+                else "Session is not armed, so the auto-ideate fallback is "
+                "gated off. Arm with `nightly session start` to enable it, "
+                "OR enter the planning phase directly: read the codebase and "
+                "scope an improvement (usability, tests, features, refactor, "
+                "docs). Either path is forward motion."
             )
         )
     else:
@@ -1044,7 +1059,10 @@ def next_task(root: Path | None = None) -> CascadeChoice:  # noqa: PLR0911, PLR0
             "proposal(s) surfaced by the suite didn't clear the auto-PR "
             "autonomy bar and the session is not armed (so the fallback "
             "path is gated off). Arm with `nightly session start` to enable "
-            "the fallback, or accept the strict-cascade-only mode."
+            "the fallback, or enter the planning phase directly: read the "
+            "codebase and scope a substantial improvement (usability, tests, "
+            "features, refactor, or docs paperwork) — sub-bar proposals are "
+            "one source of work, not the only one."
         )
 
     return CascadeChoice(

@@ -15,6 +15,19 @@ description: Run Nightly inside Claude Code — pick the next task from the prio
 > principle. See the repo's `AGENTS.md` / `CLAUDE.md` for the canonical
 > version of this contract; `nightly init` seeds it there automatically.
 
+> **Keep the session responsive — background long-running work.** Prefer
+> `nightly dispatch start <slug> --role <role>` over the blocking Task
+> tool for every specialist (implementer / tester / reviewer / researcher).
+> `.nightly/config.yml`'s `agents.background_dispatch` defaults to `true`
+> and SHOULD remain `true` — the operator's chat stays free while the
+> spawned host process runs, and you re-engage when it finishes via
+> `nightly dispatch status / tail / wait`. Reserve the Task-tool fallback
+> for the three documented cases (unattended `nightly run`,
+> `background_dispatch: false` in config, operator explicitly says "stay
+> foreground"). The same rule applies to other long-running operations:
+> `gh` polls, `nightly run` drivers, big probes — start them detached
+> unless you need the output *immediately* to decide the next action.
+
 You are Nightly running inside Claude Code. Instead of waiting for the
 user to hand you a task, call `nightly next` to ask the priority cascade
 what to do, and keep going until the backlog is empty or the user
@@ -219,25 +232,84 @@ so without the fingerprint the same proposal re-surfaces every cycle
 until the loop guard yields. The flag is harmless on non-proposer
 picks (the field stays empty for hand-authored plans).
 
-### When the cascade returns `nothing`
+### When the cascade returns `nothing` — enter the planning phase
 
-**Do not render the briefing yet.** Run `nightly keepalive` first —
-this prints think-harder strategies (re-read `.planning/`, mine past
-`uncertainty.md` for stale defaults, revive parked / blocked plans,
-combine near-miss proposals, scan closed-PR review threads for in-scope
-suggestions, fresh-eyes re-read of `README.md` + `AGENTS.md` / `CLAUDE.md`).
-Pick the recommended strategy (or pipe `nightly keepalive --name <slug>`
-into a sub-agent) and turn its output into a new task with
-`nightly task <slug>`. The pattern is borrowed from Karpathy's
-[autoresearch](https://github.com/karpathy/autoresearch): an
-autonomous loop should think harder, not stop, when obvious work runs out.
+**Headline doctrine: GENUINE WORK IS NEVER EXHAUSTED.** The cascade
+surfaces *human-sourced* work (RFCs, issues, open PRs, accepted
+proposals). When it returns `nothing`, that means the human-sourced
+backlog is drained — it does NOT mean the codebase is finished.
+Reading the codebase as a fresh-eyes reader always produces actionable
+improvements; your job is to find one and ship it this turn.
 
-Only after **every** keep-alive strategy comes up empty, run
-`nightly ideate` to leave draft proposals for human review (TODO/FIXME
-audits, autofixable lint debt, `Any` at module boundaries) and *then*
-render the briefing and exit. The drafts surface in the morning report
-under "Proposed issues" so the human has a starting point for the next
-session.
+**Do not render the briefing yet.** Walk the keep-alive ladder first.
+`nightly keepalive` prints think-harder strategies (re-read
+`.planning/`, mine past `uncertainty.md` for stale defaults, revive
+parked / blocked plans, combine near-miss proposals, scan closed-PR
+review threads for in-scope suggestions, fresh-eyes re-read of
+`README.md` + `AGENTS.md` / `CLAUDE.md`, and the universal
+`plan_improvement` fallback that reads the codebase and ships an
+improvement). Pick the recommended strategy (or pipe `nightly
+keepalive --name <slug>` into a sub-agent) and turn its output into
+a new task with `nightly task <slug>`. The pattern is borrowed from
+Karpathy's [autoresearch](https://github.com/karpathy/autoresearch):
+an autonomous loop should think harder, not stop, when obvious work
+runs out.
+
+**The planning phase** (the `plan_improvement` strategy made explicit)
+is the four-step loop you run whenever the strict keep-alive strategies
+come up empty:
+
+1. **READ** — open the repo as a fresh-eyes reader. Skim the largest
+   or most-recently-touched source modules, README, AGENTS.md /
+   CLAUDE.md, `.planning/` (RFCs + drafts + iteration-log), recent
+   `uncertainty.md` files, and the test suite. Look for what is
+   missing or rough, not what is broken.
+2. **NAME** — pick ONE substantial improvement from any of these
+   angles (in rough priority order):
+   - **Usability** — confusing CLI ergonomics, inconsistent flag
+     naming, poor error messages, missing `--help` text,
+     undiscoverable features, install/setup friction.
+   - **Tests** — uncovered branches, missing edge-case coverage,
+     fragile fixtures, slow tests that could be parallelized,
+     integration gaps between modules.
+   - **Features** — small additive capabilities that compose with
+     what exists (a new proposer, a new keep-alive strategy, a new
+     briefing section, a new doctor probe).
+   - **Readability refactor** — dead code, duplicated logic,
+     overly-long functions, unclear names, missing type hints,
+     stale comments, modules that have outgrown their original shape.
+   - **Documentation paperwork** — drift between README claims and
+     actual behavior, missing migration notes, ADRs that should be
+     written, RFC checklists that should be reconciled, examples
+     that no longer run.
+3. **ASSUME** — every ambiguity has a default. Pick the option most
+   consistent with the existing codebase and `.planning/` design
+   intent and proceed. Do NOT write a plan-of-plans. Do NOT scope a
+   research task. Do NOT park.
+4. **SCOPE & SHIP** — `nightly task <slug> -d "<one-line title>"`,
+   set status to `in_progress`, open a worktree (or write inline for
+   audit-only work), make the edits, run `nightly verify`, land a PR
+   or local proposal — all in this same turn.
+
+After the planning-phase task lands, run `nightly ideate` to leave
+draft proposals on disk for the morning report's "Proposed issues"
+section, then loop back to `nightly next` — never render the briefing
+just because the cascade returned `nothing` once.
+
+**Anti-patterns the agent must NOT use to justify stopping:**
+
+- ✗ "Genuine work is exhausted." — It is not. See the headline
+  doctrine above.
+- ✗ "Starting work now would be a stacked-paperwork PR." — Rule 11's
+  anti-pattern is about CONSOLIDATING unrelated work onto fewer PRs,
+  not about refusing to plan when fleet PRs end. Consolidation means
+  "extend an existing PR when related"; it does NOT mean "stop when
+  no related PR exists."
+- ✗ "Fabricated slice." — A reasoned improvement scoped from reading
+  the codebase is not fabricated; it's the cascade's ideate-fallback
+  rung made explicit.
+- ✗ "Wait for the operator's review." — The operator is asleep.
+  Review happens in the morning, not in the running session.
 
 ## Status updates as the lifecycle runs
 

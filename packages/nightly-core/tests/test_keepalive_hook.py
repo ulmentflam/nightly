@@ -119,16 +119,57 @@ def test_force_continue_increments_turn_counter(initialized_repo: Path) -> None:
 
 
 def test_continuation_reason_includes_cascade_summary(initialized_repo: Path) -> None:
-    """When the cascade returns `nothing`, the prompt should command action."""
+    """When the cascade returns `nothing`, the prompt should command action
+    via the planning-phase doctrine added in v0.0.9+."""
     arm_session(initialized_repo)
     decision = compute_stop_hook_decision(initialized_repo)
     assert decision.should_block
     reason = decision.payload["reason"]
     # Header is always present
     assert "Nightly keepalive" in reason
-    # Empty backlog → imperative "make a recommendation now" command,
-    # NOT a "consider running nightly keepalive" suggestion.
-    assert "Make a recommendation" in reason or "Continue on:" in reason
+    # Empty backlog → imperative planning-phase prompt, NOT a "consider
+    # running nightly keepalive" suggestion. Either the cascade pick is
+    # surfaced (`Continue on:`) or the planning-phase doctrine fires.
+    assert "GENUINE WORK IS NEVER EXHAUSTED" in reason or "Continue on:" in reason
+
+
+def test_nothing_branch_emits_planning_phase_prompt(initialized_repo: Path) -> None:
+    """The hook's `nothing`-branch prompt must contain the v0.0.9+
+    planning-phase doctrine: the headline sentinel, the four-step
+    READ/NAME/ASSUME/SCOPE loop, and the five planning angles
+    (usability, tests, features, refactor, docs)."""
+    arm_session(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo)
+    assert decision.should_block
+    reason = decision.payload["reason"]
+    # Headline doctrine
+    assert "GENUINE WORK IS NEVER EXHAUSTED" in reason
+    # Four-step loop (uppercase verbs are the anchors)
+    for verb in ("READ", "NAME", "ASSUME", "SCOPE"):
+        assert verb in reason, f"missing planning-phase verb {verb!r}"
+    # Planning angles — at least the canonical five must be named so the
+    # agent has explicit categories to choose from.
+    for angle in (
+        "Usability",
+        "Tests",
+        "Features",
+        "Readability refactor",
+        "Documentation paperwork",
+    ):
+        assert angle in reason, f"missing planning angle {angle!r}"
+    # Anti-pattern rebuttal: the agent's documented failure mode
+    # ("fabricated slice" / "stacked-paperwork") must be explicitly
+    # refuted in the prompt, not just countered with positive guidance.
+    assert "stacked-paperwork" in reason
+    assert "fabricated" in reason.lower()
+
+
+def test_planning_phase_doctrine_constant_is_stable() -> None:
+    """The sentinel string is the doctrine; tests, docs, and operator
+    bug reports key off the exact wording. Pin it."""
+    from nightly_core.keepalive_hook import _PLANNING_PHASE_DOCTRINE
+
+    assert _PLANNING_PHASE_DOCTRINE == "GENUINE WORK IS NEVER EXHAUSTED."
 
 
 def test_arm_disarm_lifecycle(initialized_repo: Path) -> None:

@@ -181,13 +181,16 @@ ideate:
 
 # agents governs how specialist sub-agents (implementer / tester /
 # reviewer / researcher) are dispatched in interactive sessions.
-# - `background_dispatch: true` (default) — specialists spawn as
-#   detached host processes via `nightly dispatch start` so the
-#   operator's chat stays free for other work. Poll via
-#   `nightly dispatch status / tail / wait`.
+# - `background_dispatch: true` (default, and the preferred setting for
+#   Claude Code / Codex / Cursor / Antigravity sessions) — specialists
+#   spawn as detached host processes via `nightly dispatch start <slug>
+#   --role <role>` so the operator's chat stays free for other work.
+#   Poll via `nightly dispatch status / tail / wait`.
 # - `background_dispatch: false` — fall back to the host's native
-#   Task-tool surface (blocking the calling chat). Use only when you
-#   explicitly want to watch the specialist's progress in-band.
+#   Task-tool surface (blocking the calling chat until the sub-agent
+#   returns). Use only when you explicitly want to watch the
+#   specialist's progress in-band (debugging an unfamiliar host,
+#   eyeballing a long-running review).
 # `nightly run` headless ignores this preference — each task gets its
 # own host process by construction.
 agents:
@@ -1233,9 +1236,11 @@ def keepalive(
     typer.echo("# Keep-alive strategies")
     typer.echo("")
     typer.echo(
-        "Walk these in order when `nightly next` returns `nothing` — "
-        "do not render the briefing and exit until every strategy comes up empty. "
-        "Inspired by Karpathy's autoresearch "
+        "GENUINE WORK IS NEVER EXHAUSTED. Walk these in order when "
+        "`nightly next` returns `nothing` — do NOT render the briefing "
+        "and exit until every strategy comes up empty (and even then, the "
+        "`plan_improvement` universal fallback applies to any repo with "
+        "source code). Inspired by Karpathy's autoresearch "
         "(https://github.com/karpathy/autoresearch) NEVER STOP doctrine."
     )
     typer.echo("")

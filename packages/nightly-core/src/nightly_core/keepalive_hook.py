@@ -346,6 +346,105 @@ def _bump_and_read_turn_count(run_path: Path) -> int:
     return nxt
 
 
+_PLANNING_PHASE_DOCTRINE = "GENUINE WORK IS NEVER EXHAUSTED."
+"""Top-of-prompt headline for the `nothing`-branch keep-alive.
+
+Lifted verbatim from the operator directive that produced RFC-XX
+(planning-phase keep-alive). When the cascade returns `nothing`, the
+agent's failure mode is to rationalize "I have completed all genuine
+work" and end the turn cleanly — the contract is the opposite. There
+is always more to plan for; the cascade is one source of work, not
+the only source. The sentinel sits at the top of every planning-
+phase prompt so the agent can't miss it on a fast scan.
+
+Past failure: agent wrote 'Genuine work is exhausted. … Starting a
+fabricated slice now would be exactly the stacked-paperwork-PR
+failure mode the contract warns against' — but Rule 11's anti-pattern
+is about *consolidation* of unrelated work, not about stopping when
+no fleet PRs remain. The sentinel + planning-phase prompt close this
+loophole at the keepalive layer."""
+
+
+def _planning_phase_prompt(*, header: str, rationale: str) -> str:
+    """Build the imperative planning-phase prompt for `nothing` branches.
+
+    When the cascade can't surface human-sourced or proposer-sourced
+    work, the agent must enter a *planning phase*: read the codebase,
+    name a usability/test/feature/refactor/documentation improvement,
+    scope it as a Nightly task, and start executing — within the same
+    turn, with assumed defaults, without prompting the operator. The
+    prompt below is what the Stop hook injects to force that behavior.
+
+    Shared between the `choice.source == 'nothing'` branch and the
+    `choice is None` defensive fallback so both paths get the same
+    treatment.
+    """
+    return (
+        f"{header}\n"
+        f"{_PLANNING_PHASE_DOCTRINE} The cascade surfaced no human-sourced "
+        "work this turn, but that is a signal to PLAN, not to stop. "
+        f"{rationale}\n"
+        "\n"
+        "═══ ENTER PLANNING PHASE — do not render the briefing, do not exit ═══\n"
+        "\n"
+        "The cascade is one source of work, not the only one. Open PRs, "
+        "RFCs, and triaged issues are *human-sourced* work; their absence "
+        "does not mean the codebase is finished. Substantial improvements "
+        "are always available — your job is to find one and ship it this turn.\n"
+        "\n"
+        "Walk this loop:\n"
+        "  1. READ — open the repo as a fresh-eyes reader. Skim the largest "
+        "or most-recently-touched source modules, the README, AGENTS.md / "
+        "CLAUDE.md, `.planning/` (RFCs + drafts + iteration-log), recent "
+        "uncertainty.md files, and the test suite. Look for what is missing "
+        "or rough, not what is broken.\n"
+        "  2. NAME — pick ONE substantial improvement from any of these "
+        "angles (in rough priority order):\n"
+        "     • **Usability** — confusing CLI ergonomics, inconsistent flag "
+        "naming, poor error messages, missing `--help` text, undiscoverable "
+        "features, install/setup friction.\n"
+        "     • **Tests** — uncovered branches, missing edge-case coverage, "
+        "fragile fixtures, slow tests that could be parallelized, integration "
+        "gaps between modules.\n"
+        "     • **Features** — small additive capabilities that compose with "
+        "what exists (a new proposer, a new keep-alive strategy, a new "
+        "briefing section, a new doctor probe).\n"
+        "     • **Readability refactor** — dead code, duplicated logic, "
+        "overly-long functions, unclear names, missing type hints, stale "
+        "comments, modules that have outgrown their original shape.\n"
+        "     • **Documentation paperwork** — drift between README claims "
+        "and actual behavior, missing migration notes, ADRs that should be "
+        "written, RFC checklists that should be reconciled, examples that "
+        "no longer run.\n"
+        "  3. ASSUME — every ambiguity has a default. Pick the option most "
+        "consistent with the existing codebase and `.planning/` design intent "
+        "and proceed. Do NOT write a plan-of-plans. Do NOT scope a research "
+        "task. Do NOT park. Do NOT ask. Decision over deliberation.\n"
+        '  4. SCOPE & SHIP — `nightly task <slug> -d "<one-line description>"` '
+        "creates the plan. Set status to `in_progress` and start executing "
+        "in this same turn — open a worktree (or write inline for audit-only "
+        "work), make the edits, run `nightly verify`, and either open a PR "
+        "or write a local proposal.md. The morning briefing is where the "
+        "operator reviews the choice; the running session is where you make it.\n"
+        "\n"
+        "Anti-patterns the agent must NOT use to justify stopping:\n"
+        "  ✗ 'Genuine work is exhausted.' — It is not. See doctrine above.\n"
+        "  ✗ 'Starting work now would be a stacked-paperwork PR.' — Rule 11's "
+        "anti-pattern is about CONSOLIDATING unrelated work, not about "
+        "refusing to plan when fleet PRs end. Consolidation means 'extend an "
+        "existing PR when related'; it does NOT mean 'stop when no related "
+        "PR exists.'\n"
+        "  ✗ 'Fabricated slice.' — A reasoned improvement scoped from "
+        "reading the codebase is not fabricated; it's the cascade's "
+        "ideate-fallback rung made explicit.\n"
+        "  ✗ 'Wait for the operator's review.' — The operator is asleep. "
+        "Review happens in the morning, not in the running session.\n"
+        "\n"
+        "If you can name a 'here's what I'd do' — that IS the recommendation. "
+        "Ship it."
+    )
+
+
 def _build_continue_reason_from(
     *,
     choice: CascadeChoice | None,
@@ -370,10 +469,9 @@ def _build_continue_reason_from(
             "investigate the cascade error first, then resume work."
         )
     if choice is None:  # defensive — equivalent to a "nothing" branch
-        return (
-            f"[Nightly keepalive · run {run_id} · turn {turn}] "
-            "The cascade returned no pick. Run `nightly next` and execute "
-            "whatever it surfaces."
+        return _planning_phase_prompt(
+            header=f"[Nightly keepalive · run {run_id} · turn {turn}]",
+            rationale="The cascade returned no pick (defensive fallback path).",
         )
 
     header = f"[Nightly keepalive · run {run_id} · turn {turn}]"
@@ -384,22 +482,10 @@ def _build_continue_reason_from(
         # session disarmed) — pre-Issue-#11 the hook hardcoded "the
         # proposer suite is empty" which was misleading whenever the
         # dedupe filter caught every proposal. Surface the rationale
-        # verbatim so the agent sees the actual cause.
+        # verbatim so the agent sees the actual cause, then drop straight
+        # into the planning-phase prompt below.
         rationale = choice.rationale or "The cascade returned `nothing`."
-        return (
-            f"{header}\n"
-            f"{rationale}\n"
-            "Do NOT render the briefing and exit. Make a recommendation "
-            "right now and execute it:\n"
-            "  1. Pick the most consequential open question you can name "
-            "from `.planning/`, README.md, AGENTS.md, or a recent "
-            "uncertainty.md. Prefer sources the proposers don't cover.\n"
-            "  2. Scope it as a new task with `nightly task <slug>`.\n"
-            "  3. Start executing — do not write a plan first, do not ask, "
-            "do not park.\n"
-            "If you can articulate a 'here's what I'd do', that IS the "
-            "recommendation. Ship it."
-        )
+        return _planning_phase_prompt(header=header, rationale=rationale)
 
     target_hint = ""
     if choice.target_path is not None:

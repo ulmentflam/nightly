@@ -145,6 +145,42 @@ KEEPALIVE_STRATEGIES: tuple[KeepaliveStrategy, ...] = (
             "is the last-resort re-engagement strategy."
         ),
     ),
+    KeepaliveStrategy(
+        name="plan_improvement",
+        prompt=(
+            "GENUINE WORK IS NEVER EXHAUSTED. Enter the planning phase: read "
+            "the codebase as a fresh-eyes reader and ship ONE substantial "
+            "improvement this turn. The cascade surfaces *human-sourced* work "
+            "(RFCs, issues, open PRs); its absence does NOT mean the codebase "
+            "is finished. Pick from these angles in rough priority order — "
+            "usability (confusing CLI ergonomics, inconsistent flags, poor "
+            "error messages, undiscoverable features, install friction), "
+            "tests (uncovered branches, missing edge cases, integration gaps), "
+            "features (small additive capabilities that compose with what "
+            "exists), readability refactor (dead code, duplicated logic, "
+            "overly-long functions, unclear names, missing type hints), or "
+            "documentation paperwork (README drift, missing ADRs, stale "
+            "examples, RFC checklists to reconcile). Assume defaults for "
+            "every ambiguity — pick the option most consistent with the "
+            "existing code and `.planning/` design intent. Then "
+            "`nightly task <slug> -d '<title>'`, set `in_progress`, and "
+            "start executing in THIS turn — open a worktree (or write "
+            "inline for audit-only work), make the edits, run `nightly "
+            "verify`, land a PR or local proposal. Do not write a "
+            "plan-of-plans first. Do not scope a 'research' task. Do not "
+            "park. Decision over deliberation. The morning briefing is "
+            "where the operator reviews the choice; this turn is where "
+            "you make it."
+        ),
+        applies_when=(
+            "Universal fallback — applies to any repo with source code. "
+            "When the cascade returned `nothing`, the proposer suite came "
+            "up empty, and every other keep-alive angle is exhausted, this "
+            "strategy still fires because reading the codebase always "
+            "produces actionable improvements. This is the last rung of "
+            "the keep-alive ladder before refusing to act."
+        ),
+    ),
 )
 
 
@@ -154,9 +190,13 @@ def render_strategies() -> str:
     lines.append("# Keep-alive strategies")
     lines.append("")
     lines.append(
-        "When `nightly next` returns `nothing` and `nightly ideate` writes "
-        "no auto-PR-eligible proposals, walk these strategies in order "
-        "before rendering the briefing and exiting. Inspired by Karpathy's "
+        "GENUINE WORK IS NEVER EXHAUSTED. When `nightly next` returns "
+        "`nothing` and `nightly ideate` writes no auto-PR-eligible "
+        "proposals, walk these strategies in order — and even when every "
+        "specific signal is exhausted, the `plan_improvement` universal "
+        "fallback applies to any repo with source code (read the codebase, "
+        "scope a usability/test/feature/refactor/docs improvement, ship "
+        "it). Inspired by Karpathy's "
         "[autoresearch](https://github.com/karpathy/autoresearch) NEVER "
         "STOP / think-harder doctrine."
     )
@@ -175,9 +215,12 @@ def pick_keepalive(root: Path | None = None) -> KeepaliveStrategy | None:
     """Return the first strategy that has signal in the current repo.
 
     Each strategy's applicability is checked with a cheap on-disk probe.
-    Returns `None` only when *no* strategy applies — which in practice
-    means the radical_reread fallback always wins as long as the repo
-    has at least one of `README.md` / `AGENTS.md` / `CLAUDE.md`.
+    The walk falls through in preference order: most-specific signal
+    (planning files → uncertainty → parked plans → entry docs) first,
+    then the `plan_improvement` universal fallback when nothing else
+    applies. `plan_improvement` applies to any repo with source code,
+    so the only way to get `None` back is in a tmp / fixture path with
+    literally no files — the function is otherwise total.
     """
     if _has_planning_files(root):
         return _strategy("reread_planning")
@@ -191,6 +234,13 @@ def pick_keepalive(root: Path | None = None) -> KeepaliveStrategy | None:
     # entry-point docs.
     if _has_entry_docs(root):
         return _strategy("radical_reread")
+    # Universal fallback — applies to any repo with source code. The
+    # `plan_improvement` strategy is the keep-alive layer's expression
+    # of "GENUINE WORK IS NEVER EXHAUSTED": even in a repo with no
+    # planning files, no past runs, no entry docs, reading the source
+    # always produces actionable improvements.
+    if _has_source_code(root):
+        return _strategy("plan_improvement")
     return None
 
 
@@ -227,6 +277,47 @@ _ENTRY_DOCS = ("README.md", "AGENTS.md", "CLAUDE.md")
 def _has_entry_docs(root: Path | None) -> bool:
     base = (root or Path.cwd()).resolve()
     return any((base / name).is_file() for name in _ENTRY_DOCS)
+
+
+# Suffix set covers the languages Nightly's proposers + most host repos
+# touch — Python (host package), TS/JS (frontend / agent shells), Go /
+# Rust (other host codebases), plus Markdown so a docs-only repo still
+# gets the `plan_improvement` rung.
+_SOURCE_SUFFIXES: frozenset[str] = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".go",
+        ".rs",
+        ".rb",
+        ".md",
+    }
+)
+
+
+def _has_source_code(root: Path | None) -> bool:
+    """True iff the repo contains at least one source-like file.
+
+    Walks the top two levels only — we don't need to scan the whole tree;
+    we just need to know there's *something* readable. Skips dotted
+    directories (`.git`, `.venv`, `.nightly`) and `node_modules` to keep
+    the probe cheap even in large repos.
+    """
+    base = (root or Path.cwd()).resolve()
+    if not base.is_dir():
+        return False
+    skip = {".git", ".venv", ".nightly", "node_modules", "__pycache__"}
+    for entry in base.iterdir():
+        if entry.is_file() and entry.suffix in _SOURCE_SUFFIXES:
+            return True
+        if entry.is_dir() and entry.name not in skip and not entry.name.startswith("."):
+            for sub in entry.iterdir():
+                if sub.is_file() and sub.suffix in _SOURCE_SUFFIXES:
+                    return True
+    return False
 
 
 assert len({s.name for s in KEEPALIVE_STRATEGIES}) == len(KEEPALIVE_STRATEGIES), (
