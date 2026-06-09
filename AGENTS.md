@@ -9,6 +9,35 @@ normal interactive use of this repo is unaffected.
 The whole contract reduces to one rule: **if you can name a
 recommendation, execute it.** Everything below is consequences.
 
+**Headline doctrine: GENUINE WORK IS NEVER EXHAUSTED.** The cascade
+surfaces *human-sourced* work (RFCs, issues, open PRs, accepted
+proposals); their absence does NOT mean the codebase is finished. The
+agent's failure mode is to rationalize "I have completed all genuine
+work" — but reading the codebase as a fresh-eyes reader always
+produces actionable improvements (usability gaps, missing tests, small
+features, readability refactors, documentation drift). When the
+cascade returns `nothing`, the agent must enter the *planning phase*
+described in Rule 6 — not write the briefing, not end the turn, not
+wait for the operator.
+
+**Keep the session responsive — background long-running work.** In an
+interactive Nightly session, prefer backgrounding anything long-running
+so the chat stays free while it runs. `.nightly/config.yml`'s
+`agents.background_dispatch` setting defaults to `true` and SHOULD
+remain `true` for Claude Code / Codex / Cursor / Antigravity hosts:
+- Dispatch specialists (implementer / tester / reviewer / researcher)
+  with `nightly dispatch start <slug> --role <role>`, never the
+  blocking Task-tool form. Poll progress via `nightly dispatch status
+  / tail / wait`; the runtime re-engages you when each specialist
+  finishes.
+- Start long-running probes, `nightly run` drivers, and `gh` polls in
+  the background; reserve the foreground for steps whose output you
+  need *immediately* to decide the next action.
+- Reach for `background_dispatch: false` only when you explicitly want
+  to watch a specialist in-band (debugging an unfamiliar host,
+  eyeballing a long-running review). The headless `nightly run`
+  driver ignores this preference by construction.
+
 1. **If you can recommend, execute.** The moment you can articulate a
    "here's what I'd do" — do it. No follow-up question, no log entry,
    no parking the task, no waiting for confirmation. Naming, ordering,
@@ -38,16 +67,47 @@ recommendation, execute it.** Everything below is consequences.
    operation to `.nightly/runs/<run-id>/proposed/approvals/<id>.md`,
    note the refusal in `uncertainty.md`, and route around it to a
    different task.
-6. **Never stop just because the cascade returned `nothing`.** When no
-   in-flight, unblocked, RFC, issue, or PR-rescue work remains, the
-   cascade automatically falls through to ideation — and while the
-   session is armed it dispatches the top-scoring proposal regardless
-   of whether it clears the auto-PR autonomy bar (non-eligible
-   proposals land as a local proposal branch instead of a real PR).
-   You should never see the cascade return `nothing` during an active
-   run. If you somehow do, immediately run `nightly ideate` and start
-   the highest-scoring proposal — do not deliberate, do not render
-   the briefing, do not exit.
+6. **Never stop just because the cascade returned `nothing`. Enter
+   the planning phase instead.** When no in-flight, unblocked, RFC,
+   issue, or PR-rescue work remains, the cascade automatically falls
+   through to ideation — and while the session is armed it dispatches
+   the top-scoring proposal regardless of whether it clears the auto-PR
+   autonomy bar (non-eligible proposals land as a local proposal
+   branch instead of a real PR). If the ideate path *also* comes up
+   empty (proposers returned zero, or every proposal was a duplicate
+   of completed work), the cascade returns `nothing` — and that is
+   when the **planning phase** begins, not when the session ends.
+   The headline doctrine applies: GENUINE WORK IS NEVER EXHAUSTED.
+   The planning phase is a four-step loop:
+   - **READ** — open the repo as a fresh-eyes reader. Skim the largest
+     and most-recently-touched source modules, README, AGENTS.md /
+     CLAUDE.md, `.planning/` (RFCs + drafts + iteration-log), recent
+     `uncertainty.md` files, the test suite. Look for what is missing
+     or rough, not what is broken.
+   - **NAME** — pick ONE substantial improvement from these angles
+     (rough priority): **usability** (confusing CLI ergonomics,
+     inconsistent flags, poor error messages, undiscoverable
+     features, install friction), **tests** (uncovered branches,
+     missing edge cases, integration gaps), **features** (small
+     additive capabilities that compose with what exists),
+     **readability refactor** (dead code, duplicated logic,
+     overly-long functions, unclear names, missing type hints), or
+     **documentation paperwork** (README drift, missing ADRs, stale
+     examples, RFC checklists to reconcile).
+   - **ASSUME** — every ambiguity has a default. Pick the option most
+     consistent with the existing codebase and `.planning/` design
+     intent. Do NOT write a plan-of-plans. Do NOT scope a research
+     task. Do NOT park.
+   - **SCOPE & SHIP** — `nightly task <slug> -d "<title>"`, set
+     `in_progress`, open a worktree (or write inline for audit-only
+     work), make the edits, run `nightly verify`, land a PR or local
+     proposal in the same turn. Decision over deliberation.
+   Anti-patterns that look like Rule 11 but are not: "starting now
+   would be a stacked-paperwork PR" is *false* when no related PR
+   exists — Rule 11 is about consolidating related work, not about
+   refusing to plan when fleet PRs end. "Fabricated slice" is *false*
+   when the improvement is reasoned from a codebase read — that's
+   the cascade's ideate-fallback rung made explicit.
 7. **Run `nightly verify` before opening any PR.** Nightly auto-detects
    this repo's linters, formatters, and type checkers (ruff, black,
    mypy, pyrefly, eslint, prettier, tsc, gofmt, go vet, cargo fmt,
