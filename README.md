@@ -529,12 +529,14 @@ Sweep · AutoCodeRover · Copilot · Factory · Replit · Amp · Cosine and
 others) with inline references throughout. RFC 009 (synthesis-driven
 ideate — codebase-wide proposals across cleaning/refactoring/
 housekeeping/convenience/capability) is accepted and awaiting
-implementation. RFC 010 (host-cap respawn supervisor) is planned
-and not yet drafted — v0.0.8 ships its disk-state half (a
-`RESPAWN_REQUESTED` marker written on involuntary `host_cap`
-stops, surfaced at the next `nightly session start`), so the
-operator's manual re-invocation of `/nightly` resumes the cascade
-cleanly instead of restarting.
+implementation. RFC 010 (host-respawn supervisor) is drafted and
+planned — v0.0.10 ships the underlying hook fix (the
+`stop_hook_active` misread that caused sessions to surrender after
+one force-continue is resolved; the hook now rides forced-
+continuation chains indefinitely) and writes the `RESPAWN_REQUESTED`
+marker preemptively during chains so an involuntary host-cap kill or
+crash still leaves a resume breadcrumb, surfaced at the next
+`nightly session start`.
 
 ---
 

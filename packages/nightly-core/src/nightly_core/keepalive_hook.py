@@ -17,18 +17,37 @@ Off-ramps (v0.0.3+): **only human intervention terminates a session.**
 - `.nightly/runs/<id>/STOP` exists — `nightly stop` requested immediate
   hard stop (the human ran the command).
 
-Plus three preconditions that aren't voluntary releases — they reflect
-"there is nothing to keep alive" or "the host is overriding us
-regardless":
+Plus two preconditions that aren't voluntary releases — they reflect
+"there is nothing to keep alive":
 
 - The session was never `nightly session start`ed (`SESSION_ACTIVE`
   marker absent) — non-Nightly sessions are untouched.
 - No active run (`.nightly/runs/CURRENT` missing) — `no_run`.
-- Claude Code's own 9-consecutive-block safety: the host calls our
-  hook with `stop_hook_active=True` to signal "I'm about to override
-  you regardless." We bow out cleanly per the docs. The clever bypass
-  for this is a respawn supervisor that watches for the cap and starts
-  a fresh host session — see RFC 010 (planned).
+
+`stop_hook_active` is NOT an off-ramp. The Claude Code hooks guide
+(https://code.claude.com/docs/en/hooks-guide) defines the flag as
+"true when Claude Code is already continuing as a result of a stop
+hook" — i.e. *this turn boundary is part of a forced-continuation
+chain we started*, not a warning that the host is about to override
+us. The real host backstop is separate: Claude Code overrides a Stop
+hook only after it blocks 8 times in a row **without progress**, and
+that cap is raisable via the `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`
+environment variable (the Claude host integration sets it high so an
+overnight session never trips it). Because Nightly's contract is that
+only human disk markers terminate a session, the hook keeps blocking
+even when `stop_hook_active` is True — the marker checks above the
+force-continue branch are the only off-ramps.
+
+Preemptive respawn marker: while we are blocking inside a forced
+chain (`stop_hook_active=True`), we write/refresh the
+`RESPAWN_REQUESTED` marker *before* returning the block decision. If
+the host's without-progress cap silently overrides our block, the
+session dies with no further hook invocation — so the marker must
+already be on disk for `nightly status` / the skill's respawn path to
+resume. A fresh, user-driven turn boundary (`stop_hook_active=False`)
+clears the marker: the chain reset, so any earlier preemptive marker
+is stale. The daemon-driven re-invocation that makes respawn fully
+automatic is RFC 010 (planned).
 
 Removed in v0.0.3 (per the operator's "the only termination should be
 human intervention" directive):
@@ -63,6 +82,7 @@ from nightly_core.cascade import CascadeChoice, next_task
 from nightly_core.runs import current_run
 
 __all__ = [
+    "BLOCKS_FILENAME",
     "HOOK_FORMATS",
     "LOOP_HISTORY_FILENAME",
     "RESPAWN_REQUESTED_FILENAME",
@@ -107,12 +127,17 @@ STOP_FILENAME = "STOP"
 """Marker file under the run dir. Presence = immediate hard stop requested."""
 
 RESPAWN_REQUESTED_FILENAME = "RESPAWN_REQUESTED"
-"""Marker file under the run dir. Written when `compute_stop_hook_decision`
-yields with `host_cap` — Claude Code's own 9-consecutive-block override
-that we can't fight from Python. The marker signals "this session ended
-involuntarily, not because the operator asked for it; the cascade still
-had work" so a respawn supervisor (RFC 010, planned) or the operator can
-pick up where we left off.
+"""Marker file under the run dir. Written *preemptively* by
+`compute_stop_hook_decision` whenever it blocks inside a forced-
+continuation chain (`stop_hook_active=True`). We cannot observe the
+host's without-progress override (8 consecutive blocks, raisable via
+`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`) — when it fires, the session dies
+with no further hook invocation. So the marker is written *before*
+returning the block decision: if the next turn boundary never arrives,
+the marker is already on disk and signals "this session ended
+involuntarily mid-chain (host override without progress, crash, or
+kill); the cascade still had work" so a respawn supervisor (RFC 010,
+planned) or the operator can pick up where we left off.
 
 Contents are a single ISO-8601 timestamp + cascade-pick summary (one
 line). The Claude skill reads this at session start: if the marker is
@@ -125,7 +150,20 @@ Cleared on:
 - `nightly conclude` — the operator's explicit "we're done" signal.
 - `nightly stop` — the operator's explicit hard stop.
 - `nightly session start` — fresh-session re-arm.
+- Any fresh, user-driven turn boundary (`stop_hook_active=False`) — the
+  forced chain reset, so a preemptive marker from an earlier chain is
+  stale and gets cleared inline.
 - Manually via `rm .nightly/runs/<id>/RESPAWN_REQUESTED`."""
+
+BLOCKS_FILENAME = "keepalive.blocks"
+"""Per-run counter of consecutive forced-continuation blocks.
+
+Incremented each time the hook blocks while `stop_hook_active=True`
+(i.e. this turn boundary is part of a chain Nightly started); reset to
+0 on the next fresh, user-driven boundary (`stop_hook_active=False`).
+Lets a post-mortem read how deep a forced chain ran before the host's
+without-progress cap (or an operator marker) ended it. Best-effort IO,
+OSError-suppressed like the other counters — never gates a decision."""
 
 LOOP_HISTORY_FILENAME = "keepalive.history"
 """Per-run file of cascade-pick fingerprints, newline-delimited. Trimmed
@@ -152,8 +190,10 @@ class StopHookDecision:
     `payload` is the literal JSON dict Claude Code expects on stdout
     (`{"decision": "block", "reason": ...}` to force continue, or `{}`
     to allow the stop). `reason_code` is a stable short slug for logs:
-    `host_cap`, `no_run`, `inactive`, `stale`, `conclude`, `stop`,
-    `max_turns`, `force_continue`. (`pr_backlog` is retired as of
+    `no_run`, `inactive`, `conclude`, `stop`, `force_continue`.
+    (`host_cap` is retired — `stop_hook_active` is no longer a yield
+    path; the hook keeps blocking through a forced chain and writes a
+    preemptive RESPAWN_REQUESTED marker instead. `pr_backlog` is retired as of
     v0.0.3 — the PR-count cap was removed in favor of skill-side
     consolidation guidance per Rule 11.)
     `message` is a one-line human-readable explanation suitable for
@@ -177,38 +217,31 @@ def compute_stop_hook_decision(
 ) -> StopHookDecision:
     """Decide whether to block-and-continue or allow the current stop.
 
-    `stop_hook_active=True` is Claude Code's signal that *this very hook*
-    has blocked the same turn boundary 9 consecutive times and the host
-    is about to override us regardless. Bowing out cleanly (emit `{}`)
-    is the documented protocol — see
-    https://docs.anthropic.com/en/docs/claude-code/hooks#json-input.
-    Past failure: not honoring this caused Claude Code to log
-    "A hook blocked the turn from ending 9 consecutive times — overriding"
-    in a real session. We still record a heartbeat so operators can see
-    *why* we yielded.
+    `stop_hook_active` reflects the Claude Code hooks-guide field of the
+    same name: True means "Claude Code is already continuing as a result
+    of a stop hook" — i.e. this turn boundary is part of a forced-
+    continuation chain Nightly started, NOT a warning that the host is
+    about to override us. It is therefore not an off-ramp: the host's
+    real backstop is a separate, raisable cap (Claude Code overrides a
+    Stop hook only after 8 consecutive blocks *without progress*; raise
+    it via the `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` env var, which the
+    Claude host integration sets high for overnight runs).
+
+    Decision order — off-ramps always win regardless of
+    `stop_hook_active`: no run (`no_run`) → not armed (`inactive`) →
+    CONCLUDE (`conclude`) → STOP (`stop`) → force-continue. We keep
+    blocking through a forced chain because Nightly's contract is that
+    only the human disk markers checked above terminate a session.
+
+    Inside the force-continue branch, when `stop_hook_active` is True we
+    write/refresh the RESPAWN_REQUESTED marker *before* returning the
+    block decision: if the host's without-progress cap silently
+    overrides this block, the session ends with no further hook
+    invocation, so the resume marker must already be on disk. When
+    `stop_hook_active` is False — a fresh, user-driven boundary — the
+    chain has reset, so we clear any stale preemptive marker.
     """
     del now  # no longer used — the staleness check that consumed `now` was retired in v0.0.3
-    if stop_hook_active:
-        # Yield to the host's 9-consecutive-block override (we cannot
-        # fight it from Python — the documented protocol is to bow out
-        # cleanly), but drop a RESPAWN_REQUESTED marker on disk so the
-        # operator (or an RFC 010 supervisor) knows this stop was
-        # involuntary and the cascade still had work. Issues #13 and
-        # #16 both hit this exact failure mode: 1 force_continue
-        # followed by host_cap within ~17 minutes, work still pending.
-        run = current_run(root)
-        if run is not None:
-            _write_respawn_marker(run.path)
-        return StopHookDecision(
-            payload={},
-            reason_code="host_cap",
-            message=(
-                "host signaled stop_hook_active — yielding to the host's "
-                "consecutive-block cap; will not force-continue this turn. "
-                "RESPAWN_REQUESTED marker written — re-invoke `/nightly` "
-                "to resume the cascade where this session left off."
-            ),
-        )
     run = current_run(root)
     if run is None:
         return StopHookDecision(
@@ -238,16 +271,29 @@ def compute_stop_hook_decision(
             message=f"run {run.id} has STOP sentinel; allowing stop (hard).",
         )
 
-    # v0.0.3: every automatic off-ramp other than host-level overrides
-    # has been removed per the operator's "the only termination should
-    # be human intervention" directive. The 4h SESSION_ACTIVE staleness
-    # check, the 500-turn MAX_TURNS safety cap, the LOOP_THRESHOLD
-    # cascade-loop guard, and the MAX_OPEN_PRS PR-backlog cap are all
-    # gone. Only `conclude` / `stop` markers (human-placed) and
-    # `host_cap` / `no_run` / `inactive` (host- or precondition-level,
-    # not voluntary releases) can end the session now. The turn counter
+    # Every automatic off-ramp has been removed per the operator's "the
+    # only termination should be human intervention" directive. Only
+    # `conclude` / `stop` markers (human-placed) and `no_run` /
+    # `inactive` (preconditions, not voluntary releases) can end the
+    # session. `stop_hook_active` is deliberately NOT an off-ramp — it
+    # only means we are mid forced-continuation chain. The turn counter
     # is still incremented for telemetry but no longer gates termination.
     turn_count = _bump_and_read_turn_count(run.path)
+
+    # Track the forced-continuation chain depth. When `stop_hook_active`
+    # is True this boundary is part of a chain we started; bump the
+    # counter and write the preemptive RESPAWN_REQUESTED marker (the
+    # host's without-progress cap could override the very block we are
+    # about to return, ending the session with no further hook firing).
+    # When False this is a fresh user-driven boundary: the chain reset,
+    # so clear the counter and any stale preemptive marker.
+    if stop_hook_active:
+        block_count = _bump_and_read_block_count(run.path)
+        _write_respawn_marker(run.path)
+    else:
+        block_count = 0
+        _reset_block_count(run.path)
+        _clear_respawn_marker(run.path)
 
     # The cascade pick is still computed and recorded in the loop
     # history file (`keepalive.history`) for post-mortem diagnostics,
@@ -273,12 +319,20 @@ def compute_stop_hook_decision(
         run_id=run.id,
         turn=turn_count,
     )
+    if stop_hook_active:
+        message = (
+            f"run {run.id} turn {turn_count}: blocking stop "
+            f"(forced-continuation chain, block #{block_count}) and "
+            "injecting continuation prompt."
+        )
+    else:
+        message = (
+            f"run {run.id} turn {turn_count}: blocking stop and injecting continuation prompt."
+        )
     return StopHookDecision(
         payload={"decision": "block", "reason": reason},
         reason_code="force_continue",
-        message=(
-            f"run {run.id} turn {turn_count}: blocking stop and injecting continuation prompt."
-        ),
+        message=message,
     )
 
 
@@ -344,6 +398,32 @@ def _bump_and_read_turn_count(run_path: Path) -> int:
     with contextlib.suppress(OSError):
         counter.write_text(f"{nxt}\n", encoding="utf-8")
     return nxt
+
+
+def _bump_and_read_block_count(run_path: Path) -> int:
+    """Increment and return the forced-continuation chain block counter.
+
+    Mirrors `_bump_and_read_turn_count`: best-effort, OSError-suppressed.
+    Distinct from the turn counter — the turn counter is cumulative over
+    the whole session, this resets to 0 on every fresh (non-chain) turn
+    boundary so it measures the *depth of the current chain*.
+    """
+    counter = run_path / BLOCKS_FILENAME
+    try:
+        prior = int(counter.read_text(encoding="utf-8").strip()) if counter.is_file() else 0
+    except (OSError, ValueError):
+        prior = 0
+    nxt = prior + 1
+    with contextlib.suppress(OSError):
+        counter.write_text(f"{nxt}\n", encoding="utf-8")
+    return nxt
+
+
+def _reset_block_count(run_path: Path) -> None:
+    """Reset the chain block counter to 0 on a fresh, non-chain boundary."""
+    counter = run_path / BLOCKS_FILENAME
+    with contextlib.suppress(OSError):
+        counter.write_text("0\n", encoding="utf-8")
 
 
 _PLANNING_PHASE_DOCTRINE = "GENUINE WORK IS NEVER EXHAUSTED."
@@ -533,7 +613,11 @@ def format_decision(
 
 
 def _write_respawn_marker(run_path: Path, *, now: datetime | None = None) -> Path:
-    """Drop the RESPAWN_REQUESTED marker for an involuntary host-cap stop.
+    """Drop the RESPAWN_REQUESTED marker preemptively during a forced chain.
+
+    Written before each chain block (`stop_hook_active=True`) so that if
+    the host's without-progress override ends the session silently, the
+    resume marker is already on disk.
 
     Idempotent — a second write just refreshes the timestamp. The
     Claude skill reads this on the next `/nightly` invocation; if
@@ -554,9 +638,10 @@ def read_respawn_marker(root: Path | None = None) -> str | None:
     """Read the RESPAWN_REQUESTED marker's content, or None if absent.
 
     The Claude skill calls this at session start. A non-None return
-    value means the previous session ended via `host_cap` with work
-    still on the cascade; the new session should walk `nightly next`
-    immediately rather than running through a fresh-session prelude.
+    value means the previous session ended involuntarily mid forced-
+    continuation chain (host override without progress, crash, or kill)
+    with work still on the cascade; the new session should walk `nightly
+    next` immediately rather than running through a fresh-session prelude.
 
     Returns the trimmed content (ISO-8601 timestamp + optional
     cascade-pick summary on second line). Empty string is treated as
@@ -590,11 +675,11 @@ def arm_session(root: Path | None = None, *, now: datetime | None = None) -> Pat
     no TTL in v0.0.3+ (the 4h staleness check was removed); the mtime
     is preserved only for post-mortem audits.
 
-    v0.0.8+: also clears any stale RESPAWN_REQUESTED marker. Arming
-    means "the session is now active again"; the operator (or the
-    Claude skill respawn-detection path) has acknowledged the prior
-    host_cap stop. Leaving a stale marker around would re-trigger the
-    respawn-resume path on every subsequent `nightly status` check.
+    Also clears any stale RESPAWN_REQUESTED marker. Arming means "the
+    session is now active again"; the operator (or the Claude skill
+    respawn-detection path) has acknowledged the prior involuntary stop.
+    Leaving a stale marker around would re-trigger the respawn-resume
+    path on every subsequent `nightly status` check.
     """
     run = current_run(root)
     if run is None:

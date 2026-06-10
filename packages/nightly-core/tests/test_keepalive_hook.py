@@ -10,6 +10,7 @@ import pytest
 
 from nightly_core.cascade import CascadeChoice
 from nightly_core.keepalive_hook import (
+    BLOCKS_FILENAME,
     LOOP_HISTORY_FILENAME,
     RESPAWN_REQUESTED_FILENAME,
     SESSION_ACTIVE_FILENAME,
@@ -363,37 +364,107 @@ def test_hook_formats_exhaustive() -> None:
     assert set(HOOK_FORMATS) == {"claude_code", "cursor", "gemini_cli"}
 
 
-# ── stop_hook_active — yield to the host's consecutive-block cap ──────────
+# ── stop_hook_active — forced-continuation chain, NOT a yield ─────────────
 
 
-def test_stop_hook_active_short_circuits_when_session_armed(
+def test_stop_hook_active_keeps_blocking_when_armed(
     initialized_repo: Path,
 ) -> None:
-    """When the host signals it's about to override us, emit `{}` even if
-    we *would have* force-continued. Past failure: Claude Code logged
-    `A hook blocked the turn from ending 9 consecutive times — overriding`
-    because Nightly's hook kept returning `block` regardless."""
+    """`stop_hook_active=True` means we are mid forced-continuation chain,
+    NOT that the host is about to override us. The hook keeps blocking —
+    Nightly's contract is that only human disk markers terminate a
+    session. The bug this replaces: yielding here killed overnight
+    sessions in minutes (force_continue → host_cap alternation)."""
     arm_session(initialized_repo)
-    # Sanity: without the signal, we'd force-continue
-    baseline = compute_stop_hook_decision(initialized_repo)
-    assert baseline.should_block
-
     decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
-    assert decision.payload == {}
-    assert decision.reason_code == "host_cap"
-    assert "stop_hook_active" in decision.message
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+    # The message must make the chain readable for a post-mortem.
+    assert "chain" in decision.message
+    assert "block #1" in decision.message
 
 
-def test_stop_hook_active_short_circuits_without_run(
+def test_stop_hook_active_chain_writes_respawn_marker(initialized_repo: Path) -> None:
+    """Inside a forced chain we pre-write RESPAWN_REQUESTED so that if the
+    host's without-progress cap silently overrides our block, the resume
+    marker is already on disk for the next session."""
+    arm_session(initialized_repo)
+    assert read_respawn_marker(initialized_repo) is None
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    content = read_respawn_marker(initialized_repo)
+    assert content is not None
+    assert content.startswith("20")
+    assert content.endswith("Z")
+
+
+def test_stop_hook_active_increments_block_counter(initialized_repo: Path) -> None:
+    """The chain block counter increments on each chain block."""
+    arm_session(initialized_repo)
+    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert (run_dir / BLOCKS_FILENAME).read_text(encoding="utf-8").strip() == "1"
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert (run_dir / BLOCKS_FILENAME).read_text(encoding="utf-8").strip() == "2"
+    assert "block #2" in decision.message
+
+
+def test_fresh_boundary_resets_block_counter_and_clears_marker(
+    initialized_repo: Path,
+) -> None:
+    """A fresh, user-driven boundary (`stop_hook_active=False`) means the
+    chain reset: the block counter goes back to 0 and any stale
+    preemptive marker is cleared."""
+    arm_session(initialized_repo)
+    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
+    # Build up a chain, then arrive at a fresh boundary.
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert read_respawn_marker(initialized_repo) is not None
+
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=False)
+    assert decision.should_block
+    assert decision.reason_code == "force_continue"
+    assert (run_dir / BLOCKS_FILENAME).read_text(encoding="utf-8").strip() == "0"
+    assert read_respawn_marker(initialized_repo) is None
+
+
+def test_stop_hook_active_without_run_allows_stop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The yield must work even when there's no active run — we should
-    not let the cap-yield branch trip over disk-read assumptions of
-    later branches."""
+    """No active run is a precondition off-ramp that wins regardless of
+    `stop_hook_active` — allow stop with `no_run`, write no marker."""
     monkeypatch.chdir(tmp_path)
     decision = compute_stop_hook_decision(tmp_path, stop_hook_active=True)
     assert decision.payload == {}
-    assert decision.reason_code == "host_cap"
+    assert decision.reason_code == "no_run"
+
+
+def test_stop_hook_active_inactive_session_allows_stop(initialized_repo: Path) -> None:
+    """A run that was never armed is `inactive` — stop allowed even mid
+    forced chain, and no respawn marker is written for an unarmed run."""
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert decision.payload == {}
+    assert decision.reason_code == "inactive"
+    assert read_respawn_marker(initialized_repo) is None
+
+
+def test_stop_hook_active_stop_marker_wins(initialized_repo: Path) -> None:
+    """STOP is a human off-ramp — it beats the keepalive even mid-chain."""
+    arm_session(initialized_repo)
+    request_stop(initialized_repo)
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert not decision.should_block
+    assert decision.reason_code == "stop"
+
+
+def test_stop_hook_active_conclude_marker_wins(initialized_repo: Path) -> None:
+    """CONCLUDE is a human off-ramp — it beats the keepalive even mid-chain."""
+    arm_session(initialized_repo)
+    run_dir = next(p for p in (initialized_repo / ".nightly" / "runs").iterdir() if p.is_dir())
+    (run_dir / "CONCLUDE").write_text("", encoding="utf-8")
+    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
+    assert not decision.should_block
+    assert decision.reason_code == "conclude"
 
 
 def test_stop_hook_active_false_preserves_normal_decision(
@@ -417,48 +488,22 @@ def test_parse_hook_input_round_trips_stop_hook_active() -> None:
 # ── RESPAWN_REQUESTED marker — v0.0.8+ (bug reports #13, #16) ─────────────
 
 
-def test_host_cap_writes_respawn_marker(initialized_repo: Path) -> None:
-    """The whole point of v0.0.8's host_cap branch: drop a marker
-    on disk so the operator (or RFC 010's daemon) can resume the
-    cascade where this session left off. Without this, bug reports
-    #13 and #16 stay un-mitigated: the session ends silently with
-    work pending and no clear "I left work for you" signal."""
-    arm_session(initialized_repo)
-    assert read_respawn_marker(initialized_repo) is None
-
-    compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
-
-    content = read_respawn_marker(initialized_repo)
-    assert content is not None
-    # ISO-8601 timestamp prefix, e.g. "2026-06-06T20:33:32Z"
-    assert content.startswith("20")
-    assert content.endswith("Z")
-
-
-def test_host_cap_marker_is_idempotent(initialized_repo: Path) -> None:
-    """A second host_cap firing should not crash and should leave a
-    valid marker. Hooks fire repeatedly and we cannot tell up front
-    which call is the "final" one before the operator re-enters."""
+def test_chain_block_is_idempotent(initialized_repo: Path) -> None:
+    """A second chain block should not crash and should leave a valid
+    marker. Hooks fire repeatedly and we cannot tell up front which call
+    is the "final" one before the host's without-progress cap (or the
+    operator) ends the chain."""
     arm_session(initialized_repo)
     compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
     compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
 
     content = read_respawn_marker(initialized_repo)
     assert content is not None
-
-
-def test_host_cap_message_mentions_respawn(initialized_repo: Path) -> None:
-    """The audit-trail message must mention the marker so a
-    post-mortem (`nightly bug`, `keepalive.log` tail) makes the
-    chain visible: host_cap → marker written → operator re-entry."""
-    arm_session(initialized_repo)
-    decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
-    assert "RESPAWN_REQUESTED" in decision.message
 
 
 def test_arm_session_clears_respawn_marker(initialized_repo: Path) -> None:
     """Re-arming means the operator (or skill) has acknowledged the
-    prior host_cap stop. Without the clear, the marker would re-
+    prior involuntary stop. Without the clear, the marker would re-
     trigger the resume path on every subsequent `nightly status`
     check and the skill would keep skipping its fresh-session
     prelude forever."""
@@ -513,17 +558,18 @@ def test_respawn_marker_filename_is_stable() -> None:
     assert RESPAWN_REQUESTED_FILENAME == "RESPAWN_REQUESTED"
 
 
-def test_heartbeat_log_records_host_cap_yield(initialized_repo: Path) -> None:
-    """The audit trail must show *why* we stopped force-continuing so a
-    post-mortem can distinguish a host-cap yield from a CONCLUDE drain
-    or a stale marker. They look identical on the wire (`{}`)."""
+def test_heartbeat_log_records_chain_block(initialized_repo: Path) -> None:
+    """The audit trail must record a forced-chain block as a
+    `force_continue` with the chain depth in the message, so a
+    post-mortem can see how deep the chain ran before it ended."""
     arm_session(initialized_repo)
     decision = compute_stop_hook_decision(initialized_repo, stop_hook_active=True)
     log_path = log_heartbeat(decision, initialized_repo, hook_input={"session_id": "abc"})
     assert log_path is not None
     content = log_path.read_text(encoding="utf-8")
-    assert "decision=host_cap" in content
+    assert "decision=force_continue" in content
     assert "session=abc" in content
+    assert "chain" in content
 
 
 # ── v0.0.3: cascade-loop guard removed; history-only diagnostics retained ─
@@ -536,8 +582,9 @@ def test_repeated_picks_no_longer_release(initialized_repo: Path) -> None:
     operator's "the only termination should be human intervention"
     directive. A stuck cascade now keeps force-continuing; the
     operator must place a CONCLUDE / STOP marker to end the session
-    (or wait for the host's 9-block override, which is out of our
-    control and addressed by RFC 010's respawn supervisor).
+    (the host's without-progress override is raised effectively out of
+    reach via CLAUDE_CODE_STOP_HOOK_BLOCK_CAP; RFC 010's respawn
+    supervisor handles any residual involuntary stop).
     """
     arm_session(initialized_repo)
     # Empty repo → cascade returns the same `nothing` pick every turn.
@@ -583,7 +630,8 @@ def test_hook_stop_cli_honors_stop_hook_active(
     initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End-to-end through the CLI: stdin payload with `stop_hook_active=true`
-    → stdout `{}` even when the session is armed."""
+    → stdout still blocks when the session is armed (the flag means "mid
+    forced chain", not "yield")."""
     import io
 
     from typer.testing import CliRunner
@@ -597,5 +645,6 @@ def test_hook_stop_cli_honors_stop_hook_active(
     monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
     result = runner.invoke(app, ["hook", "stop"], input='{"stop_hook_active": true}')
     assert result.exit_code == 0, result.output
-    # Stdout should be exactly `{}` (allow-stop) — no `decision: block` shape.
-    assert json.loads(result.stdout.strip().splitlines()[-1]) == {}
+    # Stdout should be the block shape — Nightly keeps the session alive.
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["decision"] == "block"
