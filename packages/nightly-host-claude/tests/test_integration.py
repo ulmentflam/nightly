@@ -314,8 +314,66 @@ async def test_uninstall_removes_settings_file_when_empty(
     await integration.install("project")
     assert integration.settings_local_path().is_file()
     await integration.uninstall("project")
-    # Nothing else in the file → it's cleaned up.
+    # Nothing else in the file (hook + env both removed) → it's cleaned up.
     assert not integration.settings_local_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_install_pins_stop_hook_block_cap_env(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    """Install raises the host's without-progress block cap via the
+    session `env` object so an overnight forced-continuation chain never
+    trips it (the default of 8 is far too low)."""
+    import json as _json
+
+    await integration.install("project")
+    settings = _json.loads(integration.settings_local_path().read_text(encoding="utf-8"))
+    assert settings["env"]["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] == "5000"
+
+
+@pytest.mark.asyncio
+async def test_uninstall_removes_block_cap_env(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    """Uninstall removes the env pin (matching value) — file cleaned up."""
+    import json as _json
+
+    settings_path = integration.settings_local_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        _json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}}),
+        encoding="utf-8",
+    )
+    await integration.install("project")
+    await integration.uninstall("project")
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "env" not in settings
+    assert settings == {"permissions": {"allow": ["Bash(ls:*)"]}}
+
+
+@pytest.mark.asyncio
+async def test_uninstall_preserves_operator_custom_block_cap(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    """If the operator has set their own value for the block-cap env var
+    that differs from Nightly's, uninstall must not clobber it — removal
+    is matching-value-only.
+
+    This simulates the operator re-pinning a custom value *after* a
+    Nightly install: uninstall should see the mismatch and leave it.
+    """
+    import json as _json
+
+    from nightly_core.hook_install import merge_settings_env
+
+    settings_path = integration.settings_local_path()
+    await integration.install("project")
+    # Operator overrides Nightly's pin with their own value.
+    merge_settings_env(settings_path, "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP", "42")
+    await integration.uninstall("project")
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    assert settings["env"]["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] == "42"
 
 
 @pytest.mark.asyncio

@@ -269,22 +269,36 @@ intervention.** All automatic off-ramps were removed:
 Two structural preconditions remain (these are "nothing to keep
 alive" not "voluntarily released"): `no_run` (no active run) and
 `inactive` (`SESSION_ACTIVE` marker absent — non-Nightly sessions
-are untouched). One host-level override also remains and cannot be
-fought from Python: `host_cap`, where Claude Code's own
-9-consecutive-block safety overrides us regardless.
+are untouched). One host-level override also remains: Claude Code's
+8-consecutive-blocks-without-progress cap. Unlike the old misread
+`stop_hook_active` yield, this cap is a real Python-opaque limit —
+no Stop hook can intercept it. The installer mitigates it by merging
+`"env": {"CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "5000"}` into
+`.claude/settings.local.json`, effectively lifting the cap for
+overnight sessions while keeping a finite runaway backstop.
 
-**Partial mitigation in v0.0.8+ (bug reports #13 / #16).** When the
-hook yields to `host_cap`, it now drops a `RESPAWN_REQUESTED` marker
-under the current run dir before bowing out. `nightly status` and
-`nightly session start` both surface the marker prominently the
-next time someone enters the repo; the Claude skill reads
-`nightly session start`'s output and, on seeing the marker, skips
-its fresh-session prelude (seed parsing, briefing checks) and walks
-the cascade immediately. The operator's "re-invoke `/nightly`"
-becomes a clean continuation, not a restart. RFC 010 (planned) is
-the daemon-driven follow-up: a supervisor that re-invokes the host
-itself on `host_cap` so the operator never has to. The marker is
-the disk-state half of RFC 010 shipping early.
+**v0.0.10 fix (bug reports #19 / #25 — stop_hook_active misread).**
+Earlier versions misread Claude Code's `stop_hook_active: true` stdin
+flag as "the host cap is about to override us" and yielded immediately
+(logged as `host_cap`), writing a RESPAWN_REQUESTED marker. In
+reality, `stop_hook_active: true` is set on *every* Stop event that
+follows a hook-forced continuation — it simply marks "we are
+continuing because the hook blocked," not "override imminent." Result:
+sessions surrendered after exactly one force-continue (~minutes into
+an overnight run). The fix: the hook now rides through forced-
+continuation chains indefinitely; the only stop conditions are human
+disk markers (CONCLUDE, STOP) and the structural preconditions above.
+The `host_cap` voluntary-yield branch is gone. While blocking inside
+a forced-continuation chain the hook **preemptively** writes/refreshes
+the RESPAWN_REQUESTED marker — so if Claude Code's without-progress
+cap (or a crash) silently kills the session, the marker is already on
+disk. A fresh (non-chain) turn boundary clears the stale marker;
+`nightly status` and `nightly session start` surface it prominently
+so the operator's "re-invoke `/nightly`" resumes cleanly. A new per-
+run `keepalive.blocks` counter records chain length for telemetry.
+RFC 010 (planned) is the daemon-driven follow-up: a supervisor that
+re-invokes the host on an involuntary kill so the operator never has
+to.
 
 ### Filing a bug against Nightly itself
 

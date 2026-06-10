@@ -41,9 +41,11 @@ __all__ = [
     "find_nested_hook_index",
     "merge_cursor_hook",
     "merge_nested_hook",
+    "merge_settings_env",
     "read_settings",
     "remove_cursor_hook",
     "remove_nested_hook",
+    "remove_settings_env",
     "write_settings",
 ]
 
@@ -178,6 +180,65 @@ def remove_nested_hook(hook: HookFile) -> bool:
         hook.path.unlink()
         return True
     write_settings(hook.path, settings)
+    return True
+
+
+# ── session env vars (Claude Code top-level `env`) ────────────────────────
+
+
+def merge_settings_env(path: Path, key: str, value: str) -> bool:
+    """Idempotently set `env.<key> = value` in a settings file.
+
+    Claude Code applies the top-level `"env"` object to the session
+    environment. Used to pin `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` high so an
+    overnight forced-continuation chain never trips the host's
+    without-progress override.
+
+    Returns True iff anything changed. Preserves all other content;
+    creates the file and the `env` object as needed. Malformed JSON is
+    left untouched (returns False) — same policy as `merge_nested_hook`.
+    """
+    try:
+        settings = read_settings(path)
+    except json.JSONDecodeError:
+        return False
+    env = settings.get("env")
+    if not isinstance(env, dict):
+        env = {}
+        settings["env"] = env
+    if env.get(key) == value:
+        return False
+    env[key] = value
+    write_settings(path, settings)
+    return True
+
+
+def remove_settings_env(path: Path, key: str, *, only_if_value: str | None = None) -> bool:
+    """Remove `env.<key>` from a settings file. Trim an emptied `env` object.
+
+    When `only_if_value` is given, the key is deleted only if its current
+    value matches — so uninstalling never clobbers an operator's custom
+    override of the same key. Returns True iff anything changed.
+    Idempotent; deletes the file if it becomes fully empty.
+    """
+    if not path.is_file():
+        return False
+    try:
+        settings = read_settings(path)
+    except json.JSONDecodeError:
+        return False
+    env = settings.get("env")
+    if not isinstance(env, dict) or key not in env:
+        return False
+    if only_if_value is not None and env.get(key) != only_if_value:
+        return False
+    del env[key]
+    if not env:
+        del settings["env"]
+    if not settings:
+        path.unlink()
+        return True
+    write_settings(path, settings)
     return True
 
 

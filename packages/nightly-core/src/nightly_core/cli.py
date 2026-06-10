@@ -494,18 +494,19 @@ def status() -> None:
     if len(all_runs) > 1:
         typer.echo(f"    ({len(all_runs)} run(s) total)")
 
-    # v0.0.8+: surface RESPAWN_REQUESTED prominently. If present, the
-    # prior session ended via host_cap with work pending — the operator
-    # (or the `/nightly` skill respawn-detection step) should resume
-    # the cascade rather than treat this as a fresh start. Mirrors how
-    # we already surface SESSION_ACTIVE state via the runs marker block.
+    # Surface RESPAWN_REQUESTED prominently. If present, the prior
+    # session ended involuntarily mid forced-continuation chain (host
+    # override without progress, crash, or kill) with cascade work
+    # pending — the operator (or the `/nightly` skill respawn-detection
+    # step) should resume the cascade rather than treat this as a fresh
+    # start. Mirrors how we surface SESSION_ACTIVE via the runs block.
     from nightly_core.keepalive_hook import read_respawn_marker  # noqa: PLC0415 - lazy
 
     respawn = read_respawn_marker(root)
     if respawn is not None:
         typer.echo("  respawn:")
         typer.echo(f"    ⚠ RESPAWN_REQUESTED at {respawn or '(unknown time)'}")
-        typer.echo("    prior session stopped via host_cap with cascade work pending;")
+        typer.echo("    prior session ended involuntarily mid-chain with cascade work pending;")
         typer.echo("    re-invoke `/nightly` (or run `nightly next`) to resume.")
 
 
@@ -1810,13 +1811,13 @@ def session_start() -> None:
     hook treats the session as non-Nightly and lets it stop naturally —
     so this is the "opt in to keep-alive" switch. Idempotent.
 
-    v0.0.8+: surfaces RESPAWN_REQUESTED before clearing it. If the
-    prior session ended via `host_cap` (Claude Code's 9-consecutive-
-    block override — bug reports #13/#16), the marker tells the skill
-    to skip the seed-vs-cascade prelude and go straight to `nightly
-    next`. We print the notice from this verb (rather than relying on
-    the skill to call `nightly status`) so the signal is unmissable
-    in the same scrollback line as the arm acknowledgement.
+    Surfaces RESPAWN_REQUESTED before clearing it. If the prior session
+    ended involuntarily mid forced-continuation chain (host override
+    without progress, crash, or kill — bug reports #13/#16), the marker
+    tells the skill to skip the seed-vs-cascade prelude and go straight
+    to `nightly next`. We print the notice from this verb (rather than
+    relying on the skill to call `nightly status`) so the signal is
+    unmissable in the same scrollback line as the arm acknowledgement.
     """
     from nightly_core.keepalive_hook import read_respawn_marker  # noqa: PLC0415 - lazy
 
@@ -1830,11 +1831,11 @@ def session_start() -> None:
         )
         raise typer.Exit(code=1)
     if respawn is not None:
-        typer.echo(f"⚠ RESPAWN_REQUESTED (host_cap stop at {respawn or 'unknown time'})")
+        typer.echo(f"⚠ RESPAWN_REQUESTED (involuntary mid-chain stop at {respawn or 'unknown time'})")
         typer.echo("  prior session ended involuntarily with cascade work pending —")
         typer.echo("  skip the seed prelude and run `nightly next` immediately.")
     typer.echo(f"✓ armed keep-alive — {_format_path_for_display(marker, root)}")
-    typer.echo("  The Stop hook will force-continue until CONCLUDE, STOP, or 4h idle.")
+    typer.echo("  The Stop hook will force-continue until CONCLUDE or STOP.")
 
 
 @session_app.command(name="stop")
@@ -2394,11 +2395,13 @@ def hook_stop(
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
     hook_input = parse_hook_input(raw)
     # Claude Code (and Codex, sharing the same shape) sets
-    # `stop_hook_active=true` once this hook has blocked the same turn
-    # boundary 9 consecutive times — the host's safety cap is about to
-    # override us regardless. Coerce defensively: the field may be
-    # missing, the wrong type, or a stringified bool depending on the
-    # host. Anything truthy yields.
+    # `stop_hook_active=true` when the session is already continuing as a
+    # result of a prior stop-hook block — i.e. this turn boundary is part
+    # of a forced-continuation chain, not a host-override warning. The
+    # decision logic uses it to track chain depth and pre-write the
+    # respawn marker; it is NOT an off-ramp. Coerce defensively: the
+    # field may be missing, the wrong type, or a stringified bool
+    # depending on the host.
     stop_hook_active = bool(hook_input.get("stop_hook_active"))
     try:
         decision = compute_stop_hook_decision(root, stop_hook_active=stop_hook_active)

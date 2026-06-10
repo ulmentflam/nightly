@@ -39,8 +39,10 @@ from nightly_core.hook_install import (
     HookFile,
     find_nested_hook_index,
     merge_nested_hook,
+    merge_settings_env,
     read_settings,
     remove_nested_hook,
+    remove_settings_env,
 )
 from nightly_host_claude.skill import SKILL_MD
 
@@ -57,6 +59,21 @@ host needs a `--format` flag — the default `claude_code` format applies."""
 
 _SETTINGS_LOCAL_RELATIVE = Path(".claude/settings.local.json")
 """Per-user (gitignored) Claude Code settings file the Stop hook is merged into."""
+
+_STOP_HOOK_BLOCK_CAP_ENV = "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"
+"""Claude Code env var that raises the Stop-hook without-progress cap.
+
+The host overrides a Stop hook after 8 consecutive blocks without
+progress (documented in the Claude Code hooks guide). For an overnight
+Nightly session that is far too low — a legitimate forced-continuation
+chain easily exceeds it. We pin it via the session `env` object so the
+cap is effectively "never" while remaining a finite backstop against a
+true runaway loop."""
+
+_STOP_HOOK_BLOCK_CAP_VALUE = "5000"
+"""Value for `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`. Effectively unlimited for
+an overnight run, yet finite so a genuinely stuck loop still terminates
+rather than blocking forever."""
 
 
 class ClaudeHostIntegration(NightlyHostIntegration):
@@ -218,12 +235,30 @@ class ClaudeHostIntegration(NightlyHostIntegration):
         if scope != "project":
             return
         merge_nested_hook(self._hook_file())
+        # Raise the host's without-progress block cap so an overnight
+        # forced-continuation chain never trips it (the default of 8 is
+        # far too low). See `_STOP_HOOK_BLOCK_CAP_ENV`.
+        merge_settings_env(
+            self.settings_local_path(),
+            _STOP_HOOK_BLOCK_CAP_ENV,
+            _STOP_HOOK_BLOCK_CAP_VALUE,
+        )
 
     def uninstall_keepalive_hook(self, scope: InstallScope) -> None:
-        """Remove Nightly's Stop hook entry; clean up now-empty containers."""
+        """Remove Nightly's Stop hook entry; clean up now-empty containers.
+
+        Also removes the `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` env pin, but
+        only if its value still matches what Nightly set — an operator's
+        custom override of the same key is left alone.
+        """
         if scope != "project":
             return
         remove_nested_hook(self._hook_file())
+        remove_settings_env(
+            self.settings_local_path(),
+            _STOP_HOOK_BLOCK_CAP_ENV,
+            only_if_value=_STOP_HOOK_BLOCK_CAP_VALUE,
+        )
 
     def is_installed(self, scope: InstallScope) -> bool:
         return self.skill_path(scope).is_file()
