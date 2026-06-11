@@ -171,16 +171,56 @@ to the last `_LOOP_HISTORY_KEEP` lines so the file never grows unbounded.
 Lives next to keepalive.log; both are audit artifacts, neither is on the
 hot path.
 
-The history file is still written in v0.0.3+ for post-mortem diagnostics
-(operator looking at why a cascade kept returning the same pick), but
-no longer triggers a `cascade_loop` release — the contract is "always
-advance," so a stuck cascade is the operator's signal to investigate,
-not the hook's signal to yield."""
+The history file is still written for post-mortem diagnostics (operator
+looking at why a cascade kept returning the same pick) and never
+triggers a `cascade_loop` *release* — the v0.0.3 contract is "always
+advance," and the old `cascade_loop` guard's flaw was that it released
+the session. As of issue #27 the repeat count is no longer purely
+diagnostic: it drives the *livelock reroute*. When a `github_issue` or
+`accepted_rfc` pick repeats `_LIVELOCK_REPICKS` consecutive turn
+boundaries, the force-continue branch swaps the normal "Continue on: X"
+prompt for the planning-phase prompt (treat the pick as `nothing` and
+plan new work). This is detection-reroutes-to-ideation, NOT a release:
+the session keeps blocking, so only human disk markers still terminate
+it. A stuck cascade thus self-heals into planning instead of needing
+operator investigation."""
 
 _LOOP_HISTORY_KEEP = 7
 """How many lines of history to retain on disk. 7 ≈ "enough context for
 a post-mortem without unbounded growth"; the constant used to derive
 from the now-retired LOOP_THRESHOLD so we hard-code a similar value."""
+
+
+_LIVELOCK_REPICKS = 3
+"""Consecutive identical cascade picks that trigger the issue-#27 livelock
+reroute.
+
+When a `github_issue` or `accepted_rfc` pick's fingerprint repeats this
+many turn boundaries in a row, the force-continue branch stops injecting
+the normal "Continue on: X" prompt and injects the planning-phase prompt
+instead (treat the pick as `nothing`, plan new work). 3 is the smallest
+count that is unambiguously "holding, not working": an actionable
+`github_issue`/`accepted_rfc` pick converts into a task plan within one
+turn, after which `resume_in_flight` outranks it and the fingerprint
+changes — so a third identical re-pick means the agent never started the
+work (almost certainly because an open PR already covers it, which the
+triage in-flight guard should catch but may miss). Detection only — the
+session never releases (the v0.0.3 "only human intervention terminates"
+contract holds); the old `cascade_loop` guard's flaw was releasing, not
+detecting."""
+
+
+_LIVELOCK_REROUTE_SOURCES = frozenset({"github_issue", "accepted_rfc"})
+"""Cascade sources eligible for the livelock reroute.
+
+Only these two convert into a task plan within one turn, after which a
+higher cascade rung (`resume_in_flight`) takes over and the fingerprint
+changes — so a sustained identical re-pick means the agent is holding,
+not working. The other long-lived sources are deliberately excluded:
+`resume_in_flight` / `unblocked_approval` / `pr_rescue` legitimately
+repeat across many turns of honest work (one PR can take many turns) and
+must NOT reroute; `ideate` / `nothing` already lead to the planning
+phase, so rerouting them would be redundant."""
 
 
 @dataclass(frozen=True)
@@ -295,12 +335,14 @@ def compute_stop_hook_decision(
         _reset_block_count(run.path)
         _clear_respawn_marker(run.path)
 
-    # The cascade pick is still computed and recorded in the loop
-    # history file (`keepalive.history`) for post-mortem diagnostics,
-    # but a repeated fingerprint no longer releases the session — the
-    # contract is "always advance," so a stuck cascade is the
-    # operator's signal to investigate, not the hook's signal to
-    # yield.
+    # The cascade pick is computed and recorded in the loop history file
+    # (`keepalive.history`). A repeated fingerprint never *releases* the
+    # session — the contract is "always advance". But as of issue #27 the
+    # repeat count drives the livelock reroute: when a github_issue /
+    # accepted_rfc pick repeats `_LIVELOCK_REPICKS` consecutive turns the
+    # agent is holding (not working) on a pick an open PR almost certainly
+    # already covers, so we treat it as `nothing` and inject the
+    # planning-phase prompt instead of "Continue on: X".
     try:
         choice = next_task(root)
     except Exception as exc:  # cascade must never crash the hook
@@ -309,9 +351,40 @@ def compute_stop_hook_decision(
     else:
         cascade_error = None
 
+    repeats = 0
     if choice is not None:
-        # Record for diagnostics; result is intentionally unused.
-        _record_and_count_repeats(run.path, _cascade_fingerprint(choice))
+        repeats = _record_and_count_repeats(run.path, _cascade_fingerprint(choice))
+
+    livelock = (
+        choice is not None
+        and choice.source in _LIVELOCK_REROUTE_SOURCES
+        and repeats >= _LIVELOCK_REPICKS
+    )
+
+    if livelock:
+        # `choice` is non-None here (guarded by `livelock`).
+        assert choice is not None
+        reason = _planning_phase_prompt(
+            header=f"[Nightly keepalive · run {run.id} · turn {turn_count}]",
+            rationale=(
+                f"Cascade livelock: the cascade has surfaced the same pick "
+                f"({choice.source} → {choice.summary}) {repeats} consecutive "
+                "turn boundaries without a task plan being started — it is "
+                "almost certainly already covered by an open PR or otherwise "
+                "not actionable. Do NOT hold on it; treat it as `nothing` and "
+                "plan new work instead."
+            ),
+        )
+        message = (
+            f"run {run.id} turn {turn_count}: blocking stop and injecting "
+            f"planning-phase prompt (livelock reroute: {choice.source} pick "
+            f"repeated {repeats}x)."
+        )
+        return StopHookDecision(
+            payload={"decision": "block", "reason": reason},
+            reason_code="force_continue",
+            message=message,
+        )
 
     reason = _build_continue_reason_from(
         choice=choice,

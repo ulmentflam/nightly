@@ -38,6 +38,7 @@ __all__ = [
     "IssueRanking",
     "IssueRecord",
     "OpenPRRefFetcher",
+    "OpenPRRefs",
     "fetch_open_pr_issue_refs_via_gh",
     "fetch_via_gh",
     "rank_issues",
@@ -64,6 +65,12 @@ _MIN_BODY_CHARS = 40
 # Soft cap on age weight — log1p grows slowly so this rarely matters in
 # practice. A 10-year-old issue tops out around 4.4 with the formula below.
 _MAX_AGE_WEIGHT = 5.0
+
+# Skip-reason strings. Distinct strings so post-mortems (and the keepalive
+# livelock backstop) can tell the two in-flight signals apart: an explicit
+# closing-keyword claim vs. a bare mention inside a Nightly-authored PR.
+_SKIP_REASON_CLOSING_REF = "open PR already addresses this issue"
+_SKIP_REASON_NIGHTLY_MENTION = "open Nightly PR references this issue (in-flight)"
 
 
 @dataclass(frozen=True)
@@ -126,22 +133,43 @@ def _age_weight(created_at: datetime, *, now: datetime | None = None) -> float:
 def _skip_reason(
     issue: IssueRecord,
     *,
-    open_pr_issue_refs: frozenset[int] = frozenset(),
+    open_pr_refs: OpenPRRefs = None,  # type: ignore[assignment]
 ) -> str | None:
+    # Default sentinel resolved here (frozen dataclass can't be a mutable
+    # default at the param site); an empty OpenPRRefs means "no overlap".
+    if open_pr_refs is None:
+        open_pr_refs = OpenPRRefs()
     label_set = {lab.lower() for lab in issue.labels}
     deny = label_set & _HARD_DENY_LABELS
     if deny:
         return f"hard-deny label: {sorted(deny)[0]}"
     if len(issue.body.strip()) < _MIN_BODY_CHARS:
         return f"no acceptance criterion (body < {_MIN_BODY_CHARS} chars)"
-    if issue.number in open_pr_issue_refs:
+    # Closing-ref check takes precedence over the weaker nightly-mention
+    # signal: a closing keyword in ANY open PR is an explicit claim, so it
+    # wins when both branches match the same issue number.
+    if issue.number in open_pr_refs.closing_refs:
         # Issue #10 §bug-3: cascade re-picked an issue forever because
         # an open PR fixing it didn't appear in the ranker's skip list.
         # We now scan open PR titles + bodies for closing references
         # (`fixes #N` / `closes #N` / `resolves #N`) and skip matching
         # issues. RFC 001 §A2's same-shape logic for RFC checklist items
         # is the inspiration; this extends it to GitHub issues.
-        return "open PR already addresses this issue"
+        return _SKIP_REASON_CLOSING_REF
+    if issue.number in open_pr_refs.nightly_mention_refs:
+        # Issue #27: the §bug-3 closing-keyword guard missed the epic
+        # livelock. An epic (#125) was referenced by per-item PRs as
+        # "(#125)" in the title and "Addresses item #5 of #125" in the
+        # body — deliberately NO closing keyword (a per-item PR must not
+        # auto-close the whole epic). The closing-ref scan never matched,
+        # so the cascade re-picked #125 for 300+ turns. We now ALSO treat
+        # a bare `#N` mention as an in-flight signal, but only when the
+        # mention appears in a Nightly-authored PR (headRefName starts
+        # with `nightly/`): a bare mention from an arbitrary contributor's
+        # PR is too weak, but in a PR the orchestrator itself opened it
+        # means "Nightly is already working this issue" — re-picking it
+        # before that PR merges is exactly the livelock.
+        return _SKIP_REASON_NIGHTLY_MENTION
     return None
 
 
@@ -227,11 +255,49 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-# ── open-PR overlap detection (issue #10 §bug-3) ──────────────────────────
+# ── open-PR overlap detection (issue #10 §bug-3, issue #27) ───────────────
 
-OpenPRRefFetcher = Callable[[Path], frozenset[int]]
-"""Returns the set of issue numbers any open PR claims to close. Injectable
-for tests; production passes `fetch_open_pr_issue_refs_via_gh`."""
+
+@dataclass(frozen=True)
+class OpenPRRefs:
+    """Issue numbers that open PRs signal are already being worked.
+
+    Two channels with different evidentiary strength:
+
+    - `closing_refs` — issue numbers any open PR (regardless of author or
+      branch) claims to close via GitHub's documented closing keywords
+      (`fixes #N` / `closes #N` / `resolves #N`). A closing keyword is an
+      explicit machine-readable claim, so it counts from ALL open PRs.
+      This is the issue #10 §bug-3 signal, unchanged.
+    - `nightly_mention_refs` — issue numbers mentioned as a bare `#N` in
+      a Nightly-authored PR (one whose `headRefName` starts with
+      `nightly/`). A bare mention is too weak a signal from an arbitrary
+      PR, but inside a PR the orchestrator itself opened it means
+      "Nightly is already working this issue." This is the issue #27
+      epic-livelock signal: per-item PRs reference an epic without a
+      closing keyword (so they don't auto-close it), which slipped past
+      the §bug-3 closing-keyword scan and re-picked the epic forever.
+
+    Empty (the default) means "no overlap" — the ranker degrades cleanly
+    to pre-fix behavior.
+    """
+
+    closing_refs: frozenset[int] = frozenset()
+    nightly_mention_refs: frozenset[int] = frozenset()
+
+
+OpenPRRefFetcher = Callable[[Path], "OpenPRRefs | frozenset[int]"]
+"""Returns the open-PR issue-overlap signals for a repo root.
+
+Production passes `fetch_open_pr_issue_refs_via_gh`, which returns an
+`OpenPRRefs`. Injectable for tests; for backward compatibility `rank_issues`
+also accepts a bare `frozenset[int]` and treats it as `closing_refs` (the
+pre-issue-#27 return shape that existing injected fakes still use)."""
+
+
+_NIGHTLY_BRANCH_PREFIX = "nightly/"
+"""Head-branch prefix that marks a PR as Nightly-authored. Only PRs whose
+`headRefName` starts with this prefix contribute `nightly_mention_refs`."""
 
 
 _CLOSE_KEYWORD_RE = re.compile(
@@ -247,20 +313,38 @@ match cross-repo refs (`closes owner/repo#93`) — that's a v2 concern;
 the same-repo case is the load-bearing one."""
 
 
-def fetch_open_pr_issue_refs_via_gh(root: Path) -> frozenset[int]:
-    """Scan open PRs for closing references to issue numbers.
+_BARE_MENTION_RE = re.compile(r"#(\d+)")
+"""Match any bare `#N` issue/PR reference in a PR's title + body.
 
-    Returns the set of issue numbers any open PR in `root` claims to
-    close via `fixes #N` / `closes #N` / `resolves #N` (and the
-    inflected variants the GitHub docs accept).
+Used ONLY for Nightly-authored PRs (see `_NIGHTLY_BRANCH_PREFIX`). This
+deliberately over-matches: a Nightly PR's body may cross-reference OTHER
+PRs ("supersedes PR #123", "see (#108)") as well as the issue it works.
+That over-match is acceptable and largely self-resolving: GitHub draws
+issue and PR numbers from one shared sequence, so a number that belongs
+to a PR can never also belong to an issue — a `#N` that is really a PR
+reference therefore can't collide with any issue `#N` in the ranker's
+input set. We do not try to strip PR self-references; it would be extra
+complexity for a collision that cannot occur."""
 
-    Best-effort: empty set when `gh` is missing, the repo has no
-    GitHub remote, the call fails, or the output isn't parseable.
-    The ranker treats empty-set as "no overlap" — i.e. degrades
+
+def fetch_open_pr_issue_refs_via_gh(root: Path) -> OpenPRRefs:
+    """Scan open PRs for issue-overlap signals.
+
+    Returns an `OpenPRRefs` carrying two channels (see that class):
+
+    - `closing_refs` — issue numbers any open PR claims to close via
+      `fixes #N` / `closes #N` / `resolves #N` (and the inflected
+      variants the GitHub docs accept). From ALL open PRs.
+    - `nightly_mention_refs` — issue numbers mentioned as a bare `#N`
+      in a Nightly-authored PR (`headRefName` starts with `nightly/`).
+
+    Best-effort: empty `OpenPRRefs` when `gh` is missing, the repo has
+    no GitHub remote, the call fails, or the output isn't parseable. The
+    ranker treats an empty result as "no overlap" — i.e. degrades
     cleanly to pre-fix behavior, never as a hard failure.
     """
     if shutil.which("gh") is None:
-        return frozenset()
+        return OpenPRRefs()
     try:
         result = subprocess.run(
             [
@@ -272,7 +356,7 @@ def fetch_open_pr_issue_refs_via_gh(root: Path) -> frozenset[int]:
                 "--limit",
                 "100",
                 "--json",
-                "title,body",
+                "title,body,headRefName",
             ],
             cwd=root,
             check=True,
@@ -281,25 +365,49 @@ def fetch_open_pr_issue_refs_via_gh(root: Path) -> frozenset[int]:
             timeout=30,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
-        return frozenset()
+        return OpenPRRefs()
     try:
         payload = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
-        return frozenset()
-    refs: set[int] = set()
+        return OpenPRRefs()
+    closing: set[int] = set()
+    nightly_mentions: set[int] = set()
     for entry in payload:
         if not isinstance(entry, dict):
             continue
         text = f"{entry.get('title') or ''}\n{entry.get('body') or ''}"
         for match in _CLOSE_KEYWORD_RE.finditer(text):
             try:
-                refs.add(int(match.group(1)))
+                closing.add(int(match.group(1)))
             except ValueError:
                 continue
-    return frozenset(refs)
+        head_ref = str(entry.get("headRefName") or "")
+        if head_ref.startswith(_NIGHTLY_BRANCH_PREFIX):
+            for match in _BARE_MENTION_RE.finditer(text):
+                try:
+                    nightly_mentions.add(int(match.group(1)))
+                except ValueError:
+                    continue
+    return OpenPRRefs(
+        closing_refs=frozenset(closing),
+        nightly_mention_refs=frozenset(nightly_mentions),
+    )
 
 
 # ── public API ─────────────────────────────────────────────────────────────
+
+
+def _coerce_open_pr_refs(value: OpenPRRefs | frozenset[int] | set[int]) -> OpenPRRefs:
+    """Normalize a `pr_ref_fetcher` return value to `OpenPRRefs`.
+
+    Production fetchers return `OpenPRRefs` directly. Pre-issue-#27 tests
+    (and any caller still using the old shape) inject a bare set of
+    closing-ref issue numbers; treat that as `closing_refs` so the
+    injectable-fetcher pattern keeps working without a rewrite.
+    """
+    if isinstance(value, OpenPRRefs):
+        return value
+    return OpenPRRefs(closing_refs=frozenset(value))
 
 
 def rank_issues(
@@ -315,24 +423,33 @@ def rank_issues(
     tests substitute a deterministic list. The cascade calls this with no
     args to get the live ranking.
 
-    `pr_ref_fetcher` returns the set of issue numbers any open PR claims
-    to close. Production passes `fetch_open_pr_issue_refs_via_gh`; tests
-    inject empty/explicit sets. Issues whose number is in the set get
-    `skip_reason="open PR already addresses this issue"` and never get
-    picked. This is the issue #10 §bug-3 fix: the cascade used to
-    re-pick #93 forever after fix PR #95 was open because the ranker
-    had no in-flight-PR guard.
+    `pr_ref_fetcher` returns the open-PR overlap signals (`OpenPRRefs`).
+    Production passes `fetch_open_pr_issue_refs_via_gh`; tests inject
+    empty/explicit values. Two skip channels:
+
+    - issue number in `closing_refs` → `_SKIP_REASON_CLOSING_REF` ("open
+      PR already addresses this issue"). The issue #10 §bug-3 fix: the
+      cascade used to re-pick #93 forever after fix PR #95 was open
+      because the ranker had no in-flight-PR guard.
+    - issue number in `nightly_mention_refs` → `_SKIP_REASON_NIGHTLY_MENTION`
+      ("open Nightly PR references this issue (in-flight)"). The issue
+      #27 fix: an epic referenced (without a closing keyword) by Nightly
+      per-item PRs re-picked forever; a bare `#N` mention in a `nightly/*`
+      PR now counts as in-flight.
+
+    For backward compatibility a `pr_ref_fetcher` returning a bare
+    `frozenset[int]` (the pre-#27 shape) is coerced to `closing_refs`.
     """
     root = (root or repo_root()).resolve()
     fetch = fetcher or fetch_via_gh
     pr_refs_fn = pr_ref_fetcher or fetch_open_pr_issue_refs_via_gh
     issues = fetch(root)
-    open_pr_refs = pr_refs_fn(root)
+    open_pr_refs = _coerce_open_pr_refs(pr_refs_fn(root))
     rankings = [
         IssueRanking(
             issue=issue,
             score=score_issue(issue, now=now),
-            skip_reason=_skip_reason(issue, open_pr_issue_refs=open_pr_refs),
+            skip_reason=_skip_reason(issue, open_pr_refs=open_pr_refs),
         )
         for issue in issues
     ]

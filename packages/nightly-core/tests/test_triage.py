@@ -10,6 +10,7 @@ import pytest
 
 from nightly_core.triage import (
     IssueRecord,
+    OpenPRRefs,
     fetch_open_pr_issue_refs_via_gh,
     fetch_via_gh,
     rank_issues,
@@ -241,20 +242,24 @@ def test_fetch_open_pr_issue_refs_via_gh_without_gh_returns_empty(
     import shutil
 
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    assert fetch_open_pr_issue_refs_via_gh(tmp_path) == frozenset()
+    refs = fetch_open_pr_issue_refs_via_gh(tmp_path)
+    assert refs == OpenPRRefs()
+    assert refs.closing_refs == frozenset()
+    assert refs.nightly_mention_refs == frozenset()
 
 
 def test_fetch_open_pr_issue_refs_via_gh_parses_fixes_keyword(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """End-to-end: a `gh pr list` payload with `fixes #93` in the body
-    yields `{93}` from the helper. Imports `fetch_open_pr_issue_refs_via_gh`
-    via the module-top import (a local binding the autouse stub
-    cannot retroactively override)."""
+    yields `closing_refs={93, 94}` from the helper. Imports
+    `fetch_open_pr_issue_refs_via_gh` via the module-top import (a local
+    binding the autouse stub cannot retroactively override)."""
     import subprocess as subprocess_module
 
     payload = (
-        '[{"title": "Fix the daemon pull tick", "body": "This PR fixes #93\\n\\nAlso closes #94."}]'
+        '[{"title": "Fix the daemon pull tick", "body": "This PR fixes #93\\n\\nAlso closes #94.",'
+        ' "headRefName": "alice/fix-daemon"}]'
     )
 
     def _fake_run(*_args, **_kwargs):
@@ -267,4 +272,141 @@ def test_fetch_open_pr_issue_refs_via_gh_parses_fixes_keyword(
     monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/gh")
     monkeypatch.setattr(subprocess_module, "run", _fake_run)
     refs = fetch_open_pr_issue_refs_via_gh(tmp_path)
-    assert refs == frozenset({93, 94})
+    assert refs.closing_refs == frozenset({93, 94})
+    # Non-nightly branch → no bare-mention harvesting.
+    assert refs.nightly_mention_refs == frozenset()
+
+
+# ── issue #27: epic-livelock guard (bare `#N` mentions in nightly/* PRs) ──
+
+
+def test_rank_issues_skips_issue_mentioned_in_nightly_pr(tmp_path: Path) -> None:
+    """A bare `#N` mention inside a Nightly-authored PR marks the issue
+    in-flight even with no closing keyword — the issue #27 fix."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(125), _issue(126)]),
+        pr_ref_fetcher=lambda _root: OpenPRRefs(nightly_mention_refs=frozenset({125})),
+        now=_NOW,
+    )
+    by_num = {r.number: r for r in rankings}
+    assert by_num[125].skip_reason == "open Nightly PR references this issue (in-flight)"
+    assert by_num[126].skip_reason is None
+    assert rankings[0].number == 126
+
+
+def test_rank_issues_does_not_skip_mention_in_non_nightly_pr(tmp_path: Path) -> None:
+    """A bare mention in a NON-nightly PR is too weak a signal — the
+    issue stays pickable. The fetcher only harvests mentions from
+    `nightly/*` PRs, so a non-nightly mention never lands in
+    `nightly_mention_refs` in the first place."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(125)]),
+        # Empty signals model "a non-nightly PR mentioned #125, so the
+        # fetcher harvested nothing."
+        pr_ref_fetcher=lambda _root: OpenPRRefs(),
+        now=_NOW,
+    )
+    assert rankings[0].skip_reason is None
+
+
+def test_rank_issues_closing_keyword_in_non_nightly_pr_still_skips(tmp_path: Path) -> None:
+    """A closing keyword in ANY open PR (nightly or not) still skips the
+    issue — the issue #10 §bug-3 behavior is preserved."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(93)]),
+        pr_ref_fetcher=lambda _root: OpenPRRefs(closing_refs=frozenset({93})),
+        now=_NOW,
+    )
+    assert rankings[0].skip_reason == "open PR already addresses this issue"
+
+
+def test_rank_issues_closing_ref_wins_when_both_signals_match(tmp_path: Path) -> None:
+    """When an issue is in both channels, the closing-ref reason wins —
+    a closing keyword is the stronger, explicit claim."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(125)]),
+        pr_ref_fetcher=lambda _root: OpenPRRefs(
+            closing_refs=frozenset({125}),
+            nightly_mention_refs=frozenset({125}),
+        ),
+        now=_NOW,
+    )
+    assert rankings[0].skip_reason == "open PR already addresses this issue"
+
+
+def test_rank_issues_accepts_bare_frozenset_for_backward_compat(tmp_path: Path) -> None:
+    """A `pr_ref_fetcher` returning a bare `frozenset[int]` (the pre-#27
+    shape) is coerced to `closing_refs` — old injected fakes keep working."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(93), _issue(94)]),
+        pr_ref_fetcher=lambda _root: frozenset({93}),
+        now=_NOW,
+    )
+    by_num = {r.number: r for r in rankings}
+    assert by_num[93].skip_reason == "open PR already addresses this issue"
+    assert by_num[94].skip_reason is None
+
+
+def test_fetch_open_pr_issue_refs_harvests_bare_mentions_in_nightly_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test shaped like the real case: an epic (#125) referenced
+    as "(#125)" in a nightly/* PR title and "Addresses item #5 of #125" in
+    the body — NO closing keyword — lands in `nightly_mention_refs`, so the
+    ranker skips it. This is the exact failure mode from issue #27."""
+    import subprocess as subprocess_module
+
+    payload = (
+        '[{"title": "Implement item #5 of corpus-forge epic (#125)",'
+        ' "body": "Addresses **item #5** of #125. Does not close the epic.",'
+        ' "headRefName": "nightly/corpus-forge-item-5-20260609"}]'
+    )
+
+    def _fake_run(*_args, **_kwargs):
+        class _R:
+            stdout = payload
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(subprocess_module, "run", _fake_run)
+    refs = fetch_open_pr_issue_refs_via_gh(tmp_path)
+    # No closing keyword → closing_refs stays empty.
+    assert refs.closing_refs == frozenset()
+    # Bare mentions in a nightly/* PR are harvested (5 and 125).
+    assert 125 in refs.nightly_mention_refs
+    # End-to-end through the ranker: #125 is skipped with the new reason.
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher([_issue(125)]),
+        pr_ref_fetcher=fetch_open_pr_issue_refs_via_gh,
+        now=_NOW,
+    )
+    assert rankings[0].skip_reason == "open Nightly PR references this issue (in-flight)"
+
+
+def test_fetch_open_pr_issue_refs_via_gh_garbage_json_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unparseable `gh` output degrades to an empty `OpenPRRefs` — no skip,
+    no exception (covers the new return shape)."""
+    import subprocess as subprocess_module
+
+    def _fake_run(*_args, **_kwargs):
+        class _R:
+            stdout = "not json at all {{{"
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(subprocess_module, "run", _fake_run)
+    refs = fetch_open_pr_issue_refs_via_gh(tmp_path)
+    assert refs.closing_refs == frozenset()
+    assert refs.nightly_mention_refs == frozenset()

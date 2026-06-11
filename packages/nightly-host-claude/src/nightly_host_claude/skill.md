@@ -204,7 +204,13 @@ first hit:
    unchecked task-list item. Human-blessed scope.
 5. **github_issue** — highest-ranked open issue. The ranking is simple
    (`label × age`) with hard gates for `do-not-automate`, `needs-secrets`,
-   and empty bodies.
+   and empty bodies. Issues are also skipped when (a) any open PR claims
+   them with a closing keyword, or (b) any open Nightly-authored PR
+   (`nightly/*` branch) merely mentions `#N` in its body — bare mention
+   means in-flight (v0.0.11). If you see the cascade repeatedly returning
+   the same `github_issue` pick, the ranker should have filtered it; the
+   keepalive livelock backstop will inject the planning-phase prompt after
+   ≥3 consecutive repeats — do not hold, enter ideation instead.
 6. **pr_rescue (non-blocking)** — a Nightly-authored open PR has
    advisory feedback (informational bot comments, non-changes-requested
    reviewer notes). Lower priority than fresh RFC / issue work because

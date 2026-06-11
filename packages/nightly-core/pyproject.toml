@@ -1,6 +1,6 @@
 [project]
 name = "nightly-core"
-version = "0.0.10"
+version = "0.0.11"
 description = "Nightly's core orchestration — loop, priority cascade, drain, briefing renderer."
 readme = "README.md"
 requires-python = ">=3.12"
