@@ -224,8 +224,15 @@ intervention.** All automatic off-ramps were removed:
   outright. The turn counter is still incremented for telemetry.
 - `stale` — 4-hour `SESSION_ACTIVE` freshness check, removed. A
   marker that survived from earlier today still force-continues.
-- `cascade_loop` — repeated-pick guard, removed. The history file
-  is still written for post-mortem diagnostics but doesn't release.
+- `cascade_loop` — repeated-pick guard, removed as a *release*
+  condition in v0.0.3; **restored as a reroute in v0.0.11**. When
+  the same `github_issue` or `accepted_rfc` pick repeats ≥3
+  consecutive turn boundaries, the hook injects the planning-phase
+  prompt instead of "Continue on: X". Sources that legitimately
+  repeat (`resume_in_flight`, `unblocked_approval`, `pr_rescue`)
+  never reroute. The session is not released — the v0.0.3 "only
+  human intervention terminates" contract holds. The history file
+  is still written; it now drives the detector.
 
 Two structural preconditions remain (these are "nothing to keep
 alive" not "voluntarily released"): `no_run` (no active run) and
@@ -260,6 +267,18 @@ run `keepalive.blocks` counter records chain length for telemetry.
 RFC 010 (planned) is the daemon-driven follow-up: a supervisor that
 re-invokes the host on an involuntary kill so the operator never has
 to.
+
+**v0.0.11 fix (issue #27 — cascade livelock on PR-covered issues).**
+The `github_issue` ranker now skips an issue when (a) any open PR
+claims it with a closing keyword (existing guard from issue #10), OR
+(b) any open **Nightly-authored** PR (`nightly/*` branch) merely
+*mentions* `#N` in its body — a bare mention in an orchestrator-owned
+PR means the issue is in flight, even without a closing keyword. Skip
+reason: "open Nightly PR references this issue (in-flight)." The
+keepalive livelock backstop (restored `cascade_loop` reroute — see
+above) fires if a `github_issue` or `accepted_rfc` pick repeats ≥3
+consecutive boundaries; the hook then injects the planning-phase
+prompt so the agent enters ideation rather than holding.
 
 ### Filing a bug against Nightly itself
 

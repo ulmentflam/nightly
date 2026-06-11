@@ -1,6 +1,6 @@
 [project]
 name = "nightly-host-opencode"
-version = "0.0.10"
+version = "0.0.11"
 description = "Nightly host integration for opencode (primary host)."
 readme = "README.md"
 requires-python = ">=3.12"

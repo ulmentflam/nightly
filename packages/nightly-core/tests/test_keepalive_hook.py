@@ -648,3 +648,127 @@ def test_hook_stop_cli_honors_stop_hook_active(
     # Stdout should be the block shape — Nightly keeps the session alive.
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["decision"] == "block"
+
+
+# ── issue #27: livelock reroute (repeated github_issue/accepted_rfc pick) ──
+
+
+def _stub_pick(monkeypatch: pytest.MonkeyPatch, choice: CascadeChoice) -> None:
+    """Pin the cascade to return `choice` every turn."""
+    monkeypatch.setattr(
+        "nightly_core.keepalive_hook.next_task",
+        lambda _root=None: choice,
+    )
+
+
+def test_livelock_reroutes_github_issue_on_third_repick(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same `github_issue` pick 3 consecutive turns → the third decision
+    swaps the normal 'Continue on:' prompt for the planning-phase prompt.
+    The first two get the normal continuation prompt."""
+    arm_session(initialized_repo)
+    _stub_pick(
+        monkeypatch,
+        CascadeChoice(
+            source="github_issue",
+            summary="corpus-forge epic #125",
+            rationale="ranked top issue",
+        ),
+    )
+
+    first = compute_stop_hook_decision(initialized_repo)
+    second = compute_stop_hook_decision(initialized_repo)
+    assert "Continue on:" in first.payload["reason"]
+    assert "Continue on:" in second.payload["reason"]
+    assert "GENUINE WORK IS NEVER EXHAUSTED" not in first.payload["reason"]
+
+    third = compute_stop_hook_decision(initialized_repo)
+    reason = third.payload["reason"]
+    assert "GENUINE WORK IS NEVER EXHAUSTED" in reason
+    assert "Cascade livelock" in reason
+    assert "github_issue" in reason
+    # Still a force-continue block, never a release.
+    assert third.should_block
+    assert third.reason_code == "force_continue"
+    # Greppable heartbeat message names the reroute.
+    assert "livelock reroute" in third.message
+    assert "github_issue" in third.message
+
+
+def test_livelock_reroutes_accepted_rfc_on_third_repick(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`accepted_rfc` is the other reroute-eligible source."""
+    arm_session(initialized_repo)
+    _stub_pick(
+        monkeypatch,
+        CascadeChoice(
+            source="accepted_rfc",
+            summary="RFC 010 phase A",
+            rationale="next accepted RFC phase",
+        ),
+    )
+    compute_stop_hook_decision(initialized_repo)
+    compute_stop_hook_decision(initialized_repo)
+    third = compute_stop_hook_decision(initialized_repo)
+    assert "GENUINE WORK IS NEVER EXHAUSTED" in third.payload["reason"]
+    assert "accepted_rfc" in third.payload["reason"]
+    assert third.should_block
+
+
+def test_livelock_does_not_reroute_resume_in_flight(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`resume_in_flight` legitimately repeats across many turns of honest
+    work — repeating it 5x must NOT reroute to the planning phase."""
+    arm_session(initialized_repo)
+    _stub_pick(
+        monkeypatch,
+        CascadeChoice(
+            source="resume_in_flight",
+            summary="advance plan foo",
+            target_path=Path("/tmp/plan-foo"),
+            rationale="in-flight plan",
+        ),
+    )
+    for _ in range(5):
+        decision = compute_stop_hook_decision(initialized_repo)
+    reason = decision.payload["reason"]
+    assert "Continue on:" in reason
+    assert "GENUINE WORK IS NEVER EXHAUSTED" not in reason
+    assert "livelock reroute" not in decision.message
+
+
+def test_livelock_changed_pick_resets_and_uses_normal_prompt(
+    initialized_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a reroute, a DIFFERENT pick (changed fingerprint) gets the
+    normal 'Continue on:' prompt again — the repeat count is consecutive,
+    so a new fingerprint starts a fresh count."""
+    arm_session(initialized_repo)
+    _stub_pick(
+        monkeypatch,
+        CascadeChoice(source="github_issue", summary="issue #125", rationale="r"),
+    )
+    compute_stop_hook_decision(initialized_repo)
+    compute_stop_hook_decision(initialized_repo)
+    rerouted = compute_stop_hook_decision(initialized_repo)
+    assert "GENUINE WORK IS NEVER EXHAUSTED" in rerouted.payload["reason"]
+
+    # A different issue → fingerprint changes → repeat count resets to 1.
+    _stub_pick(
+        monkeypatch,
+        CascadeChoice(source="github_issue", summary="issue #200", rationale="r"),
+    )
+    fresh = compute_stop_hook_decision(initialized_repo)
+    assert "Continue on:" in fresh.payload["reason"]
+    assert "GENUINE WORK IS NEVER EXHAUSTED" not in fresh.payload["reason"]
+
+
+def test_livelock_constant_is_three() -> None:
+    """Pin the reroute threshold — tests and operator docs key off it."""
+    from nightly_core.keepalive_hook import _LIVELOCK_REPICKS, _LIVELOCK_REROUTE_SOURCES
+
+    assert _LIVELOCK_REPICKS == 3
+    assert {"github_issue", "accepted_rfc"} == _LIVELOCK_REROUTE_SOURCES
