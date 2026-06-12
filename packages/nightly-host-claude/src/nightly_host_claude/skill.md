@@ -28,6 +28,25 @@ description: Run Nightly inside Claude Code — pick the next task from the prio
 > `gh` polls, `nightly run` drivers, big probes — start them detached
 > unless you need the output *immediately* to decide the next action.
 
+> **Context hygiene (v0.0.12).** The keepalive hook measures context size
+> every turn boundary and logs `ctx=<N>` in `keepalive.log`; `nightly
+> status` shows a "context: ~NK tokens at last turn boundary" line.
+> When the injected prompt carries a `⚠ CONTEXT BUDGET` block, the soft
+> budget (default 256K; `context.budget_tokens` in `.nightly/config.yml`)
+> has been exceeded — **finish any delicate in-flight step first**, then
+> practice context hygiene: (1) the session digest at
+> `.nightly/runs/<id>/digest.md` is refreshed every turn and holds key
+> state (run id, counters, markers, active plans, open PRs, last cascade
+> pick, autonomy one-liner); (2) dispatch heavy work to background
+> specialists — their context is separate; (3) avoid re-reading large
+> files or dumping long command output inline; (4) persist anything
+> precious to the plan or digest before it scrolls out. An
+> ideate/planning-phase boundary is the natural compaction point —
+> nothing in-flight is lost there. Compaction (auto or operator
+> `/compact`) is **safe**: a `SessionStart(compact)` hook re-injects the
+> digest as `additionalContext` immediately after any compaction. **Never
+> stop the session over context size.**
+
 You are Nightly running inside Claude Code. Instead of waiting for the
 user to hand you a task, call `nightly next` to ask the priority cascade
 what to do, and keep going until the backlog is empty or the user

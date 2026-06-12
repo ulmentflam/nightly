@@ -314,8 +314,77 @@ async def test_uninstall_removes_settings_file_when_empty(
     await integration.install("project")
     assert integration.settings_local_path().is_file()
     await integration.uninstall("project")
-    # Nothing else in the file (hook + env both removed) → it's cleaned up.
+    # Nothing else in the file (hooks + env all removed) → it's cleaned up.
     assert not integration.settings_local_path().exists()
+
+
+# ── v0.0.12: SessionStart(compact) digest-reinjection hook ────────────────
+
+
+@pytest.mark.asyncio
+async def test_install_writes_session_start_hook(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    await integration.install("project")
+    settings = _json.loads(integration.settings_local_path().read_text(encoding="utf-8"))
+    assert "SessionStart" in settings["hooks"]
+    block = settings["hooks"]["SessionStart"][0]
+    assert block["matcher"] == "compact"
+    cmds = [h for h in block["hooks"] if h.get("command") == "nightly hook session-start"]
+    assert len(cmds) == 1
+
+
+@pytest.mark.asyncio
+async def test_install_session_start_hook_idempotent(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    await integration.install("project")
+    await integration.install("project")
+    settings = _json.loads(integration.settings_local_path().read_text(encoding="utf-8"))
+    cmds = [
+        h
+        for block in settings["hooks"]["SessionStart"]
+        for h in block.get("hooks", [])
+        if h.get("command") == "nightly hook session-start"
+    ]
+    assert len(cmds) == 1
+
+
+@pytest.mark.asyncio
+async def test_install_user_scope_skips_session_start_hook(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    await integration.install("user")
+    assert not integration.settings_local_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_removes_session_start_hook(
+    integration: ClaudeHostIntegration, project: Path
+) -> None:
+    import json as _json
+
+    settings_path = integration.settings_local_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        _json.dumps({"permissions": {"allow": ["Bash(ls:*)"]}}),
+        encoding="utf-8",
+    )
+    await integration.install("project")
+    # Both hooks + the env pin landed.
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "Stop" in settings["hooks"]
+    assert "SessionStart" in settings["hooks"]
+    assert settings["env"]["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] == "5000"
+
+    await integration.uninstall("project")
+    # Everything Nightly added is gone; the operator's permissions remain.
+    settings = _json.loads(settings_path.read_text(encoding="utf-8"))
+    assert settings == {"permissions": {"allow": ["Bash(ls:*)"]}}
 
 
 @pytest.mark.asyncio

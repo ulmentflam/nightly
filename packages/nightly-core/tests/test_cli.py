@@ -634,6 +634,37 @@ def test_status_shows_concluded_run(repo: Path) -> None:
     assert "concluded" in result.output
 
 
+def test_status_shows_context_line_when_estimate_present(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    from nightly_core.keepalive_hook import CONTEXT_FILENAME
+    from nightly_core.runs import current_run
+
+    run = current_run(repo)
+    assert run is not None
+    (run.path / CONTEXT_FILENAME).write_text("187000\n", encoding="utf-8")
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "context:" in result.output
+    assert "~187K tokens" in result.output
+    assert "256K" in result.output  # default soft budget
+
+
+def test_status_omits_context_line_when_estimate_empty(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    runner.invoke(app, ["start"])
+    from nightly_core.keepalive_hook import CONTEXT_FILENAME
+    from nightly_core.runs import current_run
+
+    run = current_run(repo)
+    assert run is not None
+    # Empty file = "couldn't measure this turn" → no context line.
+    (run.path / CONTEXT_FILENAME).write_text("", encoding="utf-8")
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "context:" not in result.output
+
+
 # ── Phase 3 commands ──────────────────────────────────────────────────────
 
 
