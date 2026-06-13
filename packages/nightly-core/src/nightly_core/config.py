@@ -23,10 +23,12 @@ from nightly_core.paths import nightly_dir
 
 __all__ = [
     "AgentsConfig",
+    "ContextConfig",
     "GitConfig",
     "VaultConfig",
     "WorktreeConfig",
     "load_agents_config",
+    "load_context_config",
     "load_git_config",
     "load_vault_config",
     "load_worktree_config",
@@ -285,4 +287,71 @@ def load_agents_config(root: Path | None = None) -> AgentsConfig:
         return defaults
     return AgentsConfig(
         background_dispatch=bool(agents.get("background_dispatch", defaults.background_dispatch)),
+    )
+
+
+@dataclass(frozen=True)
+class ContextConfig:
+    """The `context:` block of `.nightly/config.yml` — v0.0.12.
+
+    Governs the context-compaction feature: how aggressively the keepalive
+    hook steers the live session toward context hygiene, and how often it
+    refreshes the on-disk session digest the `SessionStart(compact)` hook
+    re-injects after a compaction.
+    """
+
+    budget_tokens: int = 256_000
+    """Soft context budget in tokens. When the keepalive hook's per-turn
+    estimate of the live session's context exceeds this, it prepends a
+    "context diet" block to the continuation prompt nudging the agent
+    toward hygiene (lean on the digest, background heavy work, avoid
+    re-reading large files). It is a SOFT limit by design — the prompt
+    explicitly tells the agent to finish any delicate in-flight step
+    first. `0` disables budget steering entirely (no estimate-vs-budget
+    comparison, no diet block)."""
+
+    digest_every_turns: int = 1
+    """Write the session digest every N keepalive turn boundaries. `1`
+    (default) refreshes it every turn so the `SessionStart(compact)` hook
+    always re-injects current state; a larger value reduces write churn on
+    very long sessions. `0` disables the interval write (the digest is
+    still written unconditionally whenever the cascade routes the agent to
+    the planning phase, since an ideate boundary is the natural compaction
+    point)."""
+
+
+def load_context_config(root: Path | None = None) -> ContextConfig:
+    """Parse the `context:` block from `<root>/.nightly/config.yml`.
+
+    Defaults whenever the file is missing, unreadable, malformed, or has
+    no `context:` block. Individual missing/garbage keys fall back to
+    their defaults — a non-integer `budget_tokens` degrades to the
+    default rather than raising, matching the forgiving posture of the
+    other `load_*_config` helpers."""
+    defaults = ContextConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+    context = data.get("context") if isinstance(data, dict) else None
+    if not isinstance(context, dict):
+        return defaults
+
+    def _coerce_int(key: str, default: int) -> int:
+        # A typo'd / non-numeric value should degrade to the default, not
+        # crash the loop — same forgiveness as a missing key.
+        try:
+            return int(context.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return ContextConfig(
+        budget_tokens=_coerce_int("budget_tokens", defaults.budget_tokens),
+        digest_every_turns=_coerce_int("digest_every_turns", defaults.digest_every_turns),
     )

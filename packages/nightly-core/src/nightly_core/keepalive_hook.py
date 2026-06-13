@@ -79,10 +79,13 @@ from pathlib import Path
 from typing import Any
 
 from nightly_core.cascade import CascadeChoice, next_task
+from nightly_core.config import load_context_config
+from nightly_core.digest import write_digest
 from nightly_core.runs import current_run
 
 __all__ = [
     "BLOCKS_FILENAME",
+    "CONTEXT_FILENAME",
     "HOOK_FORMATS",
     "LOOP_HISTORY_FILENAME",
     "RESPAWN_REQUESTED_FILENAME",
@@ -92,7 +95,9 @@ __all__ = [
     "StopHookDecision",
     "arm_session",
     "compute_stop_hook_decision",
+    "context_diet_block",
     "disarm_session",
+    "estimate_context_tokens",
     "format_decision",
     "log_heartbeat",
     "read_respawn_marker",
@@ -165,6 +170,14 @@ Lets a post-mortem read how deep a forced chain ran before the host's
 without-progress cap (or an operator marker) ended it. Best-effort IO,
 OSError-suppressed like the other counters — never gates a decision."""
 
+CONTEXT_FILENAME = "keepalive.context"
+"""Per-run file holding the latest context-size estimate (a bare integer
+token count, or empty when the estimate was None). Written best-effort by
+the hook every turn boundary so `nightly status` can surface "context: ~NK
+tokens at last turn boundary" without re-parsing the transcript. Audit /
+telemetry only — never gates a decision."""
+
+
 LOOP_HISTORY_FILENAME = "keepalive.history"
 """Per-run file of cascade-pick fingerprints, newline-delimited. Trimmed
 to the last `_LOOP_HISTORY_KEEP` lines so the file never grows unbounded.
@@ -223,6 +236,136 @@ must NOT reroute; `ideate` / `nothing` already lead to the planning
 phase, so rerouting them would be redundant."""
 
 
+# ── context-size measurement ──────────────────────────────────────────────
+
+
+_TRANSCRIPT_TAIL_BYTES = 256 * 1024
+"""How many bytes off the end of the transcript JSONL to scan. Transcripts
+grow without bound over an overnight session — reading the whole file every
+turn boundary would be wasteful and slow. The last assistant message (whose
+`message.usage` carries the running context size) is always at the very end,
+so a 256 KiB tail comfortably contains it even with a few large tool results
+interleaved. If the relevant line happens to fall outside the window we
+degrade to None — a best-effort estimate, never an exact API figure."""
+
+_MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024
+"""Safety cap on any single transcript line we attempt to JSON-parse. A
+pathological multi-megabyte line (a huge pasted blob, a giant tool result)
+is skipped rather than parsed — protects the hook from spending unbounded
+time/memory on one line during what must be a fast turn-boundary check."""
+
+
+def estimate_context_tokens(transcript_path: str | Path | None) -> int | None:
+    """Best-effort estimate of the live session's current context size.
+
+    Claude Code's transcript JSONL records each assistant message with an
+    API `message.usage` object; the LAST such entry's usage approximates the
+    current context window occupancy. We sum its four token fields:
+
+        input_tokens + cache_creation_input_tokens
+                     + cache_read_input_tokens + output_tokens
+
+    This parses documented-but-unofficial transcript fields, so it degrades
+    to None on any surprise: missing file, unreadable bytes, no usage object
+    anywhere in the tail window, malformed JSON, or absent fields. Callers
+    treat None as "couldn't measure" and skip budget steering.
+
+    Only the last `_TRANSCRIPT_TAIL_BYTES` of the file are read (seek from
+    the end); lines are scanned BACKWARDS so the most recent usage wins, and
+    any single line larger than `_MAX_TRANSCRIPT_LINE_BYTES` is skipped for
+    safety. A partial first line (the tail split mid-record) simply fails to
+    parse and is ignored.
+    """
+    if transcript_path is None:
+        return None
+    path = Path(transcript_path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    try:
+        with path.open("rb") as fh:
+            if size > _TRANSCRIPT_TAIL_BYTES:
+                fh.seek(size - _TRANSCRIPT_TAIL_BYTES)
+            tail = fh.read()
+    except OSError:
+        return None
+
+    # Decode permissively — a multibyte char clipped at the seek boundary
+    # must not abort the whole parse.
+    text = tail.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped or len(stripped) > _MAX_TRANSCRIPT_LINE_BYTES:
+            continue
+        usage = _extract_usage(stripped)
+        if usage is not None:
+            return usage
+    return None
+
+
+def _extract_usage(line: str) -> int | None:
+    """Parse one transcript JSONL line; return its summed usage or None.
+
+    Tolerates any non-conforming line (not JSON, not a dict, no
+    `message.usage`, usage fields absent/non-numeric) by returning None so
+    the caller keeps scanning backwards for an older assistant entry.
+    """
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return None
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    total = 0
+    seen = False
+    for field_name in (
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ):
+        value = usage.get(field_name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            total += value
+            seen = True
+    return total if seen else None
+
+
+def context_diet_block(estimate: int, budget: int) -> str:
+    """Render the "context diet" nudge prepended over-budget continuations.
+
+    `estimate` and `budget` are token counts; both are surfaced rounded to
+    thousands (e.g. `~301K` / `256K`). The block states the SOFT nature of
+    the budget up front — the agent must finish any delicate in-flight step
+    before practicing hygiene — then lists the four hygiene levers (lean on
+    the fresh on-disk digest, background heavy work, avoid re-reading large
+    files / dumping long output, persist anything precious now). It ends
+    with the non-negotiable: context size is never a stop condition.
+    """
+    est_k = round(estimate / 1000)
+    budget_k = round(budget / 1000)
+    return (
+        f"⚠ CONTEXT BUDGET: ~{est_k}K tokens in context (soft budget "
+        f"{budget_k}K). This is a soft limit — finish any delicate in-flight "
+        "step first — then practice context hygiene: 1) the session digest is "
+        "fresh at .nightly/runs/<id>/digest.md (key state survives compaction; "
+        "the host re-injects it after any compaction); 2) dispatch heavy work "
+        "to background specialists (`nightly dispatch start <slug> --role "
+        "<role>`) — their context is separate from yours; 3) avoid re-reading "
+        "large files or dumping long command output inline; 4) persist "
+        "anything you'd hate to lose to the plan/digest now. Do not stop the "
+        "session over context size.\n\n"
+    )
+
+
 @dataclass(frozen=True)
 class StopHookDecision:
     """What the Stop hook is going to do, and why.
@@ -249,11 +392,12 @@ class StopHookDecision:
         return self.payload.get("decision") == "block"
 
 
-def compute_stop_hook_decision(
+def compute_stop_hook_decision(  # noqa: PLR0912 - one branch per off-ramp / routing outcome is the point
     root: Path | None = None,
     *,
     now: datetime | None = None,
     stop_hook_active: bool = False,
+    transcript_path: str | Path | None = None,
 ) -> StopHookDecision:
     """Decide whether to block-and-continue or allow the current stop.
 
@@ -335,6 +479,12 @@ def compute_stop_hook_decision(
         _reset_block_count(run.path)
         _clear_respawn_marker(run.path)
 
+    # Context-compaction telemetry + steering (v0.0.12). Measure the live
+    # session's context size, persist it, and refresh the digest on the
+    # interval — all delegated to a helper to keep this function's branch
+    # count manageable.
+    ctx_cfg, context_estimate = _context_telemetry(root, run.path, turn_count, transcript_path)
+
     # The cascade pick is computed and recorded in the loop history file
     # (`keepalive.history`). A repeated fingerprint never *releases* the
     # session — the contract is "always advance". But as of issue #27 the
@@ -361,6 +511,17 @@ def compute_stop_hook_decision(
         and repeats >= _LIVELOCK_REPICKS
     )
 
+    # Whether this turn routes the agent to the planning phase — true for a
+    # livelock reroute, a `nothing` pick, and the `choice is None` defensive
+    # fallback. An ideate/planning boundary is the natural compaction point
+    # (nothing in-flight is lost if the host compacts here), so we ALWAYS
+    # refresh the digest first regardless of the interval and tell the prompt
+    # builder to mention it.
+    routes_to_planning = livelock or _routes_to_planning_phase(choice, cascade_error)
+    if routes_to_planning:
+        with contextlib.suppress(Exception):
+            write_digest(root)
+
     if livelock:
         # `choice` is non-None here (guarded by `livelock`).
         assert choice is not None
@@ -375,6 +536,7 @@ def compute_stop_hook_decision(
                 "plan new work instead."
             ),
         )
+        reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens)
         message = (
             f"run {run.id} turn {turn_count}: blocking stop and injecting "
             f"planning-phase prompt (livelock reroute: {choice.source} pick "
@@ -392,6 +554,7 @@ def compute_stop_hook_decision(
         run_id=run.id,
         turn=turn_count,
     )
+    reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens)
     if stop_hook_active:
         message = (
             f"run {run.id} turn {turn_count}: blocking stop "
@@ -407,6 +570,75 @@ def compute_stop_hook_decision(
         reason_code="force_continue",
         message=message,
     )
+
+
+def _routes_to_planning_phase(
+    choice: CascadeChoice | None,
+    cascade_error: Exception | None,
+) -> bool:
+    """True when `_build_continue_reason_from` will emit a planning-phase prompt.
+
+    Mirrors that function's own branching: a `nothing` pick or a None choice
+    (defensive fallback) both drop into the planning phase; a cascade error
+    emits a generic investigate-then-resume nudge (NOT planning phase). The
+    livelock case is handled separately by the caller, which already knows
+    it is rerouting to planning."""
+    if cascade_error is not None:
+        return False
+    if choice is None:
+        return True
+    return choice.source == "nothing"
+
+
+def _apply_context_diet(reason: str, estimate: int | None, budget: int) -> str:
+    """Prepend the context-diet block to `reason` when over the soft budget.
+
+    No-op (returns `reason` unchanged) when the estimate is None (couldn't
+    measure), the budget is 0 (steering disabled), or the estimate is within
+    budget. Otherwise the diet block is prepended so the agent reads it
+    before the continuation instructions."""
+    if estimate is None or budget <= 0 or estimate <= budget:
+        return reason
+    return context_diet_block(estimate, budget) + reason
+
+
+def _context_telemetry(
+    root: Path | None,
+    run_path: Path,
+    turn_count: int,
+    transcript_path: str | Path | None,
+) -> tuple[Any, int | None]:
+    """Measure context size, persist it, refresh the interval digest.
+
+    Returns `(context_config, estimate)`. Estimating the live session's
+    context from the transcript tail, persisting it for `nightly status`,
+    and the interval digest write are all best-effort — a None estimate just
+    means budget steering is skipped, and a digest write failure is
+    swallowed (the digest is still written unconditionally on any planning-
+    phase reroute by the caller). None of this may crash the hook.
+
+    The return type is loose (`Any` for the config) to avoid a circular
+    annotation import — the caller only reads `.budget_tokens` /
+    `.digest_every_turns`.
+    """
+    ctx_cfg = load_context_config(root)
+    estimate = estimate_context_tokens(transcript_path)
+    _write_context_estimate(run_path, estimate)
+    if ctx_cfg.digest_every_turns > 0 and turn_count % ctx_cfg.digest_every_turns == 0:
+        with contextlib.suppress(Exception):
+            write_digest(root)
+    return ctx_cfg, estimate
+
+
+def _write_context_estimate(run_path: Path, estimate: int | None) -> None:
+    """Persist the latest context estimate to `keepalive.context`, best-effort.
+
+    Writes the bare integer token count, or an empty file when the estimate
+    is None (couldn't measure this turn). `nightly status` reads it back to
+    surface the live context size. OSError-suppressed — telemetry only."""
+    payload = f"{estimate}\n" if estimate is not None else ""
+    with contextlib.suppress(OSError):
+        (run_path / CONTEXT_FILENAME).write_text(payload, encoding="utf-8")
 
 
 def _cascade_fingerprint(choice: CascadeChoice) -> str:
@@ -539,6 +771,13 @@ def _planning_phase_prompt(*, header: str, rationale: str) -> str:
         f"{rationale}\n"
         "\n"
         "═══ ENTER PLANNING PHASE — do not render the briefing, do not exit ═══\n"
+        "\n"
+        "(The session digest was just refreshed on disk at "
+        ".nightly/runs/<id>/digest.md. An ideate/planning boundary is the "
+        "natural compaction point — nothing in-flight is lost if the host "
+        "compacts here, and the digest is re-injected automatically after "
+        "any compaction. If your context is large, this is a safe place to "
+        "let it shrink.)\n"
         "\n"
         "The cascade is one source of work, not the only one. Open PRs, "
         "RFCs, and triaged issues are *human-sourced* work; their absence "
@@ -815,17 +1054,25 @@ def log_heartbeat(
     *,
     hook_input: dict[str, Any] | None = None,
     now: datetime | None = None,
+    context_tokens: int | None = None,
 ) -> Path | None:
-    """Append a one-line audit entry to `keepalive.log` under the current run."""
+    """Append a one-line audit entry to `keepalive.log` under the current run.
+
+    The line carries a `ctx=<tokens|?>` field (v0.0.12) holding the latest
+    context-size estimate (`?` when it couldn't be measured) so operators can
+    grep the heartbeat history for context growth over a session. The rest of
+    the format is unchanged — operators grep these lines, so the existing
+    fields stay put."""
     run = current_run(root)
     if run is None:
         return None
     log_path = run.path / "keepalive.log"
     stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
     session_id = (hook_input or {}).get("session_id") or "?"
+    ctx = str(context_tokens) if context_tokens is not None else "?"
     line = (
         f"{stamp}  decision={decision.reason_code:<16}  "
-        f"session={session_id}  msg={decision.message}\n"
+        f"session={session_id}  ctx={ctx}  msg={decision.message}\n"
     )
     try:
         with log_path.open("a", encoding="utf-8") as fh:

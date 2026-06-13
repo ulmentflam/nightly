@@ -1,6 +1,6 @@
 [project]
 name = "nightly-host-antigravity"
-version = "0.0.11"
+version = "0.0.12"
 description = "Nightly host integration for Google Antigravity (secondary host)."
 readme = "README.md"
 requires-python = ">=3.12"

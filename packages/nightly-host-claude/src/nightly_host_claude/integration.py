@@ -57,6 +57,18 @@ _STOP_HOOK_COMMAND = "nightly hook stop"
 Claude Code shares the same JSON payload shape as Codex CLI, so neither
 host needs a `--format` flag — the default `claude_code` format applies."""
 
+_SESSION_START_HOOK_COMMAND = "nightly hook session-start"
+"""Stable command identifying Nightly's SessionStart(compact) hook.
+
+Claude Code fires `SessionStart` with matcher `compact` right after any
+compaction; this hook re-injects the session digest as `additionalContext`
+so key state survives the compaction. Installed alongside the Stop hook,
+project-scope only, and keyed on the `compact` matcher so it never collides
+with any other SessionStart entry."""
+
+_SESSION_START_HOOK_MATCHER = "compact"
+"""The SessionStart matcher Nightly's digest re-injection hook keys on."""
+
 _SETTINGS_LOCAL_RELATIVE = Path(".claude/settings.local.json")
 """Per-user (gitignored) Claude Code settings file the Stop hook is merged into."""
 
@@ -224,6 +236,14 @@ class ClaudeHostIntegration(NightlyHostIntegration):
             command=_STOP_HOOK_COMMAND,
         )
 
+    def _session_start_hook_file(self) -> HookFile:
+        return HookFile(
+            path=self.settings_local_path(),
+            event_name="SessionStart",
+            command=_SESSION_START_HOOK_COMMAND,
+            matcher=_SESSION_START_HOOK_MATCHER,
+        )
+
     def install_keepalive_hook(self, scope: InstallScope) -> None:
         """Merge Nightly's Stop hook entry into `.claude/settings.local.json`.
 
@@ -235,6 +255,10 @@ class ClaudeHostIntegration(NightlyHostIntegration):
         if scope != "project":
             return
         merge_nested_hook(self._hook_file())
+        # The SessionStart(compact) hook re-injects the session digest after
+        # any compaction so key state survives. Same project-scope-only
+        # logic as the Stop hook; keyed on the `compact` matcher.
+        merge_nested_hook(self._session_start_hook_file())
         # Raise the host's without-progress block cap so an overnight
         # forced-continuation chain never trips it (the default of 8 is
         # far too low). See `_STOP_HOOK_BLOCK_CAP_ENV`.
@@ -254,6 +278,7 @@ class ClaudeHostIntegration(NightlyHostIntegration):
         if scope != "project":
             return
         remove_nested_hook(self._hook_file())
+        remove_nested_hook(self._session_start_hook_file())
         remove_settings_env(
             self.settings_local_path(),
             _STOP_HOOK_BLOCK_CAP_ENV,

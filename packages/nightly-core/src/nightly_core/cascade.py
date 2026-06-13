@@ -41,6 +41,7 @@ __all__ = [
     "count_open_nightly_prs",
     "detect_stacked_geometry",
     "next_task",
+    "open_nightly_pr_branches",
     "pick_accepted_rfc",
     "pick_github_issue",
     "pick_ideated",
@@ -601,6 +602,21 @@ def count_open_nightly_prs(root: Path | None = None) -> int:
     for an underscore-prefixed helper.
     """
     return len(_nightly_open_pr_branches(root))
+
+
+def open_nightly_pr_branches(
+    root: Path | None = None,
+    *,
+    branch_prefix: str = "nightly/",
+) -> list[tuple[str, int, str]]:
+    """Public wrapper around `_nightly_open_pr_branches`.
+
+    Returns `(branch, pr_number, pr_url)` for every open PR on a Nightly
+    branch. Exists so callers outside this module (the session digest in
+    particular) can list open PRs without reaching for the underscore-
+    prefixed internal helper. Same best-effort `[]`-on-failure contract.
+    """
+    return _nightly_open_pr_branches(root, branch_prefix=branch_prefix)
 
 
 def _match_plan_to_branch(branch: str, root: Path | None = None) -> PlanRecord | None:

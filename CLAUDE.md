@@ -38,6 +38,23 @@ remain `true` for Claude Code / Codex / Cursor / Antigravity hosts:
   eyeballing a long-running review). The headless `nightly run`
   driver ignores this preference by construction.
 
+**Context hygiene (v0.0.12).** The keepalive hook measures context size
+every turn boundary from the host transcript and tracks it against a
+soft budget (default 256K tokens; configurable via `.nightly/config.yml`
+`context.budget_tokens`). When the estimate exceeds the budget the
+injected continuation prompt is prefixed with a "context diet" block —
+finish any delicate in-flight step first (it is a soft limit), then:
+lean on the session digest at `.nightly/runs/<id>/digest.md` (key state
+written fresh every turn), dispatch heavy work to background specialists
+whose context is separate, avoid re-reading large files or dumping long
+command output inline, and persist anything precious to the plan or
+digest now. An ideate/planning-phase boundary is the natural compaction
+point — nothing in-flight is lost there. Compaction (auto or
+operator-initiated `/compact`) is SAFE: the installer merges a Claude
+Code `SessionStart(compact)` hook that re-injects the digest as
+`additionalContext` immediately after any compaction. **Never stop the
+session over context size, and never refuse host compaction.**
+
 1. **If you can recommend, execute.** The moment you can articulate a
    "here's what I'd do" — do it. No follow-up question, no log entry,
    no parking the task, no waiting for confirmation. Naming, ordering,
@@ -279,6 +296,17 @@ keepalive livelock backstop (restored `cascade_loop` reroute — see
 above) fires if a `github_issue` or `accepted_rfc` pick repeats ≥3
 consecutive boundaries; the hook then injects the planning-phase
 prompt so the agent enters ideation rather than holding.
+
+**v0.0.12 — context-compaction feature.** The keepalive hook now
+estimates live context size each turn boundary (`ctx=` in heartbeat
+log), persists it to `keepalive.context`, and when the estimate
+exceeds the `context.budget_tokens` soft ceiling (default 256K),
+prepends a context-diet block to the injected prompt. A compact
+session digest is written to `digest.md` every N turns (default 1)
+and always before any planning-phase reroute. A new
+`SessionStart(compact)` hook re-injects the digest after any
+compaction so key state is never lost. See `context:` block in
+`.nightly/config.yml` and RFC 011.
 
 ### Filing a bug against Nightly itself
 

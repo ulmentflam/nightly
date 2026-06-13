@@ -65,11 +65,20 @@ class HookFile:
     Codex use `Stop`; Gemini CLI / Antigravity use `AfterAgent`. The
     `command` is the exact string used both to write the new entry and
     to find an existing one on subsequent installs / uninstalls.
+
+    `matcher` is the Claude Code SessionStart-style matcher string (e.g.
+    `"compact"`). Most hooks (Stop / AfterAgent) have no meaningful matcher
+    and leave it `""` — for those, merge/remove ignore the matcher and key
+    purely on `event + command` exactly as before. When a non-empty matcher
+    is set, the entry is written into a block carrying that matcher, and
+    find/merge/remove additionally require the matcher to match so two
+    SessionStart entries under different matchers stay independent.
     """
 
     path: Path
     event_name: str
     command: str
+    matcher: str = ""
 
 
 def read_settings(path: Path) -> dict[str, Any]:
@@ -98,11 +107,19 @@ def find_nested_hook_index(
     *,
     event_name: str,
     command: str,
+    matcher: str = "",
 ) -> tuple[int, int] | None:
     """Locate an existing `command` entry under `hooks.<event_name>[*].hooks[*]`.
 
     Returns `(block_idx, entry_idx)` so callers can splice it out. Returns
     `None` when no matching entry exists.
+
+    When `matcher` is non-empty, only entries inside a block whose
+    `matcher` equals it qualify — so a SessionStart hook keyed on
+    `"compact"` never collides with one under a different matcher. When
+    `matcher` is `""` (the common Stop / AfterAgent case) the block's
+    matcher is ignored entirely, preserving the original behavior for the
+    matcher-less entries Nightly has always written.
     """
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
@@ -112,6 +129,8 @@ def find_nested_hook_index(
         return None
     for block_idx, block in enumerate(event_block):
         if not isinstance(block, dict):
+            continue
+        if matcher and block.get("matcher") != matcher:
             continue
         entries = block.get("hooks")
         if not isinstance(entries, list):
@@ -138,13 +157,18 @@ def merge_nested_hook(hook: HookFile) -> bool:
         settings = read_settings(hook.path)
     except json.JSONDecodeError:
         return False
-    if find_nested_hook_index(settings, event_name=hook.event_name, command=hook.command):
+    if find_nested_hook_index(
+        settings,
+        event_name=hook.event_name,
+        command=hook.command,
+        matcher=hook.matcher,
+    ):
         return False
     hooks_root = settings.setdefault("hooks", {})
     event_block = hooks_root.setdefault(hook.event_name, [])
     event_block.append(
         {
-            "matcher": "",
+            "matcher": hook.matcher,
             "hooks": [{"type": "command", "command": hook.command}],
         }
     )
@@ -164,7 +188,12 @@ def remove_nested_hook(hook: HookFile) -> bool:
         settings = read_settings(hook.path)
     except json.JSONDecodeError:
         return False
-    found = find_nested_hook_index(settings, event_name=hook.event_name, command=hook.command)
+    found = find_nested_hook_index(
+        settings,
+        event_name=hook.event_name,
+        command=hook.command,
+        matcher=hook.matcher,
+    )
     if found is None:
         return False
     block_idx, entry_idx = found

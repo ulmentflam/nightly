@@ -216,6 +216,20 @@ TTL; `nightly session start` refreshes it. The human off-ramps
 (`nightly conclude`, `nightly stop`, `Ctrl-C`) take precedence and end
 the session cleanly.
 
+**Context hygiene (v0.0.12).** Each Stop-hook firing also estimates the
+session's current context size from the Claude Code transcript and logs
+`ctx=<N>` in `keepalive.log`; `nightly status` surfaces it as a
+"context: ~NK tokens" line. When the estimate exceeds the soft budget
+(default 256K; `context.budget_tokens` in `.nightly/config.yml`), the
+injected prompt gains a "context diet" block nudging the agent to lean
+on the session digest, background heavy work to specialists, and avoid
+dumping long output inline. `nightly init` also installs a second hook —
+`SessionStart(compact)` — that fires after any compaction (auto or
+manual `/compact`) and re-injects the session digest as
+`additionalContext` so key Nightly state survives the compaction. The
+digest lives at `.nightly/runs/<id>/digest.md` and is refreshed every
+keepalive turn (configurable via `context.digest_every_turns`).
+
 ---
 
 ## What it does
@@ -357,6 +371,9 @@ Everything Nightly writes lives in one place:
 │       ├── briefing.md     # session narrative slot
 │       ├── lessons.md      # lessons-learned slot
 │       ├── briefing.html   # rendered morning briefing
+│       ├── digest.md       # compact key-state digest (re-injected after compaction)
+│       ├── keepalive.log   # turn-boundary heartbeats (ctx= field added v0.0.12)
+│       ├── keepalive.context # latest context-size estimate in tokens
 │       └── CONCLUDE        # sentinel — drains on next loop iteration
 ├── atlas/                  # repo wiki (scaffolded; rolling refresh deferred)
 └── memory/                 # cross-session memory (scaffolded; reserved)
@@ -536,7 +553,9 @@ one force-continue is resolved; the hook now rides forced-
 continuation chains indefinitely) and writes the `RESPAWN_REQUESTED`
 marker preemptively during chains so an involuntary host-cap kill or
 crash still leaves a resume breadcrumb, surfaced at the next
-`nightly session start`.
+`nightly session start`. RFC 011 (interactive context compaction) is
+shipped in v0.0.12 — see the "Context hygiene" note above and
+`.planning/rfcs/011-interactive-context-compaction.md`.
 
 ---
 

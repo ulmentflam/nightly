@@ -74,6 +74,7 @@ from nightly_core.keepalive_hook import (
     arm_session,
     compute_stop_hook_decision,
     disarm_session,
+    estimate_context_tokens,
     format_decision,
     log_heartbeat,
     parse_hook_input,
@@ -195,6 +196,22 @@ ideate:
 # own host process by construction.
 agents:
   background_dispatch: true
+
+# context governs the context-compaction feature (v0.0.12). Nothing can
+# programmatically trigger Claude Code's /compact, so Nightly instead makes
+# compaction lossless (a digest re-injected via the SessionStart hook) and
+# nudges the live session toward hygiene before it bloats.
+# - `budget_tokens` is a SOFT ceiling: when the keepalive hook estimates the
+#   session exceeds it, it prepends a "context diet" nudge to the continuation
+#   prompt (finish delicate work first, lean on the digest, background heavy
+#   work). 0 disables budget steering.
+# - `digest_every_turns` writes .nightly/runs/<id>/digest.md every N keepalive
+#   turns so the SessionStart(compact) hook re-injects fresh state. 0 disables
+#   the interval write (the digest is still written on every planning-phase
+#   reroute regardless).
+context:
+  budget_tokens:      256000
+  digest_every_turns: 1
 """
 
 
@@ -300,6 +317,36 @@ def _format_path_for_display(path: Path, root: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def _context_status_line(root: Path, run_path: Path) -> str | None:
+    """Render the `context:` status line, or None when there's nothing to show.
+
+    The keepalive hook writes `keepalive.context` every turn boundary; an
+    empty file means the estimate couldn't be measured that turn (no
+    transcript / no usage), so we omit the line entirely rather than print a
+    misleading `~0K`."""
+    from nightly_core.config import load_context_config  # noqa: PLC0415 - lazy
+    from nightly_core.keepalive_hook import CONTEXT_FILENAME  # noqa: PLC0415 - lazy
+
+    ctx_file = run_path / CONTEXT_FILENAME
+    if not ctx_file.is_file():
+        return None
+    try:
+        raw_ctx = ctx_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw_ctx:
+        return None
+    try:
+        tokens = int(raw_ctx)
+    except ValueError:
+        return None
+    budget = load_context_config(root).budget_tokens
+    return (
+        f"  context:   ~{round(tokens / 1000)}K tokens at last turn "
+        f"boundary (soft budget {round(budget / 1000)}K)"
+    )
 
 
 def _current_branch(root: Path) -> str | None:
@@ -493,6 +540,12 @@ def status() -> None:
     all_runs = list_runs(root)
     if len(all_runs) > 1:
         typer.echo(f"    ({len(all_runs)} run(s) total)")
+
+    # Surface the latest context-size estimate (v0.0.12).
+    if run is not None:
+        line = _context_status_line(root, run.path)
+        if line is not None:
+            typer.echo(line)
 
     # Surface RESPAWN_REQUESTED prominently. If present, the prior
     # session ended involuntarily mid forced-continuation chain (host
@@ -2403,14 +2456,103 @@ def hook_stop(
     # field may be missing, the wrong type, or a stringified bool
     # depending on the host.
     stop_hook_active = bool(hook_input.get("stop_hook_active"))
+    # The transcript path lets the decision logic estimate the live session's
+    # context size (last assistant message's usage metadata) for budget
+    # steering. Absent/None degrades gracefully to "couldn't measure".
+    transcript_path = hook_input.get("transcript_path")
     try:
-        decision = compute_stop_hook_decision(root, stop_hook_active=stop_hook_active)
+        decision = compute_stop_hook_decision(
+            root,
+            stop_hook_active=stop_hook_active,
+            transcript_path=transcript_path,
+        )
     except Exception as exc:  # hook must never crash the session
         typer.echo(f"nightly hook error: {exc!r}", err=True)
         typer.echo(json.dumps({}))
         return
-    log_heartbeat(decision, root, hook_input=hook_input)
+    # Re-estimate for the heartbeat's ctx= field. The decision logic already
+    # persisted this to keepalive.context; re-reading the transcript tail here
+    # is cheap relative to the cascade walk and keeps log_heartbeat decoupled
+    # from the decision's internals.
+    context_tokens = estimate_context_tokens(transcript_path)
+    log_heartbeat(decision, root, hook_input=hook_input, context_tokens=context_tokens)
     typer.echo(json.dumps(format_decision(decision, fmt=fmt)))
+
+
+@hook_app.command(name="session-start")
+def hook_session_start() -> None:
+    """SessionStart hook handler — re-inject session state after compaction.
+
+    Claude Code fires a `SessionStart` event with `source="compact"` right
+    after any compaction (auto or manual), and injects this handler's
+    `additionalContext` into the fresh context. That is the sanctioned way to
+    make compaction lossless: we render the session digest and hand it back so
+    the key state (run id, plans, open PRs, branch, autonomy one-liner)
+    survives even when the transcript was summarized away.
+
+    Emits the digest only for an armed Nightly run (`SESSION_ACTIVE` present)
+    when `source` is `"compact"` (or missing — we are liberal). For any other
+    source, an unarmed/absent run, or any error, emits `{}` so non-Nightly
+    sessions stay completely untouched. Never raises.
+    """
+    import contextlib  # noqa: PLC0415 - lazy
+    from datetime import UTC, datetime  # noqa: PLC0415 - lazy
+
+    from nightly_core.digest import render_digest  # noqa: PLC0415 - lazy
+    from nightly_core.keepalive_hook import SESSION_ACTIVE_FILENAME  # noqa: PLC0415 - lazy
+
+    try:
+        raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+        hook_input = parse_hook_input(raw)
+        # An empty parse means no usable payload (empty or garbage stdin) —
+        # not a real hook invocation, so inject nothing. A non-empty payload
+        # with a missing `source` is tolerated as compact (some host versions
+        # omit it); any other explicit source (startup / resume / clear) is
+        # left alone.
+        if not hook_input:
+            typer.echo(json.dumps({}))
+            return
+        source = hook_input.get("source")
+        if source not in (None, "compact"):
+            typer.echo(json.dumps({}))
+            return
+
+        root = repo_root()
+        run = current_run(root)
+        if run is None or not (run.path / SESSION_ACTIVE_FILENAME).is_file():
+            # No active run, or the session isn't a Nightly-armed one —
+            # inject nothing so we never touch a plain interactive session.
+            typer.echo(json.dumps({}))
+            return
+
+        body = render_digest(root)
+        context = (
+            "Nightly session state re-injected after context compaction:\n\n" + body
+        )
+        # Audit trail: record that we re-injected, mirroring the Stop hook's
+        # keepalive.log discipline.
+        with contextlib.suppress(OSError):
+            stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            sid = hook_input.get("session_id") or "?"
+            line = (
+                f"{stamp}  decision={'digest_reinject':<16}  "
+                f"session={sid}  ctx=?  msg=re-injected digest after "
+                f"compaction (source={source or 'missing'}).\n"
+            )
+            with (run.path / "keepalive.log").open("a", encoding="utf-8") as fh:
+                fh.write(line)
+        typer.echo(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": context,
+                    }
+                }
+            )
+        )
+    except Exception:  # the hook must never crash a session
+        typer.echo(json.dumps({}))
 
 
 if __name__ == "__main__":
