@@ -24,10 +24,10 @@
 class Nightly < Formula
   desc "Host-native coding agent that drains your backlog overnight"
   homepage "https://github.com/ulmentflam/nightly"
-  url "https://github.com/ulmentflam/nightly/archive/refs/tags/v0.0.12.tar.gz"
+  url "https://github.com/ulmentflam/nightly/archive/refs/tags/v0.0.13.tar.gz"
   # Update this on each tagged release. Until v0.0.1 is tagged, use
   # `brew install --HEAD ulmentflam/tap/nightly` to install from main.
-  sha256 "2de7102d660cc37019244c0441e70d22a7622a868f37cb12d941fb6395851263"
+  sha256 "dc4b0a70fb8923af8110660707e4e9e323bb598f7ce4667dee894494adf86450"
   license "MIT"
   head "https://github.com/ulmentflam/nightly.git", branch: "main"
 
