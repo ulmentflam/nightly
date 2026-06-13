@@ -50,6 +50,7 @@ __all__ = ["AntigravityHostIntegration"]
 # Antigravity exposes session ids inconsistently — try both common names.
 _SESSION_ID_ENV_VARS = ("ANTIGRAVITY_SESSION_ID", "GEMINI_SESSION_ID")
 
+
 # User-scope home for Antigravity. Used both as the user-scope install
 # parent AND as the auth-status presence probe.
 def _get_antigravity_home() -> Path:
@@ -92,10 +93,20 @@ class AntigravityHostIntegration(NightlyHostIntegration):
         return self._root
 
     def _project_relative_path(self, agent_name: str) -> Path:
-        subfolder = "antigravity-cli" if (self._root / ".gemini" / "antigravity-cli").is_dir() else "antigravity"
+        subfolder = (
+            "antigravity-cli"
+            if (self._root / ".gemini" / "antigravity-cli").is_dir()
+            else "antigravity"
+        )
         if not (self._root / ".gemini" / subfolder).is_dir():
-            global_subfolder = "antigravity-cli" if (Path.home() / ".gemini" / "antigravity-cli").is_dir() else "antigravity"
-            subfolder = "antigravity-cli" if global_subfolder == "antigravity-cli" else "antigravity"
+            global_subfolder = (
+                "antigravity-cli"
+                if (Path.home() / ".gemini" / "antigravity-cli").is_dir()
+                else "antigravity"
+            )
+            subfolder = (
+                "antigravity-cli" if global_subfolder == "antigravity-cli" else "antigravity"
+            )
         return Path(".gemini") / subfolder / "agents" / agent_name / "SKILL.md"
 
     # ── launcher lifecycle ────────────────────────────────────────────────

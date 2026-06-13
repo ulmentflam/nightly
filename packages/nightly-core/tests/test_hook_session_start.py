@@ -36,15 +36,11 @@ def armed_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / ".nightly" / "runs").mkdir(parents=True)
     start_run(tmp_path)
     arm_session(tmp_path)
-    monkeypatch.setattr(
-        "nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: []
-    )
+    monkeypatch.setattr("nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: [])
     return tmp_path
 
 
-def test_emits_digest_for_armed_compact(
-    armed_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_emits_digest_for_armed_compact(armed_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = _invoke(monkeypatch, '{"source": "compact", "session_id": "s1"}')
     payload = json.loads(out)
     hso = payload["hookSpecificOutput"]
@@ -57,24 +53,18 @@ def test_emits_digest_for_armed_compact(
     assert "digest_reinject" in log
 
 
-def test_emits_digest_for_missing_source(
-    armed_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_emits_digest_for_missing_source(armed_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = _invoke(monkeypatch, '{"session_id": "s1"}')
     payload = json.loads(out)
     assert "hookSpecificOutput" in payload
 
 
-def test_other_source_emits_empty(
-    armed_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_other_source_emits_empty(armed_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = _invoke(monkeypatch, '{"source": "startup"}')
     assert json.loads(out) == {}
 
 
-def test_unarmed_run_emits_empty(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_unarmed_run_emits_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".nightly" / "runs").mkdir(parents=True)
     start_run(tmp_path)  # no arm_session
@@ -88,8 +78,6 @@ def test_no_run_emits_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert json.loads(out) == {}
 
 
-def test_garbage_stdin_emits_empty(
-    armed_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_garbage_stdin_emits_empty(armed_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = _invoke(monkeypatch, "not json at all {{{")
     assert json.loads(out) == {}

@@ -114,6 +114,19 @@ ideate:
 #   which blocks the calling chat until the sub-agent returns.
 agents:
   background_dispatch: true
+
+# context governs the context-compaction feature (v0.0.12).
+context:
+  budget_tokens:      256000
+  digest_every_turns: 1
+
+# compact governs the session compaction triggers (RFC 006).
+# - `enabled` flips both triggers (boundary and threshold) on or off.
+# - `context_token_cap` is the threshold (in tokens) at which the mid-loop
+#   trigger fires to compact the session context.
+compact:
+  enabled:           true
+  context_token_cap: 256000
 """
 
 
@@ -189,10 +202,15 @@ def _check_config(root: Path, *, dry_run: bool) -> DoctorCheck:
     """Ensure `.nightly/config.yml` exists; never clobbers user edits."""
     config = nightly_dir(root) / "config.yml"
     if config.is_file():
+        from nightly_core.config import load_compact_config  # noqa: PLC0415
+
+        cfg = load_compact_config(root)
+        compact_state = "enabled" if cfg.enabled else "disabled"
         return DoctorCheck(
             name="config",
             description=".nightly/config.yml",
             status="ok",
+            detail=f"compact: {compact_state} (cap {round(cfg.context_token_cap / 1000)}K)",
         )
     if dry_run:
         return DoctorCheck(
@@ -403,8 +421,10 @@ def _check_synthesis_prompt() -> DoctorCheck:
     )
 
 
-_REQUIRED_SKILL_TOKENS: tuple[tuple[str, str], ...] = (
-    ("seed-rfc", "seed-rfc toolkit row (RFC 005)"),
+_REQUIRED_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
+    ("seed-rfc", "seed-rfc toolkit row (RFC 005)", None),
+    ("/compact", "session compaction boundary trigger (RFC 006)", ("claude",)),
+    ("context_token_cap", "session compaction threshold trigger (RFC 006)", ("claude",)),
 )
 """Substring tokens the main SKILL.md must contain.
 
@@ -413,7 +433,8 @@ marks the host as needing repair so re-running `integration.install`
 refreshes the file from the package source. Catches the failure
 mode where a user upgraded the binary but their installed SKILL.md
 is still the previous version — the file-presence check wouldn't
-notice. Each tuple is `(token, human_label)`."""
+notice. Each tuple is `(token, human_label, allowed_hosts)` where
+allowed_hosts is a tuple of host IDs or None if checked on all hosts."""
 
 
 def _host_needs_repair(
@@ -436,7 +457,12 @@ def _host_needs_repair(
             content = main.read_text(encoding="utf-8")
         except OSError:
             content = ""
-        for token, label in _REQUIRED_SKILL_TOKENS:
+        for entry in _REQUIRED_SKILL_TOKENS:
+            token, label, allowed_hosts = entry
+            if allowed_hosts is not None:
+                host_id = getattr(integration, "host_id", getattr(integration, "_name", None))
+                if host_id not in allowed_hosts:
+                    continue
             if token not in content:
                 missing.append(label)
     conclude = integration.conclude_skill_path(scope)

@@ -23,11 +23,13 @@ from nightly_core.paths import nightly_dir
 
 __all__ = [
     "AgentsConfig",
+    "CompactConfig",
     "ContextConfig",
     "GitConfig",
     "VaultConfig",
     "WorktreeConfig",
     "load_agents_config",
+    "load_compact_config",
     "load_context_config",
     "load_git_config",
     "load_vault_config",
@@ -354,4 +356,61 @@ def load_context_config(root: Path | None = None) -> ContextConfig:
     return ContextConfig(
         budget_tokens=_coerce_int("budget_tokens", defaults.budget_tokens),
         digest_every_turns=_coerce_int("digest_every_turns", defaults.digest_every_turns),
+    )
+
+
+@dataclass(frozen=True)
+class CompactConfig:
+    """Configuration for session compaction (RFC 006)."""
+
+    enabled: bool = True
+    """Whether to enable boundary and threshold compaction triggers."""
+
+    context_token_cap: int = 256_000
+    """Context cap in tokens. Compaction is triggered when the estimated
+    conversation size exceeds this."""
+
+
+def load_compact_config(root: Path | None = None) -> CompactConfig:
+    """Parse the `compact:` block from `<root>/.nightly/config.yml`.
+
+    Defaults whenever the file is missing, unreadable, malformed, or has
+    no `compact:` block. Individual missing/garbage keys fall back to
+    their defaults."""
+    defaults = CompactConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+    compact = data.get("compact") if isinstance(data, dict) else None
+    if not isinstance(compact, dict):
+        return defaults
+
+    def _coerce_bool(key: str, default: bool) -> bool:
+        val = compact.get(key)
+        if val is None:
+            return default
+        if isinstance(val, bool):
+            return val
+        if str(val).lower() in ("true", "1", "yes", "on"):
+            return True
+        if str(val).lower() in ("false", "0", "no", "off"):
+            return False
+        return default
+
+    def _coerce_int(key: str, default: int) -> int:
+        try:
+            return int(compact.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return CompactConfig(
+        enabled=_coerce_bool("enabled", defaults.enabled),
+        context_token_cap=_coerce_int("context_token_cap", defaults.context_token_cap),
     )

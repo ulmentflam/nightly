@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from nightly_core.config import (
+    CompactConfig,
     ContextConfig,
     GitConfig,
+    load_compact_config,
     load_context_config,
     load_git_config,
 )
@@ -104,3 +106,45 @@ def test_context_malformed_value_degrades_to_default(tmp_path: Path) -> None:
 def test_context_malformed_yaml_yields_defaults(tmp_path: Path) -> None:
     _write_config(tmp_path, "context: [unclosed\n")
     assert load_context_config(tmp_path) == ContextConfig()
+
+
+# ── compact: block (RFC 006) ──────────────────────────────────────────────
+
+
+def test_compact_defaults_when_file_missing(tmp_path: Path) -> None:
+    cfg = load_compact_config(tmp_path)
+    assert cfg == CompactConfig()
+    assert cfg.enabled is True
+    assert cfg.context_token_cap == 256_000
+
+
+def test_compact_reads_full_block(tmp_path: Path) -> None:
+    _write_config(tmp_path, "compact:\n  enabled: false\n  context_token_cap: 128000\n")
+    cfg = load_compact_config(tmp_path)
+    assert cfg.enabled is False
+    assert cfg.context_token_cap == 128_000
+
+
+def test_compact_missing_keys_fall_back(tmp_path: Path) -> None:
+    _write_config(tmp_path, "compact:\n  enabled: false\n")
+    cfg = load_compact_config(tmp_path)
+    assert cfg.enabled is False
+    assert cfg.context_token_cap == 256_000  # default
+
+
+def test_compact_no_block_yields_defaults(tmp_path: Path) -> None:
+    _write_config(tmp_path, "hosts:\n  - claude\n")
+    assert load_compact_config(tmp_path) == CompactConfig()
+
+
+def test_compact_malformed_value_degrades_to_default(tmp_path: Path) -> None:
+    # A non-integer cap or non-boolean enabled should degrade to default, not raise.
+    _write_config(tmp_path, "compact:\n  enabled: maybe-true\n  context_token_cap: not-a-number\n")
+    cfg = load_compact_config(tmp_path)
+    assert cfg.enabled is True
+    assert cfg.context_token_cap == CompactConfig().context_token_cap
+
+
+def test_compact_malformed_yaml_yields_defaults(tmp_path: Path) -> None:
+    _write_config(tmp_path, "compact: [unclosed\n")
+    assert load_compact_config(tmp_path) == CompactConfig()

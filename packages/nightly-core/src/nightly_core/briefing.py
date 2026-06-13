@@ -94,6 +94,9 @@ class BriefingContext:
     current_branch: str
     """The branch HEAD points at, for the geometry panel header. Empty
     string if git wasn't reachable."""
+    compacted: str | None = None
+    """RFC 006 §B2 — "yes" if session compaction fired, "no" if it did not,
+    None if default omitted (e.g. keepalive.log absent)."""
 
 
 def _load_tasks(run: Run) -> list[dict[str, Any]]:
@@ -265,6 +268,16 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
     ready = sum(1 for t in tasks if _is_ready(t))
     generated = (now or datetime.now(UTC)).strftime("%Y-%m-%d %H:%M UTC")
     current_branch, stacked = _load_stacked_geometry()
+
+    compacted: str | None = None
+    log_path = run.path / "keepalive.log"
+    if log_path.is_file():
+        try:
+            log_content = log_path.read_text(encoding="utf-8")
+            compacted = "yes" if "digest_reinject" in log_content else "no"
+        except OSError:
+            pass
+
     return BriefingContext(
         run_id=run.id,
         is_concluded=run.is_concluded,
@@ -279,6 +292,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         lessons=_render_markdown_file(run.path / "lessons.md"),
         stacked_geometry=stacked,
         current_branch=current_branch,
+        compacted=compacted,
     )
 
 
@@ -300,6 +314,7 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         lessons=ctx.lessons,
         stacked_geometry=ctx.stacked_geometry,
         current_branch=ctx.current_branch,
+        compacted=ctx.compacted,
     )
 
 

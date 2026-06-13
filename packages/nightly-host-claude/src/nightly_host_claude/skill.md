@@ -142,6 +142,10 @@ PR-count-minimal-at-all-costs — bundling unrelated work into one
 PR is worse than two focused PRs. See Rule 11 in
 `AGENTS.md` / `CLAUDE.md` for the canonical wording.
 
+**Session compaction boundary trigger (v0.0.12+).** After you have armed the keep-alive, read the cascade rationale, and either confirmed an existing accepted RFC or seeded a new one via `nightly seed-rfc`, if your host supports session compaction, invoke it now — your context is at its heaviest right before the implementation loop starts. The compact preserves the planning artifacts on disk; only the verbatim conversation buffer gets summarized. On Claude Code, run `/compact` to invoke it.
+
+**Session compaction threshold trigger (v0.0.12+).** Estimate your context token usage at every cascade-walk boundary (every time you run `nightly next`). If `compact.enabled` is true in `.nightly/config.yml` (checked via `load_compact_config` or shown in `nightly status`), and your estimated context size exceeds `compact.context_token_cap` (default 256,000 tokens), run `/compact` to summarize the session context. To estimate your context: sum the estimated tokens of all read files, all specialist dispatches, the session history, and any embedded RFCs (a rough heuristic is: count of file reads + specialist dispatches + RFC body bytes / 4 ≈ token estimate). Bias toward compacting slightly early rather than waiting for the host's hard context limit.
+
 ## Check for updates
 
 After arming the keep-alive, run `nightly check-update`. If it
