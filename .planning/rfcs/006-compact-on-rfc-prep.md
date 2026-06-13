@@ -412,7 +412,7 @@ surface the cap.
 ## Sized checklist
 
 **Phase A — Boundary fire: Claude Code skill + doctor check**
-- [ ] A1. Boundary trigger paragraph added to `packages/nightly-host-claude/src/nightly_host_claude/skill.md`
+- [x] A1. Boundary trigger paragraph added to `packages/nightly-host-claude/src/nightly_host_claude/skill.md`
 - [ ] A2. `_REQUIRED_SKILL_TOKENS` extended with `/compact` scoped to Claude
 - [ ] A3. Tests in `test_doctor.py` for the drift check + skill text presence
 
