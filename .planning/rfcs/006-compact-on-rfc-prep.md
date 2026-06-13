@@ -422,9 +422,9 @@ surface the cap.
 - [x] B3. Tests covering both branches
 
 **Phase C — Threshold fire + config schema**
-- [ ] C1. `compact:` block (`enabled: true`, `context_token_cap: 256000`) added to default `.nightly/config.yml` template in `init` + `doctor`
-- [ ] C2. `load_compact_config(root) -> CompactConfig` helper in `nightly_core.config`
-- [ ] C3. Threshold-fire paragraph added to Claude skill (estimator heuristic + cap reference)
-- [ ] C4. `nightly status` + `nightly doctor` surface the cap
-- [ ] C5. `_REQUIRED_SKILL_TOKENS` gains `context_token_cap` check on Claude
-- [ ] C6. Tests covering config defaults, override, `enabled: false`, doctor drift, status output
+- [x] C1. `compact:` block (`enabled: true`, `context_token_cap: 256000`) added to default `.nightly/config.yml` template in `init` + `doctor`
+- [x] C2. `load_compact_config(root) -> CompactConfig` helper in `nightly_core.config`
+- [x] C3. Threshold-fire paragraph added to Claude skill (estimator heuristic + cap reference)
+- [x] C4. `nightly status` + `nightly doctor` surface the cap
+- [x] C5. `_REQUIRED_SKILL_TOKENS` gains `context_token_cap` check on Claude
+- [x] C6. Tests covering config defaults, override, `enabled: false`, doctor drift, status output

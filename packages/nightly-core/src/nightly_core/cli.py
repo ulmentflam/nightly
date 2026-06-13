@@ -212,6 +212,14 @@ agents:
 context:
   budget_tokens:      256000
   digest_every_turns: 1
+
+# compact governs the session compaction triggers (RFC 006).
+# - `enabled` flips both triggers (boundary and threshold) on or off.
+# - `context_token_cap` is the threshold (in tokens) at which the mid-loop
+#   trigger fires to compact the session context.
+compact:
+  enabled:           true
+  context_token_cap: 256000
 """
 
 
@@ -529,6 +537,14 @@ def status() -> None:
     agents_cfg = load_agents_config(root)
     mode = "background" if agents_cfg.background_dispatch else "foreground (Task tool)"
     typer.echo(f"  agents:    dispatch={mode}")
+
+    from nightly_core.config import load_compact_config  # noqa: PLC0415 - lazy
+
+    compact_cfg = load_compact_config(root)
+    compact_state = "enabled" if compact_cfg.enabled else "disabled"
+    typer.echo(
+        f"  compact:   enabled={compact_state} (threshold cap {round(compact_cfg.context_token_cap / 1000)}K)"
+    )
 
     typer.echo("  runs:")
     run = current_run(root)

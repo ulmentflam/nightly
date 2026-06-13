@@ -114,6 +114,19 @@ ideate:
 #   which blocks the calling chat until the sub-agent returns.
 agents:
   background_dispatch: true
+
+# context governs the context-compaction feature (v0.0.12).
+context:
+  budget_tokens:      256000
+  digest_every_turns: 1
+
+# compact governs the session compaction triggers (RFC 006).
+# - `enabled` flips both triggers (boundary and threshold) on or off.
+# - `context_token_cap` is the threshold (in tokens) at which the mid-loop
+#   trigger fires to compact the session context.
+compact:
+  enabled:           true
+  context_token_cap: 256000
 """
 
 
@@ -189,10 +202,15 @@ def _check_config(root: Path, *, dry_run: bool) -> DoctorCheck:
     """Ensure `.nightly/config.yml` exists; never clobbers user edits."""
     config = nightly_dir(root) / "config.yml"
     if config.is_file():
+        from nightly_core.config import load_compact_config  # noqa: PLC0415
+
+        cfg = load_compact_config(root)
+        compact_state = "enabled" if cfg.enabled else "disabled"
         return DoctorCheck(
             name="config",
             description=".nightly/config.yml",
             status="ok",
+            detail=f"compact: {compact_state} (cap {round(cfg.context_token_cap / 1000)}K)",
         )
     if dry_run:
         return DoctorCheck(
@@ -406,6 +424,7 @@ def _check_synthesis_prompt() -> DoctorCheck:
 _REQUIRED_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
     ("seed-rfc", "seed-rfc toolkit row (RFC 005)", None),
     ("/compact", "session compaction boundary trigger (RFC 006)", ("claude",)),
+    ("context_token_cap", "session compaction threshold trigger (RFC 006)", ("claude",)),
 )
 """Substring tokens the main SKILL.md must contain.
 
