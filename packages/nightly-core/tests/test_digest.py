@@ -25,9 +25,7 @@ def test_render_with_no_run_still_returns_string(tmp_path: Path) -> None:
     assert "no active run" in text
 
 
-def test_render_includes_plans_and_prs(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_render_includes_plans_and_prs(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = start_run(repo)
     # One in-progress, one blocked, one done plan.
     from nightly_core.plans import update_plan_status  # local import for fixture setup
@@ -76,13 +74,9 @@ def test_render_all_subsystems_failing_returns_string(
     assert "(unknown)" in text  # branch degraded
 
 
-def test_write_digest_creates_file_under_run(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_write_digest_creates_file_under_run(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = start_run(repo)
-    monkeypatch.setattr(
-        "nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: []
-    )
+    monkeypatch.setattr("nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: [])
     path = write_digest(repo)
     assert path is not None
     assert path == run.path / "digest.md"
@@ -94,15 +88,11 @@ def test_write_digest_returns_none_with_no_run(tmp_path: Path) -> None:
     assert write_digest(tmp_path) is None
 
 
-def test_render_reads_last_history_line(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_render_reads_last_history_line(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = start_run(repo)
     (run.path / "keepalive.history").write_text(
         "github_issue|-|first\naccepted_rfc|-|second\n", encoding="utf-8"
     )
-    monkeypatch.setattr(
-        "nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: []
-    )
+    monkeypatch.setattr("nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: [])
     text = render_digest(repo)
     assert "accepted_rfc|-|second" in text

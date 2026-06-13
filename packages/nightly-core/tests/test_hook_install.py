@@ -94,9 +94,7 @@ def test_find_with_matcher_does_not_match_wrong_matcher(tmp_path: Path) -> None:
                     "SessionStart": [
                         {
                             "matcher": "startup",
-                            "hooks": [
-                                {"type": "command", "command": "nightly hook session-start"}
-                            ],
+                            "hooks": [{"type": "command", "command": "nightly hook session-start"}],
                         }
                     ]
                 }

@@ -62,9 +62,12 @@ def test_estimate_sums_usage_fields(tmp_path: Path) -> None:
 def test_estimate_finds_last_usage_when_trailing_lines_lack_it(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(
-        _usage_line(10, 0, 0, 0) + "\n"
-        + _usage_line(1000, 0, 0, 23) + "\n"  # the latest assistant usage
-        + json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n",
+        _usage_line(10, 0, 0, 0)
+        + "\n"
+        + _usage_line(1000, 0, 0, 23)
+        + "\n"  # the latest assistant usage
+        + json.dumps({"type": "user", "message": {"content": "hi"}})
+        + "\n",
         encoding="utf-8",
     )
     # Scans backwards: skips the user line, returns the most-recent usage.
@@ -76,7 +79,8 @@ def test_estimate_tolerates_garbage_lines(tmp_path: Path) -> None:
     transcript.write_text(
         "not json at all\n"
         + "{ broken json\n"
-        + _usage_line(5, 5, 5, 5) + "\n"
+        + _usage_line(5, 5, 5, 5)
+        + "\n"
         + "trailing garbage\n",
         encoding="utf-8",
     )
@@ -199,9 +203,7 @@ def test_under_budget_does_not_prepend_diet(
     assert "CONTEXT BUDGET" not in decision.payload["reason"]
 
 
-def test_budget_zero_disables_steering(
-    armed_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_budget_zero_disables_steering(armed_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (armed_repo / ".nightly" / "config.yml").write_text(
         "context:\n  budget_tokens: 0\n", encoding="utf-8"
     )
@@ -226,9 +228,7 @@ def test_context_estimate_persisted(armed_repo: Path) -> None:
     assert (run_dir / CONTEXT_FILENAME).read_text(encoding="utf-8").strip() == "2050"
 
 
-def test_digest_written_on_interval(
-    armed_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_digest_written_on_interval(armed_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_pick(
         monkeypatch,
         CascadeChoice(source="github_issue", summary="issue #1", rationale="top issue"),

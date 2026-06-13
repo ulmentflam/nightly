@@ -1884,7 +1884,9 @@ def session_start() -> None:
         )
         raise typer.Exit(code=1)
     if respawn is not None:
-        typer.echo(f"⚠ RESPAWN_REQUESTED (involuntary mid-chain stop at {respawn or 'unknown time'})")
+        typer.echo(
+            f"⚠ RESPAWN_REQUESTED (involuntary mid-chain stop at {respawn or 'unknown time'})"
+        )
         typer.echo("  prior session ended involuntarily with cascade work pending —")
         typer.echo("  skip the seed prelude and run `nightly next` immediately.")
     typer.echo(f"✓ armed keep-alive — {_format_path_for_display(marker, root)}")
@@ -2526,9 +2528,7 @@ def hook_session_start() -> None:
             return
 
         body = render_digest(root)
-        context = (
-            "Nightly session state re-injected after context compaction:\n\n" + body
-        )
+        context = "Nightly session state re-injected after context compaction:\n\n" + body
         # Audit trail: record that we re-injected, mirroring the Stop hook's
         # keepalive.log discipline.
         with contextlib.suppress(OSError):
