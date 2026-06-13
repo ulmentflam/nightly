@@ -200,42 +200,36 @@ async def test_install_writes_aftergent_hook_to_gemini_settings(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_install_writes_conclude_agent(tmp_path: Path) -> None:
+async def test_antigravity_install_writes_all_skills(tmp_path: Path) -> None:
     from nightly_host_antigravity import AntigravityHostIntegration
 
     integration = AntigravityHostIntegration(root=tmp_path)
     await integration.install("project")
-    conclude = integration.conclude_skill_path("project")
-    assert conclude.is_file()
-    assert conclude.parent.name == "nightly-conclude"
+
+    assert integration.skill_path("project").is_file()
+    assert integration.conclude_skill_path("project").is_file()
+    assert integration.update_skill_path("project").is_file()
+    assert integration.bug_skill_path("project").is_file()
+    assert integration.init_skill_path("project").is_file()
+
+    # Verify parent directory names conform to expected skill names
+    assert integration.conclude_skill_path("project").parent.name == "nightly-conclude"
+    assert integration.update_skill_path("project").parent.name == "nightly-update"
+    assert integration.bug_skill_path("project").parent.name == "nightly-bug"
+    assert integration.init_skill_path("project").parent.name == "nightly-init"
 
 
 @pytest.mark.asyncio
-async def test_uninstall_antigravity_cleans_hook_and_conclude(tmp_path: Path) -> None:
+async def test_antigravity_uninstall_removes_all_skills(tmp_path: Path) -> None:
     from nightly_host_antigravity import AntigravityHostIntegration
 
     integration = AntigravityHostIntegration(root=tmp_path)
     await integration.install("project")
     await integration.uninstall("project")
+
     assert not integration.skill_path("project").exists()
     assert not integration.conclude_skill_path("project").exists()
-    assert not integration.is_keepalive_hook_installed("project")
-
-
-@pytest.mark.asyncio
-async def test_antigravity_install_writes_update_skill(tmp_path: Path) -> None:
-    from nightly_host_antigravity import AntigravityHostIntegration
-
-    integration = AntigravityHostIntegration(root=tmp_path)
-    await integration.install("project")
-    assert integration.update_skill_path("project").is_file()
-
-
-@pytest.mark.asyncio
-async def test_antigravity_uninstall_removes_update_skill(tmp_path: Path) -> None:
-    from nightly_host_antigravity import AntigravityHostIntegration
-
-    integration = AntigravityHostIntegration(root=tmp_path)
-    await integration.install("project")
-    await integration.uninstall("project")
     assert not integration.update_skill_path("project").exists()
+    assert not integration.bug_skill_path("project").exists()
+    assert not integration.init_skill_path("project").exists()
+    assert not integration.is_keepalive_hook_installed("project")

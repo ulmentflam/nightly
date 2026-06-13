@@ -372,14 +372,30 @@ def test_cli_doctor_host_flag_forces_install(repo: Path) -> None:
     assert (repo / ".cursor" / "commands" / "nightly-update.md").is_file()
 
 
+def test_cli_doctor_host_flag_forces_install_antigravity(repo: Path) -> None:
+    """`--host antigravity` installs antigravity even in a fresh repo."""
+    result = runner.invoke(app, ["doctor", "--host", "antigravity"])
+    assert result.exit_code == 0, result.output
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-conclude" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-update" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-bug" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-init" / "SKILL.md").is_file()
+
+
 def test_cli_doctor_all_flag_installs_every_host(repo: Path) -> None:
     """`--all` installs every supported host."""
     result = runner.invoke(app, ["doctor", "--all"])
     assert result.exit_code == 0, result.output
-    # Spot-check three hosts
+    # Spot-check hosts
     assert (repo / ".claude" / "skills" / "nightly" / "SKILL.md").is_file()
     assert (repo / ".codex" / "skills" / "nightly" / "SKILL.md").is_file()
     assert (repo / ".cursor" / "commands" / "nightly.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-conclude" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-update" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-bug" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-init" / "SKILL.md").is_file()
 
 
 # ── RFC 005 §B4 — skill-content drift detection ───────────────────────────

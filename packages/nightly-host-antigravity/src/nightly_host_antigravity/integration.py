@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 
 from nightly_core import (
+    BUG_SKILL_MD,
     CONCLUDE_SKILL_MD,
     INIT_SKILL_MD,
     UPDATE_SKILL_MD,
@@ -76,6 +77,8 @@ class AntigravityHostIntegration(NightlyHostIntegration):
     USER_CONCLUDE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-conclude" / "SKILL.md"
     PROJECT_UPDATE_RELATIVE = Path(".gemini/antigravity/agents/nightly-update/SKILL.md")
     USER_UPDATE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-update" / "SKILL.md"
+    PROJECT_BUG_RELATIVE = Path(".gemini/antigravity/agents/nightly-bug/SKILL.md")
+    USER_BUG_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-bug" / "SKILL.md"
     PROJECT_INIT_RELATIVE = Path(".gemini/antigravity/agents/nightly-init/SKILL.md")
     USER_INIT_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-init" / "SKILL.md"
 
@@ -102,6 +105,11 @@ class AntigravityHostIntegration(NightlyHostIntegration):
             return self._root / self.PROJECT_UPDATE_RELATIVE
         return self.USER_UPDATE_ABSOLUTE
 
+    def bug_skill_path(self, scope: InstallScope) -> Path:
+        if scope == "project":
+            return self._root / self.PROJECT_BUG_RELATIVE
+        return self.USER_BUG_ABSOLUTE
+
     def init_skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
             return self._root / self.PROJECT_INIT_RELATIVE
@@ -114,6 +122,7 @@ class AntigravityHostIntegration(NightlyHostIntegration):
         for sibling_path, sibling_md in (
             (self.conclude_skill_path(scope), CONCLUDE_SKILL_MD),
             (self.update_skill_path(scope), UPDATE_SKILL_MD),
+            (self.bug_skill_path(scope), BUG_SKILL_MD),
             (self.init_skill_path(scope), INIT_SKILL_MD),
         ):
             sibling_path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +135,7 @@ class AntigravityHostIntegration(NightlyHostIntegration):
         for sibling in (
             self.conclude_skill_path(scope),
             self.update_skill_path(scope),
+            self.bug_skill_path(scope),
             self.init_skill_path(scope),
         ):
             if sibling.exists():
