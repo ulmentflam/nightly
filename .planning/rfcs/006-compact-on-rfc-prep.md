@@ -417,9 +417,9 @@ surface the cap.
 - [x] A3. Tests in `test_doctor.py` for the drift check + skill text presence
 
 **Phase B — Five-host no-op + briefing note**
-- [ ] B1. No-op paragraph added to codex / cursor / gemini / antigravity / opencode skill.md
-- [ ] B2. Briefing template gains optional "Compacted" line
-- [ ] B3. Tests covering both branches
+- [x] B1. No-op paragraph added to codex / cursor / gemini / antigravity / opencode skill.md
+- [x] B2. Briefing template gains optional "Compacted" line
+- [x] B3. Tests covering both branches
 
 **Phase C — Threshold fire + config schema**
 - [ ] C1. `compact:` block (`enabled: true`, `context_token_cap: 256000`) added to default `.nightly/config.yml` template in `init` + `doctor`

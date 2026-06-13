@@ -206,6 +206,11 @@
   {% if session_narrative %}
     <section class="narrative">
       <div class="label">session narrative</div>
+      {% if compacted %}
+        <div style="font-family: ui-monospace, monospace; font-size: 0.8rem; margin-bottom: 1.2rem; color: var(--muted);">
+          Compacted: <span class="pill ok">{{ compacted }}</span>
+        </div>
+      {% endif %}
       <div class="prose">{{ session_narrative }}</div>
     </section>
   {% else %}

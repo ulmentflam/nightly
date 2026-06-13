@@ -67,6 +67,8 @@ Three off-ramps stop the session at any time:
 - **Agent Manager → Stop** (or Ctrl-C in CLI mode) — interrupt;
   bypasses the hook.
 
+**Session compaction not supported.** This host does not support session compaction yet — skip the compact step Claude Code's skill describes (TODO: [RFC 006](file:///.planning/rfcs/006-compact-on-rfc-prep.md) to implement once host supports it).
+
 ## Check for updates
 
 After arming the keep-alive, run `nightly check-update`. If it

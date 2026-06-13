@@ -304,3 +304,38 @@ def test_build_context_loads_issue_metadata(tmp_path: Path) -> None:
     assert issue["category"] == "lint_debt"
     assert issue["auto_pr_eligible"] is True
     assert issue["score"] == "4.500"
+
+
+def test_briefing_renders_compacted_yes_when_present(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    (run.path / "keepalive.log").write_text(
+        "2026-06-13T21:15:25Z  decision=digest_reinject  session=123  ctx=45  msg=re-injected digest\n"
+    )
+    (run.path / "briefing.md").write_text("## narrative\nsome story", encoding="utf-8")
+    ctx = build_context(run)
+    assert ctx.compacted == "yes"
+    html = render_briefing(run)
+    assert "Compacted:" in html
+    assert "yes" in html
+
+
+def test_briefing_renders_compacted_no_when_present(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    (run.path / "keepalive.log").write_text(
+        "2026-06-13T21:15:25Z  decision=continue  session=123  ctx=45  msg=normal loop\n"
+    )
+    (run.path / "briefing.md").write_text("## narrative\nsome story", encoding="utf-8")
+    ctx = build_context(run)
+    assert ctx.compacted == "no"
+    html = render_briefing(run)
+    assert "Compacted:" in html
+    assert "no" in html
+
+
+def test_briefing_omits_compacted_slot_when_absent(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    (run.path / "briefing.md").write_text("## narrative\nsome story", encoding="utf-8")
+    ctx = build_context(run)
+    assert ctx.compacted is None
+    html = render_briefing(run)
+    assert "Compacted:" not in html
