@@ -22,6 +22,9 @@ runner = CliRunner()
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda _: fake_home))
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -58,6 +61,10 @@ class _FakeIntegration:
         self.keepalive_support = keepalive_support
         self._installed_pieces = set(installed_pieces)
         self.install_calls = 0
+
+    @property
+    def root(self) -> Path:
+        return self._root
 
     def skill_path(self, scope: str) -> Path:
         return self._root / f".fake-{self._name}/skills/nightly/SKILL.md"
@@ -361,6 +368,24 @@ def test_cli_doctor_initializes_empty_repo(repo: Path) -> None:
     for sub in DEFAULT_NIGHTLY_SUBDIRS:
         assert (repo / ".nightly" / sub).is_dir()
     assert result.exit_code == 0, result.output
+
+
+def test_cli_doctor_auto_detects_directories(repo: Path) -> None:
+    """Doctor auto-detects .claude directory and installs Claude Code skills."""
+    (repo / ".claude").mkdir()
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert (repo / ".claude" / "skills" / "nightly" / "SKILL.md").is_file()
+    assert (repo / ".claude" / "skills" / "nightly-conclude" / "SKILL.md").is_file()
+
+
+def test_cli_doctor_auto_detects_antigravity_directory(repo: Path) -> None:
+    """Doctor auto-detects .gemini/antigravity directory and installs Antigravity skills."""
+    (repo / ".gemini" / "antigravity").mkdir(parents=True)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly" / "SKILL.md").is_file()
+    assert (repo / ".gemini" / "antigravity" / "agents" / "nightly-conclude" / "SKILL.md").is_file()
 
 
 def test_cli_doctor_host_flag_forces_install(repo: Path) -> None:

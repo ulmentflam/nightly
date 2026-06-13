@@ -15,6 +15,9 @@ runner = CliRunner()
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A clean tmp dir acting as the repo for a CLI test."""
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda _: fake_home))
     monkeypatch.chdir(tmp_path)
     return tmp_path
 

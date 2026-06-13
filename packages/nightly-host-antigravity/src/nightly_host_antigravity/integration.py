@@ -52,7 +52,14 @@ _SESSION_ID_ENV_VARS = ("ANTIGRAVITY_SESSION_ID", "GEMINI_SESSION_ID")
 
 # User-scope home for Antigravity. Used both as the user-scope install
 # parent AND as the auth-status presence probe.
-_ANTIGRAVITY_HOME = Path.home() / ".gemini" / "antigravity"
+def _get_antigravity_home() -> Path:
+    cli_home = Path.home() / ".gemini" / "antigravity-cli"
+    if cli_home.is_dir():
+        return cli_home
+    return Path.home() / ".gemini" / "antigravity"
+
+
+_ANTIGRAVITY_HOME = _get_antigravity_home()
 
 # Antigravity is built on Gemini CLI, which exposes an `AfterAgent`
 # lifecycle hook (Stop-hook equivalent) configured in `.gemini/settings.json`.
@@ -71,15 +78,10 @@ class AntigravityHostIntegration(NightlyHostIntegration):
     host_id: HostId = "antigravity"
     keepalive_support: KeepaliveSupport = "forced"
 
-    PROJECT_SKILL_RELATIVE = Path(".gemini/antigravity/agents/nightly/SKILL.md")
     USER_SKILL_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly" / "SKILL.md"
-    PROJECT_CONCLUDE_RELATIVE = Path(".gemini/antigravity/agents/nightly-conclude/SKILL.md")
     USER_CONCLUDE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-conclude" / "SKILL.md"
-    PROJECT_UPDATE_RELATIVE = Path(".gemini/antigravity/agents/nightly-update/SKILL.md")
     USER_UPDATE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-update" / "SKILL.md"
-    PROJECT_BUG_RELATIVE = Path(".gemini/antigravity/agents/nightly-bug/SKILL.md")
     USER_BUG_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-bug" / "SKILL.md"
-    PROJECT_INIT_RELATIVE = Path(".gemini/antigravity/agents/nightly-init/SKILL.md")
     USER_INIT_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-init" / "SKILL.md"
 
     def __init__(self, root: Path | None = None) -> None:
@@ -89,30 +91,37 @@ class AntigravityHostIntegration(NightlyHostIntegration):
     def root(self) -> Path:
         return self._root
 
+    def _project_relative_path(self, agent_name: str) -> Path:
+        subfolder = "antigravity-cli" if (self._root / ".gemini" / "antigravity-cli").is_dir() else "antigravity"
+        if not (self._root / ".gemini" / subfolder).is_dir():
+            global_subfolder = "antigravity-cli" if (Path.home() / ".gemini" / "antigravity-cli").is_dir() else "antigravity"
+            subfolder = "antigravity-cli" if global_subfolder == "antigravity-cli" else "antigravity"
+        return Path(".gemini") / subfolder / "agents" / agent_name / "SKILL.md"
+
     # ── launcher lifecycle ────────────────────────────────────────────────
     def skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
-            return self._root / self.PROJECT_SKILL_RELATIVE
+            return self._root / self._project_relative_path("nightly")
         return self.USER_SKILL_ABSOLUTE
 
     def conclude_skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
-            return self._root / self.PROJECT_CONCLUDE_RELATIVE
+            return self._root / self._project_relative_path("nightly-conclude")
         return self.USER_CONCLUDE_ABSOLUTE
 
     def update_skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
-            return self._root / self.PROJECT_UPDATE_RELATIVE
+            return self._root / self._project_relative_path("nightly-update")
         return self.USER_UPDATE_ABSOLUTE
 
     def bug_skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
-            return self._root / self.PROJECT_BUG_RELATIVE
+            return self._root / self._project_relative_path("nightly-bug")
         return self.USER_BUG_ABSOLUTE
 
     def init_skill_path(self, scope: InstallScope) -> Path:
         if scope == "project":
-            return self._root / self.PROJECT_INIT_RELATIVE
+            return self._root / self._project_relative_path("nightly-init")
         return self.USER_INIT_ABSOLUTE
 
     async def install(self, scope: InstallScope) -> None:

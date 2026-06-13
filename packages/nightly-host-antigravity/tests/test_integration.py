@@ -31,8 +31,9 @@ def test_host_id(integration: AntigravityHostIntegration) -> None:
 
 
 def test_skill_path_project_scope(integration: AntigravityHostIntegration, project: Path) -> None:
+    subfolder = "antigravity-cli" if "antigravity-cli" in str(integration.skill_path("project")) else "antigravity"
     assert integration.skill_path("project") == (
-        project / ".gemini/antigravity/agents/nightly/SKILL.md"
+        project / f".gemini/{subfolder}/agents/nightly/SKILL.md"
     )
 
 
@@ -40,8 +41,7 @@ def test_skill_path_user_scope_is_absolute(integration: AntigravityHostIntegrati
     user_path = integration.skill_path("user")
     assert user_path.is_absolute()
     assert user_path.parts[-3:] == ("agents", "nightly", "SKILL.md")
-    # Lives under ~/.gemini/antigravity/
-    assert "antigravity" in user_path.parts
+    assert any(x in user_path.parts for x in ("antigravity", "antigravity-cli"))
 
 
 @pytest.mark.asyncio
@@ -72,15 +72,16 @@ async def test_uninstall_removes_skill_and_empty_parents_up_to_agents(
     await integration.uninstall("project")
     assert not target.exists()
     # nightly/ + agents/ cleaned up when empty
-    assert not (project / ".gemini/antigravity/agents/nightly").exists()
+    assert not target.parent.exists()
 
 
 @pytest.mark.asyncio
 async def test_uninstall_preserves_sibling_agents(
     integration: AntigravityHostIntegration, project: Path
 ) -> None:
-    """`.gemini/antigravity/agents/` may hold other agents — leave them."""
-    sibling = project / ".gemini/antigravity/agents/other/agent.md"
+    """The agents directory may hold other agents — leave them."""
+    target = integration.skill_path("project")
+    sibling = target.parent.parent / "other" / "agent.md"
     sibling.parent.mkdir(parents=True, exist_ok=True)
     sibling.write_text("# other agent", encoding="utf-8")
 
@@ -88,9 +89,9 @@ async def test_uninstall_preserves_sibling_agents(
     await integration.uninstall("project")
 
     # nightly/ cleaned up; the sibling agent and its parent dir remain
-    assert not (project / ".gemini/antigravity/agents/nightly").exists()
+    assert not target.parent.exists()
     assert sibling.exists()
-    assert (project / ".gemini/antigravity/agents/other").is_dir()
+    assert sibling.parent.is_dir()
 
 
 @pytest.mark.asyncio

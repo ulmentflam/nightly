@@ -291,14 +291,17 @@ def _check_rules(root: Path, *, dry_run: bool) -> DoctorCheck:
 
 
 def _host_is_present(
+    host_id: str,
     integration: NightlyHostIntegration,
     scope: InstallScope,
 ) -> bool:
-    """A host counts as present if any of its skill files exist at `scope`.
+    """A host counts as present if any of its skill files exist at `scope` OR
+    the corresponding host directory exists.
 
     Reading `is_installed` alone misses the cases the doctor command is
     designed for: main SKILL.md missing but companions still there, or
-    vice versa. Checking all three skill surfaces catches partial drift.
+    vice versa. Checking all skill surfaces + directories catches partial drift
+    and supports auto-detection.
     """
     paths: list[Path | None] = []
     if hasattr(integration, "skill_path"):
@@ -307,7 +310,34 @@ def _host_is_present(
     paths.append(integration.update_skill_path(scope))
     paths.append(integration.bug_skill_path(scope))
     paths.append(integration.init_skill_path(scope))
-    return any(p is not None and p.is_file() for p in paths)
+    if any(p is not None and p.is_file() for p in paths):
+        return True
+
+    # Check config directory presence
+    dirs_by_host = {
+        "claude": [Path(".claude")] if scope == "project" else [Path.home() / ".claude"],
+        "codex": [Path(".codex")] if scope == "project" else [Path.home() / ".codex"],
+        "cursor": [Path(".cursor")] if scope == "project" else [Path.home() / ".cursor"],
+        "opencode": [Path(".opencode")] if scope == "project" else [Path.home() / ".opencode"],
+        "antigravity": (
+            [Path(".gemini/antigravity"), Path(".gemini")]
+            if scope == "project"
+            else [Path.home() / ".gemini/antigravity", Path.home() / ".gemini"]
+        ),
+        "gemini": (
+            [Path(".gemini/commands"), Path(".gemini")]
+            if scope == "project"
+            else [Path.home() / ".gemini"]
+        ),
+    }
+
+    dirs_to_check = dirs_by_host.get(host_id, [])
+    for d in dirs_to_check:
+        full_path = d if d.is_absolute() else integration.root / d
+        if full_path.is_dir():
+            return True
+
+    return False
 
 
 _REQUIRED_SYNTHESIS_PROMPT_ANCHORS: tuple[str, ...] = (
@@ -444,7 +474,7 @@ def _check_host(
     absent from the repo. `force=False` only repairs hosts that already
     have at least one skill file present.
     """
-    present = _host_is_present(integration, scope)
+    present = _host_is_present(host_id, integration, scope)
     if not present and not force:
         return DoctorCheck(
             name=f"host:{host_id}",

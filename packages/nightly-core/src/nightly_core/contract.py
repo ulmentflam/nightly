@@ -80,6 +80,11 @@ class NightlyHostIntegration(ABC):
     surface override this to `forced` and implement the hook-install
     methods below."""
 
+    @property
+    def root(self) -> Path:
+        """The repository root this integration operates on."""
+        raise NotImplementedError
+
     # ── launcher lifecycle ────────────────────────────────────────────────
     @abstractmethod
     async def install(self, scope: InstallScope) -> None:
