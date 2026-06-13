@@ -413,8 +413,8 @@ surface the cap.
 
 **Phase A — Boundary fire: Claude Code skill + doctor check**
 - [x] A1. Boundary trigger paragraph added to `packages/nightly-host-claude/src/nightly_host_claude/skill.md`
-- [ ] A2. `_REQUIRED_SKILL_TOKENS` extended with `/compact` scoped to Claude
-- [ ] A3. Tests in `test_doctor.py` for the drift check + skill text presence
+- [x] A2. `_REQUIRED_SKILL_TOKENS` extended with `/compact` scoped to Claude
+- [x] A3. Tests in `test_doctor.py` for the drift check + skill text presence
 
 **Phase B — Five-host no-op + briefing note**
 - [ ] B1. No-op paragraph added to codex / cursor / gemini / antigravity / opencode skill.md

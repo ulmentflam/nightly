@@ -403,8 +403,9 @@ def _check_synthesis_prompt() -> DoctorCheck:
     )
 
 
-_REQUIRED_SKILL_TOKENS: tuple[tuple[str, str], ...] = (
-    ("seed-rfc", "seed-rfc toolkit row (RFC 005)"),
+_REQUIRED_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...] | None], ...] = (
+    ("seed-rfc", "seed-rfc toolkit row (RFC 005)", None),
+    ("/compact", "session compaction boundary trigger (RFC 006)", ("claude",)),
 )
 """Substring tokens the main SKILL.md must contain.
 
@@ -413,7 +414,8 @@ marks the host as needing repair so re-running `integration.install`
 refreshes the file from the package source. Catches the failure
 mode where a user upgraded the binary but their installed SKILL.md
 is still the previous version — the file-presence check wouldn't
-notice. Each tuple is `(token, human_label)`."""
+notice. Each tuple is `(token, human_label, allowed_hosts)` where
+allowed_hosts is a tuple of host IDs or None if checked on all hosts."""
 
 
 def _host_needs_repair(
@@ -436,7 +438,12 @@ def _host_needs_repair(
             content = main.read_text(encoding="utf-8")
         except OSError:
             content = ""
-        for token, label in _REQUIRED_SKILL_TOKENS:
+        for entry in _REQUIRED_SKILL_TOKENS:
+            token, label, allowed_hosts = entry
+            if allowed_hosts is not None:
+                host_id = getattr(integration, "host_id", getattr(integration, "_name", None))
+                if host_id not in allowed_hosts:
+                    continue
             if token not in content:
                 missing.append(label)
     conclude = integration.conclude_skill_path(scope)
