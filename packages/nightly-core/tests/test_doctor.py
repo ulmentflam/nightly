@@ -232,7 +232,10 @@ def test_host_ok_when_everything_present(repo: Path) -> None:
     # skill carries `seed-rfc` so the RFC 005 §B4 content-drift check
     # finds the install current.
     for p, body in (
-        (claude.skill_path("project"), 'present\n| `nightly seed-rfc "<title>"` |\n'),
+        (
+            claude.skill_path("project"),
+            'present\n| `nightly seed-rfc "<title>"` |\n/compact\ncontext_token_cap\n',
+        ),
         (claude.conclude_skill_path("project"), "present\n"),
         (claude.update_skill_path("project"), "present\n"),
         (claude.bug_skill_path("project"), "present\n"),
@@ -469,7 +472,7 @@ def test_doctor_skips_when_main_skill_already_has_seed_rfc(repo: Path) -> None:
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            'current content\n| `nightly seed-rfc "<title>"` | row |\n',
+            'current content\n| `nightly seed-rfc "<title>"` | row |\n/compact\ncontext_token_cap\n',
             encoding="utf-8",
         )
 
@@ -499,3 +502,81 @@ def test_doctor_dry_run_reports_seed_rfc_drift_without_writing(repo: Path) -> No
     assert host_check.status == "missing"
     assert "RFC 005" in host_check.detail
     assert integration.install_calls == 0
+
+
+def test_doctor_requires_compact_token_only_on_claude(repo: Path) -> None:
+    """Claude host requires /compact token, other hosts (e.g. cursor) do not."""
+    # 1. Claude missing /compact but has seed-rfc and context_token_cap -> needs repair
+    claude = _FakeIntegration(repo, "claude")
+    for path in (
+        claude.skill_path("project"),
+        claude.conclude_skill_path("project"),
+        claude.update_skill_path("project"),
+        claude.bug_skill_path("project"),
+        claude.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            'present\n| `nightly seed-rfc "<title>"` |\ncontext_token_cap\n',
+            encoding="utf-8",
+        )
+
+    report = diagnose_and_repair(repo, host_loader=_make_loaders({"claude": claude}))
+    host_check = next(c for c in report.checks if c.name == "host:claude")
+    assert host_check.status == "repaired"
+    assert "session compaction" in host_check.detail
+
+    # 2. Cursor missing /compact but has seed-rfc -> ok (not repaired)
+    cursor = _FakeIntegration(repo, "cursor")
+    for path in (
+        cursor.skill_path("project"),
+        cursor.conclude_skill_path("project"),
+        cursor.update_skill_path("project"),
+        cursor.bug_skill_path("project"),
+        cursor.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('present\n| `nightly seed-rfc "<title>"` |\n', encoding="utf-8")
+
+    report2 = diagnose_and_repair(repo, host_loader=_make_loaders({"cursor": cursor}))
+    host_check2 = next(c for c in report2.checks if c.name == "host:cursor")
+    assert host_check2.status == "ok"
+
+
+def test_doctor_requires_context_token_cap_only_on_claude(repo: Path) -> None:
+    """Claude host requires context_token_cap token, other hosts (e.g. cursor) do not."""
+    # 1. Claude missing context_token_cap but has seed-rfc and /compact -> needs repair
+    claude = _FakeIntegration(repo, "claude")
+    for path in (
+        claude.skill_path("project"),
+        claude.conclude_skill_path("project"),
+        claude.update_skill_path("project"),
+        claude.bug_skill_path("project"),
+        claude.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            'present\n| `nightly seed-rfc "<title>"` |\n/compact\n',
+            encoding="utf-8",
+        )
+
+    report = diagnose_and_repair(repo, host_loader=_make_loaders({"claude": claude}))
+    host_check = next(c for c in report.checks if c.name == "host:claude")
+    assert host_check.status == "repaired"
+    assert "session compaction" in host_check.detail
+
+    # 2. Cursor missing context_token_cap but has seed-rfc -> ok (not repaired)
+    cursor = _FakeIntegration(repo, "cursor")
+    for path in (
+        cursor.skill_path("project"),
+        cursor.conclude_skill_path("project"),
+        cursor.update_skill_path("project"),
+        cursor.bug_skill_path("project"),
+        cursor.init_skill_path("project"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('present\n| `nightly seed-rfc "<title>"` |\n', encoding="utf-8")
+
+    report2 = diagnose_and_repair(repo, host_loader=_make_loaders({"cursor": cursor}))
+    host_check2 = next(c for c in report2.checks if c.name == "host:cursor")
+    assert host_check2.status == "ok"

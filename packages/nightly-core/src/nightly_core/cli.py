@@ -212,6 +212,14 @@ agents:
 context:
   budget_tokens:      256000
   digest_every_turns: 1
+
+# compact governs the session compaction triggers (RFC 006).
+# - `enabled` flips both triggers (boundary and threshold) on or off.
+# - `context_token_cap` is the threshold (in tokens) at which the mid-loop
+#   trigger fires to compact the session context.
+compact:
+  enabled:           true
+  context_token_cap: 256000
 """
 
 
@@ -529,6 +537,14 @@ def status() -> None:
     agents_cfg = load_agents_config(root)
     mode = "background" if agents_cfg.background_dispatch else "foreground (Task tool)"
     typer.echo(f"  agents:    dispatch={mode}")
+
+    from nightly_core.config import load_compact_config  # noqa: PLC0415 - lazy
+
+    compact_cfg = load_compact_config(root)
+    compact_state = "enabled" if compact_cfg.enabled else "disabled"
+    typer.echo(
+        f"  compact:   enabled={compact_state} (threshold cap {round(compact_cfg.context_token_cap / 1000)}K)"
+    )
 
     typer.echo("  runs:")
     run = current_run(root)
@@ -1884,7 +1900,9 @@ def session_start() -> None:
         )
         raise typer.Exit(code=1)
     if respawn is not None:
-        typer.echo(f"⚠ RESPAWN_REQUESTED (involuntary mid-chain stop at {respawn or 'unknown time'})")
+        typer.echo(
+            f"⚠ RESPAWN_REQUESTED (involuntary mid-chain stop at {respawn or 'unknown time'})"
+        )
         typer.echo("  prior session ended involuntarily with cascade work pending —")
         typer.echo("  skip the seed prelude and run `nightly next` immediately.")
     typer.echo(f"✓ armed keep-alive — {_format_path_for_display(marker, root)}")
@@ -2526,9 +2544,7 @@ def hook_session_start() -> None:
             return
 
         body = render_digest(root)
-        context = (
-            "Nightly session state re-injected after context compaction:\n\n" + body
-        )
+        context = "Nightly session state re-injected after context compaction:\n\n" + body
         # Audit trail: record that we re-injected, mirroring the Stop hook's
         # keepalive.log discipline.
         with contextlib.suppress(OSError):

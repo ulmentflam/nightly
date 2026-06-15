@@ -668,6 +668,23 @@ def test_status_omits_context_line_when_estimate_empty(repo: Path) -> None:
     assert "context:" not in result.output
 
 
+def test_status_shows_compact_line(repo: Path) -> None:
+    runner.invoke(app, ["init"])
+    # 1. Default (enabled, 256K)
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "compact:   enabled=enabled (threshold cap 256K)" in result.output
+
+    # 2. Disabled or custom cap
+    cfg_file = repo / ".nightly" / "config.yml"
+    cfg_file.write_text(
+        "compact:\n  enabled: false\n  context_token_cap: 128000\n", encoding="utf-8"
+    )
+    result2 = runner.invoke(app, ["status"])
+    assert result2.exit_code == 0
+    assert "compact:   enabled=disabled (threshold cap 128K)" in result2.output
+
+
 # ── Phase 3 commands ──────────────────────────────────────────────────────
 
 

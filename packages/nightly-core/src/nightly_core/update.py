@@ -105,7 +105,7 @@ class UpdateReport:
 
 
 def detect_install_root() -> Path | None:
-    """Walk up from `nightly_core` until we hit a `.git` directory.
+    """Walk up from `nightly_core` until we hit a `.git` directory or file.
 
     Returns the directory containing `.git` (the source checkout) when
     the running Nightly came from a git install; returns None for
@@ -113,7 +113,7 @@ def detect_install_root() -> Path | None:
     """
     here = Path(__file__).resolve()
     for ancestor in (here, *here.parents):
-        if (ancestor / ".git").is_dir():
+        if (ancestor / ".git").exists():
             return ancestor
     return None
 

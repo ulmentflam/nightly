@@ -412,19 +412,19 @@ surface the cap.
 ## Sized checklist
 
 **Phase A — Boundary fire: Claude Code skill + doctor check**
-- [ ] A1. Boundary trigger paragraph added to `packages/nightly-host-claude/src/nightly_host_claude/skill.md`
-- [ ] A2. `_REQUIRED_SKILL_TOKENS` extended with `/compact` scoped to Claude
-- [ ] A3. Tests in `test_doctor.py` for the drift check + skill text presence
+- [x] A1. Boundary trigger paragraph added to `packages/nightly-host-claude/src/nightly_host_claude/skill.md`
+- [x] A2. `_REQUIRED_SKILL_TOKENS` extended with `/compact` scoped to Claude
+- [x] A3. Tests in `test_doctor.py` for the drift check + skill text presence
 
 **Phase B — Five-host no-op + briefing note**
-- [ ] B1. No-op paragraph added to codex / cursor / gemini / antigravity / opencode skill.md
-- [ ] B2. Briefing template gains optional "Compacted" line
-- [ ] B3. Tests covering both branches
+- [x] B1. No-op paragraph added to codex / cursor / gemini / antigravity / opencode skill.md
+- [x] B2. Briefing template gains optional "Compacted" line
+- [x] B3. Tests covering both branches
 
 **Phase C — Threshold fire + config schema**
-- [ ] C1. `compact:` block (`enabled: true`, `context_token_cap: 256000`) added to default `.nightly/config.yml` template in `init` + `doctor`
-- [ ] C2. `load_compact_config(root) -> CompactConfig` helper in `nightly_core.config`
-- [ ] C3. Threshold-fire paragraph added to Claude skill (estimator heuristic + cap reference)
-- [ ] C4. `nightly status` + `nightly doctor` surface the cap
-- [ ] C5. `_REQUIRED_SKILL_TOKENS` gains `context_token_cap` check on Claude
-- [ ] C6. Tests covering config defaults, override, `enabled: false`, doctor drift, status output
+- [x] C1. `compact:` block (`enabled: true`, `context_token_cap: 256000`) added to default `.nightly/config.yml` template in `init` + `doctor`
+- [x] C2. `load_compact_config(root) -> CompactConfig` helper in `nightly_core.config`
+- [x] C3. Threshold-fire paragraph added to Claude skill (estimator heuristic + cap reference)
+- [x] C4. `nightly status` + `nightly doctor` surface the cap
+- [x] C5. `_REQUIRED_SKILL_TOKENS` gains `context_token_cap` check on Claude
+- [x] C6. Tests covering config defaults, override, `enabled: false`, doctor drift, status output

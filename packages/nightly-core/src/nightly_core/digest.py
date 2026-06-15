@@ -85,9 +85,7 @@ def render_digest(root: Path | None = None) -> str:
     lines.append(f"- **nightly** {__version__} · **run** `{run_id}`")
     if run is not None:
         lines.append(f"- {_safe(_render_counters, run.path, fallback='counters: unavailable')}")
-        lines.append(
-            f"- markers: {_safe(_render_markers, run.path, fallback='unavailable')}"
-        )
+        lines.append(f"- markers: {_safe(_render_markers, run.path, fallback='unavailable')}")
     else:
         lines.append("- no active run (`.nightly/runs/CURRENT` absent).")
 

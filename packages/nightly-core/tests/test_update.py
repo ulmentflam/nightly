@@ -24,7 +24,7 @@ def test_detect_install_root_finds_git_dir() -> None:
     """The running nightly_core lives under the Nightly repo, which has .git."""
     root = detect_install_root()
     assert root is not None
-    assert (root / ".git").is_dir()
+    assert (root / ".git").exists()
 
 
 def test_detect_install_method_falls_back_to_unknown_when_no_git_root(

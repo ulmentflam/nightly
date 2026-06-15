@@ -31,7 +31,11 @@ def test_host_id(integration: AntigravityHostIntegration) -> None:
 
 
 def test_skill_path_project_scope(integration: AntigravityHostIntegration, project: Path) -> None:
-    subfolder = "antigravity-cli" if "antigravity-cli" in str(integration.skill_path("project")) else "antigravity"
+    subfolder = (
+        "antigravity-cli"
+        if "antigravity-cli" in str(integration.skill_path("project"))
+        else "antigravity"
+    )
     assert integration.skill_path("project") == (
         project / f".gemini/{subfolder}/agents/nightly/SKILL.md"
     )

@@ -62,6 +62,8 @@ Three off-ramps stop the session at any time:
   current turn to end without starting new work.
 - **Ctrl-C / `/quit`** — interrupt; bypasses the hook entirely.
 
+**Session compaction not supported.** This host does not support session compaction yet — skip the compact step Claude Code's skill describes (TODO: [RFC 006](file:///.planning/rfcs/006-compact-on-rfc-prep.md) to implement once host supports it).
+
 ## Check for updates
 
 After arming the keep-alive, run `nightly check-update`. If it
