@@ -1,10 +1,11 @@
 ---
-status: accepted
+status: implemented
 sized: true
 title: Synthesis-driven ideate — codebase-wide proposal generation across five categories
 created: 2026-06-05
 sized_on: 2026-06-05
 accepted_on: 2026-06-05
+implemented_on: 2026-06-05
 author: nightly-seed
 source: interactive_seed
 estimated_effort: ~10h across 3 phases
@@ -14,17 +15,33 @@ estimated_effort: ~10h across 3 phases
 
 ## Status
 
-`accepted` — operator-reported regression on 2026-06-05: "Ideate is
-not running again. Ideate should read the codebase again and make
-recommendations, starting with cleaning, refactoring and house
+`implemented` — all three phases shipped on 2026-06-05 (Phase A:
+`b2f2391`; Phases B + C: `d17e7d3`, bumped to v0.0.6; merged in PR #14).
+Originally accepted from an operator-reported regression on 2026-06-05:
+"Ideate is not running again. Ideate should read the codebase again and
+make recommendations, starting with cleaning, refactoring and house
 keeping, and ending with new convenience features or new capabilities
 that would improve user experience, performance speed, etc... based
 on the objectives of the project." Approach C (hybrid: keep the three
 narrow programmatic proposers, add one LLM-driven synthesis proposer)
-ships as v1. Phase A wires the synthesis proposer + a new
-`SynthesisProposal` shape; Phase B threads the five-category ordering
-into the cascade pick and the morning briefing; Phase C adds a
-cache/throttle layer so synthesis doesn't run on every cascade walk.
+shipped as v1. Phase A wired the synthesis proposer + the new proposal
+shape; Phase B threaded the five-category ordering into the cascade pick
+and the morning briefing; Phase C added a cache/throttle layer so
+synthesis doesn't run on every cascade walk.
+
+**Naming divergence from this plan (the shipped code is authoritative):**
+- The single `ProposalCategory` Literal named in §A1 shipped as two
+  fields — `Proposal.category: ProposerCategory` (which proposer emitted
+  it) and `Proposal.strategic_category: StrategicCategory` (the
+  five-category ordering key), with `STRATEGIC_CATEGORIES` in
+  `proposers/base.py` as the ordering source of truth.
+- §A2's "backfill to `category="housekeeping"`" shipped as a default on
+  the `strategic_category` field (`= "housekeeping"`) rather than an
+  explicit per-proposer edit; the three programmatic proposers inherit it.
+- §C1's `synthesis.json` cache shipped under
+  `SYNTHESIS_CACHE_FILENAME` with `_read_n` / `_write_n` and HEAD-SHA
+  invalidation; the `--force` flag (§C2) bypasses it on both
+  `nightly propose` and `nightly ideate`.
 
 ## Context
 
@@ -486,24 +503,24 @@ doctor surfaces prompt drift.
 
 ## Sized checklist
 
-**Phase A — SynthesisProposer + category tagging**
-- [ ] A1. `ProposalCategory` Literal + `Proposal.category` field
-- [ ] A2. Three existing proposers backfilled to `category="housekeeping"`
-- [ ] A3. `SynthesisProposer` in `proposers/synthesis.py` with `run_headless` spawn + JSON parsing + content-hashed fingerprints
-- [ ] A4. `synthesis_prompt.md` template with objectives anchor + refusal-policy constraints + five-category schema
-- [ ] A5. `SynthesisProposer()` registered in `default_proposers()`
-- [ ] A6. Unit tests covering prompt content, output parsing, fingerprint stability, backfill correctness
+**Phase A — SynthesisProposer + category tagging** — shipped `b2f2391`
+- [x] A1. `ProposalCategory` Literal + `Proposal.category` field — shipped as `ProposerCategory` + `StrategicCategory` (two fields; see naming divergence above)
+- [x] A2. Three existing proposers backfilled to `category="housekeeping"` — shipped as a `strategic_category` field default
+- [x] A3. `SynthesisProposer` in `proposers/synthesis.py` with `run_headless` spawn + JSON parsing + content-hashed fingerprints
+- [x] A4. `synthesis_prompt.md` template with objectives anchor + refusal-policy constraints + five-category schema
+- [x] A5. `SynthesisProposer()` registered in `default_proposers()`
+- [x] A6. Unit tests covering prompt content, output parsing, fingerprint stability, backfill correctness — `test_synthesis_proposer.py`, `test_proposers.py`
 
-**Phase B — Five-category ordering + briefing**
-- [ ] B1. Cascade sort by `(category_rank, -score)` in `pick_ideated*`
-- [ ] B2. `_category_rank` constant in `cascade.py`
-- [ ] B3. `load_ideate_config` helper + opt-out flag
-- [ ] B4. Briefing grouping by category + static-analysis sub-section
-- [ ] B5. Tests covering ordering, opt-out, briefing render
+**Phase B — Five-category ordering + briefing** — shipped `d17e7d3`
+- [x] B1. Cascade sort by `(category_rank, -score)` in `pick_ideated*`
+- [x] B2. `_category_rank` constant in `cascade.py` — shipped as `_STRATEGIC_CATEGORY_RANK`
+- [x] B3. `load_ideate_config` helper + opt-out flag (`ideate.category_ordering`)
+- [x] B4. Briefing grouping by category + static-analysis sub-section
+- [x] B5. Tests covering ordering, opt-out, briefing render — `test_synthesis_cascade_ordering.py`
 
-**Phase C — Throttle + cache + doctor integration**
-- [ ] C1. `synthesis.json` cache shape + read path
-- [ ] C2. `--force` flag on `nightly propose` / `nightly ideate`
-- [ ] C3. `nightly doctor` prompt-template-drift check
-- [ ] C4. README documentation paragraph
-- [ ] C5. Tests covering throttle, `--force`, SHA invalidation, doctor drift
+**Phase C — Throttle + cache + doctor integration** — shipped `d17e7d3`
+- [x] C1. `synthesis.json` cache shape + read path — shipped as `SYNTHESIS_CACHE_FILENAME` with `_read_n` / `_write_n`
+- [x] C2. `--force` flag on `nightly propose` / `nightly ideate`
+- [x] C3. `nightly doctor` prompt-template-drift check — `_check_synthesis_prompt`
+- [x] C4. README documentation paragraph
+- [x] C5. Tests covering throttle, `--force`, SHA invalidation, doctor drift — `test_synthesis_cache.py`, `test_doctor.py`
