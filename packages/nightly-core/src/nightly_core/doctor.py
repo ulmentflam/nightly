@@ -160,6 +160,57 @@ def _check_config(root: Path, *, dry_run: bool) -> DoctorCheck:
     )
 
 
+def _check_config_blocks(root: Path) -> DoctorCheck:
+    """Name the config blocks an existing `config.yml` has never heard of.
+
+    `_check_config` writes the full template only when the file is
+    *absent*. A repo initialized before a feature shipped therefore never
+    learns that feature's knobs exist: every loader defaults gracefully,
+    so nothing breaks and nothing complains. The operator's config quietly
+    diverges from the schema for as long as the repo lives — this repo was
+    missing eight blocks, half of them predating the current release.
+
+    Advisory, and deliberately never repaired. `config.yml` is
+    hand-edited and comment-rich; appending to it risks clobbering
+    ordering or duplicating a key the operator deliberately removed. A
+    wrong merge into the file that governs every other behavior is worse
+    than a message telling them what to copy.
+    """
+    import yaml  # noqa: PLC0415 - lazy, doctor is not a hot path
+
+    name, desc = "config_blocks", "config.yml schema drift"
+    config = nightly_dir(root) / "config.yml"
+    if not config.is_file():
+        # `_check_config` owns the absent case and writes the template.
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="no config yet")
+
+    try:
+        present = yaml.safe_load(config.read_text(encoding="utf-8"))
+        expected = yaml.safe_load(DEFAULT_CONFIG_YML)
+    except (OSError, yaml.YAMLError):
+        return DoctorCheck(
+            name=name, description=desc, status="skipped", detail="config unreadable"
+        )
+    if not isinstance(present, dict) or not isinstance(expected, dict):
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="not a mapping")
+
+    # Derived from the template itself, so this can never drift from the
+    # schema the way a hand-maintained list would.
+    missing = sorted(set(expected) - set(present))
+    if not missing:
+        return DoctorCheck(name=name, description=desc, status="ok", detail="all blocks present")
+    return DoctorCheck(
+        name=name,
+        description=desc,
+        status="warning",
+        detail=(
+            f"not configured (defaults apply): {', '.join(missing)} — "
+            "see `.nightly/config.yml` in a freshly-initialized repo for the "
+            "annotated blocks to copy"
+        ),
+    )
+
+
 def _configured_hosts(root: Path) -> tuple[HostId, ...]:
     """Host ids listed under `hosts:` in `.nightly/config.yml`.
 
@@ -728,6 +779,7 @@ def diagnose_and_repair(
     checks: list[DoctorCheck] = []
     checks.append(_check_nightly_scaffold(root, dry_run=dry_run))
     checks.append(_check_config(root, dry_run=dry_run))
+    checks.append(_check_config_blocks(root))
     checks.append(_check_model_tiers(root))
     checks.append(_check_tier_sanity(root))
     checks.append(_check_push_readiness(root))

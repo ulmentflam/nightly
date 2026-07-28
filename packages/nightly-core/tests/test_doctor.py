@@ -580,3 +580,66 @@ def test_doctor_requires_context_token_cap_only_on_claude(repo: Path) -> None:
     report2 = diagnose_and_repair(repo, host_loader=_make_loaders({"cursor": cursor}))
     host_check2 = next(c for c in report2.checks if c.name == "host:cursor")
     assert host_check2.status == "ok"
+
+
+# ── config schema drift ───────────────────────────────────────────────────
+
+
+def _cfg_at(root: Path, body: str) -> None:
+    (root / ".nightly").mkdir(parents=True, exist_ok=True)
+    (root / ".nightly" / "config.yml").write_text(body, encoding="utf-8")
+
+
+def test_full_template_reports_no_drift(tmp_path: Path) -> None:
+    """The template must satisfy its own check, or the check is wrong."""
+    from nightly_core.config import DEFAULT_CONFIG_YML
+    from nightly_core.doctor import _check_config_blocks
+
+    _cfg_at(tmp_path, DEFAULT_CONFIG_YML)
+    assert _check_config_blocks(tmp_path).status == "ok"
+
+
+def test_old_config_names_the_blocks_it_never_learned(tmp_path: Path) -> None:
+    """A repo initialized before a feature shipped defaults silently
+    forever — nothing breaks, so nothing ever says so."""
+    from nightly_core.doctor import _check_config_blocks
+
+    _cfg_at(tmp_path, "hosts:\n  - claude\ngit:\n  base_branch: main\n")
+    check = _check_config_blocks(tmp_path)
+    assert check.status == "warning"
+    for block in ("model_tiers", "parallelism", "verify"):
+        assert block in check.detail
+
+
+def test_drift_detail_says_defaults_apply(tmp_path: Path) -> None:
+    """Missing is not broken — the wording must not read as an error."""
+    from nightly_core.doctor import _check_config_blocks
+
+    _cfg_at(tmp_path, "hosts:\n  - claude\n")
+    assert "defaults apply" in _check_config_blocks(tmp_path).detail
+
+
+def test_absent_config_defers_to_the_writer_check(tmp_path: Path) -> None:
+    from nightly_core.doctor import _check_config_blocks
+
+    (tmp_path / ".nightly").mkdir(parents=True, exist_ok=True)
+    assert _check_config_blocks(tmp_path).status == "skipped"
+
+
+def test_malformed_config_is_skipped_not_failed(tmp_path: Path) -> None:
+    from nightly_core.doctor import _check_config_blocks
+
+    _cfg_at(tmp_path, "hosts: [unclosed\n")
+    assert _check_config_blocks(tmp_path).status == "skipped"
+
+
+def test_drift_check_never_writes(tmp_path: Path) -> None:
+    """config.yml is hand-edited and comment-rich; a wrong merge into the
+    file that governs everything is worse than a message."""
+    from nightly_core.doctor import _check_config_blocks
+
+    _cfg_at(tmp_path, "hosts:\n  - claude\n")
+    path = tmp_path / ".nightly" / "config.yml"
+    before = path.read_text(encoding="utf-8")
+    _check_config_blocks(tmp_path)
+    assert path.read_text(encoding="utf-8") == before
