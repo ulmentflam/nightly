@@ -383,10 +383,25 @@ so skill install and keep-alive hooks are unavailable for them.
 
 - **Stale config after a model deprecation.** If Anthropic
   deprecates Haiku 4.5 in favor of Haiku 5.0, configs still
-  pointing at the old id will fail at dispatch time. Mitigation:
-  `nightly doctor` gains a future check that pings each
-  configured model id; the immediate failure mode is "dispatch
-  raises" which surfaces in the briefing.
+  pointing at the old id will fail at dispatch time.
+
+  *2026-07-28: the proposed mitigation — a doctor check validating
+  each configured id — turns out to be unbuildable from local
+  signal.* The vocabulary a host CLI advertises in `--help` is a
+  sample, not an enumeration: `claude --help` names four tokens
+  (`fable`, `opus`, `sonnet`, `claude-fable-5`) and **none** of the
+  three production ids Nightly ships as defaults appear in it. A
+  membership test would flag correct configuration as broken, which
+  is worse than no check at all. Validating for real needs a network
+  call to the vendor's models endpoint — out of scope for `doctor`,
+  which must work offline.
+
+  What shipped instead is `_check_tier_sanity`: a *family*
+  consistency check that catches the misconfiguration local signal
+  can actually see — a tier bound to a model from a different band
+  (`lite: claude-opus-5`). Unrecognized families are skipped rather
+  than guessed at. The deprecation case remains covered only by
+  "dispatch raises", which surfaces in the briefing.
 
 - **Host-side rate limits / billing caps.** Switching to lite tier
   for the bulk of doc work could trip the host's rate limit if

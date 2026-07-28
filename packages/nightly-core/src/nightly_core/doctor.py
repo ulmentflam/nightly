@@ -280,6 +280,46 @@ def _branches_without_upstream(root: Path) -> list[str]:
     return out
 
 
+def _check_tier_sanity(root: Path) -> DoctorCheck:
+    """Warn when a tier is bound to a model from a different band.
+
+    A swapped or typo'd binding — `lite: claude-opus-5`, or a reasoning
+    tier left on a lite model — is silent and expensive. Routing keeps
+    working, dispatches keep succeeding, and the only symptom is the
+    bill (or, in the reverse direction, a reviewer that misses bugs).
+    Nothing else in the system will ever complain.
+
+    Deliberately *not* a check that the model id exists. The vocabulary a
+    host CLI advertises in `--help` is a sample, not an enumeration —
+    `claude --help` names four tokens while every production id Nightly
+    ships as a default is absent from that list. A membership test would
+    flag correct configuration as broken, which is worse than no check.
+    Family matching only, and an unrecognized family is skipped rather
+    than guessed at.
+    """
+    from nightly_core.config import load_model_tier_config  # noqa: PLC0415
+    from nightly_core.model_probe import tier_of_model  # noqa: PLC0415
+
+    name, desc = "model_tier_sanity", "tier/model agreement"
+    cfg = load_model_tier_config(root)
+    if not cfg.enabled:
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="routing disabled")
+
+    mismatches: list[str] = []
+    for host in sorted(_configured_hosts(root)):
+        for tier in MODEL_TIERS:
+            model = cfg.binding(host, tier).model
+            if not model:
+                continue
+            actual = tier_of_model(model)
+            if actual is not None and actual != tier:
+                mismatches.append(f"{host}.{tier}={model} looks like a {actual}-tier model")
+
+    if not mismatches:
+        return DoctorCheck(name=name, description=desc, status="ok", detail="tiers look consistent")
+    return DoctorCheck(name=name, description=desc, status="warning", detail="; ".join(mismatches))
+
+
 def _check_push_readiness(root: Path) -> DoctorCheck:
     """Can this machine's Nightly work actually reach the remote?
 
@@ -689,6 +729,7 @@ def diagnose_and_repair(
     checks.append(_check_nightly_scaffold(root, dry_run=dry_run))
     checks.append(_check_config(root, dry_run=dry_run))
     checks.append(_check_model_tiers(root))
+    checks.append(_check_tier_sanity(root))
     checks.append(_check_push_readiness(root))
     checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))

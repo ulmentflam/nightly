@@ -350,3 +350,58 @@ def test_doctor_never_repairs_model_tiers(tmp_path: Path) -> None:
     before = (tmp_path / ".nightly" / "config.yml").read_text(encoding="utf-8")
     _check_model_tiers(tmp_path)
     assert (tmp_path / ".nightly" / "config.yml").read_text(encoding="utf-8") == before
+
+
+# ── tier/model agreement (doctor) ─────────────────────────────────────────
+
+
+def test_default_config_is_internally_consistent(tmp_path: Path) -> None:
+    """The shipped defaults must not themselves trip the check."""
+    from nightly_core.doctor import _check_tier_sanity
+
+    _write_config(tmp_path, "hosts:\n  - claude\n")
+    assert _check_tier_sanity(tmp_path).status == "ok"
+
+
+def test_swapped_tiers_are_caught(tmp_path: Path) -> None:
+    """The expensive silent misconfiguration: routing keeps working and
+    only the bill notices."""
+    from nightly_core.doctor import _check_tier_sanity
+
+    _write_config(
+        tmp_path,
+        "hosts:\n  - claude\nmodel_tiers:\n  claude:\n"
+        "    lite: claude-opus-5\n    reasoning: claude-haiku-4-5\n",
+    )
+    check = _check_tier_sanity(tmp_path)
+    assert check.status == "warning"
+    assert "lite=claude-opus-5" in check.detail
+    assert "reasoning-tier model" in check.detail
+
+
+def test_unrecognized_family_is_skipped_not_guessed(tmp_path: Path) -> None:
+    """A membership test against advertised ids would flag correct config
+    as broken — `claude --help` names four tokens and none of them are
+    the production ids Nightly ships. Family matching only."""
+    from nightly_core.doctor import _check_tier_sanity
+
+    _write_config(
+        tmp_path,
+        "hosts:\n  - claude\nmodel_tiers:\n  claude:\n    coding: some-vendor-model-x\n",
+    )
+    assert _check_tier_sanity(tmp_path).status == "ok"
+
+
+def test_check_is_skipped_when_routing_is_disabled(tmp_path: Path) -> None:
+    from nightly_core.doctor import _check_tier_sanity
+
+    _write_config(tmp_path, "hosts:\n  - claude\nmodel_tiers:\n  enabled: false\n")
+    assert _check_tier_sanity(tmp_path).status == "skipped"
+
+
+def test_tier_of_model_has_no_opinion_on_unknown_ids() -> None:
+    from nightly_core.model_probe import tier_of_model
+
+    assert tier_of_model("claude-opus-5") == "reasoning"
+    assert tier_of_model("claude-haiku-4-5") == "lite"
+    assert tier_of_model("mystery-model-9") is None

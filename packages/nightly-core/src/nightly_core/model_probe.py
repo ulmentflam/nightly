@@ -41,6 +41,7 @@ __all__ = [
     "merge_discovered_tiers",
     "probe_all",
     "probe_model_control",
+    "tier_of_model",
 ]
 
 
@@ -298,8 +299,13 @@ def _models_from_help(text: str, option_start: int) -> list[str]:
     return [tok for tok in _QUOTED_TOKEN.findall(window) if tok.lower() not in _NOT_A_MODEL]
 
 
-def _tier_of(model: str) -> ModelTier | None:
-    """Which tier a model id belongs to, by family substring."""
+def tier_of_model(model: str) -> ModelTier | None:
+    """Which tier a model id belongs to, by family substring.
+
+    None for an id whose family isn't recognized — the honest answer, and
+    the one that keeps callers from guessing. Consumers treat None as
+    "no opinion" rather than "wrong".
+    """
     lowered = model.lower()
     for tier in MODEL_TIERS:
         if any(family in lowered for family in TIER_FAMILIES[tier]):
@@ -326,7 +332,7 @@ def assign_tiers(models: Sequence[str]) -> dict[ModelTier, str]:
     """
     best: dict[ModelTier, tuple[int, int, str]] = {}
     for model in models:
-        tier = _tier_of(model)
+        tier = tier_of_model(model)
         if tier is None:
             continue
         lowered = model.lower()
