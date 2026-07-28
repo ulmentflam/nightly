@@ -49,7 +49,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from nightly_core.contract import HostId, SpecialistRole
+from nightly_core.config import ParallelismConfig
+from nightly_core.contract import MODEL_TIERS, HostId, ModelTier, SpecialistRole
 from nightly_core.paths import repo_root
 
 __all__ = [
@@ -57,11 +58,14 @@ __all__ = [
     "DEFAULT_STATE_FILENAME",
     "BackgroundDispatchResult",
     "DispatchStatus",
+    "active_dispatches",
+    "admission_blocked",
     "build_argv",
     "is_alive",
     "list_dispatches",
     "read_dispatch_state",
     "start_background",
+    "tier_utilization",
     "wait_for",
     "write_dispatch_state",
 ]
@@ -102,6 +106,12 @@ class BackgroundDispatchResult:
     status: DispatchStatus = "running"
     exit_code: int | None = None
     finished_at: datetime | None = None
+    tier: ModelTier | None = None
+    """RFC 007 tier this dispatch was routed to. Persisted so admission
+    control can count live dispatches per tier without re-resolving the
+    plan (which may have changed, or been marked done, since the spawn).
+    None on dispatches written before RFC 012 — those count toward the
+    global cap only."""
 
 
 # ── per-host argv ────────────────────────────────────────────────────────
@@ -209,6 +219,7 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     now: datetime | None = None,
     model: str | None = None,
     model_flag: str | None = None,
+    tier: ModelTier | None = None,
     popen_factory: object | None = None,
 ) -> BackgroundDispatchResult:
     """Spawn the host's headless CLI as a detached background process.
@@ -268,6 +279,7 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
         status="running",
         exit_code=None,
         finished_at=None,
+        tier=tier,
     )
     write_dispatch_state(result, root=repo)
     return result
@@ -346,6 +358,7 @@ def read_dispatch_state(slug: str, *, root: Path | None = None) -> BackgroundDis
             log_path=Path(data["log_path"]),
             started_at=datetime.fromisoformat(data["started_at"]),
             argv=tuple(data.get("argv", [])),
+            tier=data.get("tier"),
             cwd=Path(data["cwd"]) if data.get("cwd") else None,
             status=data.get("status", "unknown"),
             exit_code=data.get("exit_code"),
@@ -481,3 +494,69 @@ def supported_hosts() -> Sequence[HostId]:
     populate help text and the SKILL.md "supported hosts" list.
     """
     return ("claude", "codex", "opencode", "gemini")
+
+
+# ── admission control (RFC 012 Phase B) ──────────────────────────────────
+
+
+def active_dispatches(root: Path | None = None) -> list[BackgroundDispatchResult]:
+    """Dispatches whose process is still alive.
+
+    Liveness is checked against the PID rather than trusting the recorded
+    status: a spawn that died without anyone polling it still has
+    `status: running` on disk, and counting those toward the cap would
+    wedge the fleet until someone ran `nightly dispatch status`.
+    """
+    return [d for d in list_dispatches(root) if d.status == "running" and is_alive(d.pid)]
+
+
+def tier_utilization(
+    config: ParallelismConfig,
+    root: Path | None = None,
+) -> dict[ModelTier, tuple[int, int]]:
+    """`{tier: (live_count, effective_cap)}` for every tier.
+
+    The cap is `ParallelismConfig.limit_for`, i.e. the tighter of the
+    per-tier and global ceilings; `0` means unlimited. Dispatches with no
+    recorded tier (pre-RFC-012 state files) are counted only against the
+    global total, which `admission_blocked` checks separately.
+    """
+    live = active_dispatches(root)
+    counts: dict[ModelTier, int] = dict.fromkeys(MODEL_TIERS, 0)
+    for dispatch in live:
+        if dispatch.tier in counts:
+            counts[dispatch.tier] += 1  # type: ignore[index]
+    return {tier: (counts[tier], config.limit_for(tier)) for tier in MODEL_TIERS}
+
+
+def admission_blocked(
+    tier: ModelTier,
+    config: ParallelismConfig,
+    root: Path | None = None,
+) -> str | None:
+    """Reason this dispatch must wait, or None when it may start.
+
+    Two ceilings are checked: the tier's own (via `limit_for`, which
+    already folds in the global cap) and the global count across every
+    live dispatch including untiered ones.
+
+    Deliberately returns "wait", never "run it on a cheaper tier". A
+    silent downgrade would defeat RFC 007's whole argument about the
+    reviewer sitting on the reasoning tier — the caller would get a
+    lite-tier review it never asked for and no signal that it happened.
+    """
+    live = active_dispatches(root)
+    total = len(live)
+    if config.max_concurrent_specialists and total >= config.max_concurrent_specialists:
+        return (
+            f"{total} specialist(s) already running; "
+            f"global cap is {config.max_concurrent_specialists}"
+        )
+
+    cap = config.limit_for(tier)
+    if not cap:
+        return None
+    used = sum(1 for d in live if d.tier == tier)
+    if used >= cap:
+        return f"{used} {tier}-tier dispatch(es) already running; cap is {cap}"
+    return None

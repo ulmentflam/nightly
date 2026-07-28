@@ -256,12 +256,17 @@ produces a handoff summary naming its unfinished goals.
 - [x] A6. Config template blocks
 - [x] A7. Unit tests (in `tests/test_routing.py`)
 
-**Phase B — Admission control**
-- [ ] B1. `dispatch start` admission check
-- [ ] B2. `dispatch status` shows cap utilization
+**Phase B — Admission control** — *B1/B2/B5 landed 2026-07-28*
+- [x] B1. `dispatch start` admission check — refuses with exit code 3 and
+      names the cap that blocked it; `--force` overrides. Dispatch state
+      now persists its tier so counting doesn't re-resolve the plan.
+- [x] B2. `dispatch status` shows a `capacity:` line (live/cap per tier
+      plus the global total)
 - [ ] B3. Worktree creation honors `max_worktrees`
 - [ ] B4. Six host skills: fan-out-to-cap guidance
-- [ ] B5. Admission tests
+- [x] B5. Admission tests (`tests/test_admission.py`, 14 cases) —
+      including the liveness rule: a dispatch whose PID is gone must not
+      occupy a slot, or an unpolled crash wedges the fleet
 
 **Phase C — Handoff protocol**
 - [ ] C1. Keepalive threshold comparison + prompt injection

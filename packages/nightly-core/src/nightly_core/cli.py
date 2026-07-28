@@ -1599,7 +1599,7 @@ def _plan_model_tier(slug: str, root: Path) -> ModelTier | None:
 
 
 @dispatch_app.command(name="start")
-def dispatch_start_cmd(
+def dispatch_start_cmd(  # noqa: PLR0913 - one option per dispatch dimension
     slug: Annotated[
         str,
         typer.Argument(help="Task slug. Must exist under the current run."),
@@ -1638,6 +1638,13 @@ def dispatch_start_cmd(
             help="Working directory for the spawned process. Defaults to the repo root.",
         ),
     ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Spawn even when the parallelism cap for this tier is reached.",
+        ),
+    ] = False,
 ) -> None:
     """Spawn the host's headless CLI as a detached background process.
 
@@ -1672,6 +1679,19 @@ def dispatch_start_cmd(
     if tier_cfg.enabled:
         body = f"{body}\n{effort_directive(resolved.effort)}\n"
 
+    from nightly_core.config import load_parallelism_config  # noqa: PLC0415 - lazy
+    from nightly_core.dispatch import admission_blocked  # noqa: PLC0415 - lazy
+
+    blocked = admission_blocked(resolved.tier, load_parallelism_config(root), root)
+    if blocked and not force:
+        typer.echo(f"✗ dispatch not admitted: {blocked}", err=True)
+        typer.echo(
+            "  wait for a slot (`nightly dispatch status`), raise the cap in "
+            "`.nightly/config.yml` under `parallelism:`, or pass --force.",
+            err=True,
+        )
+        raise typer.Exit(code=3)
+
     try:
         result = start_background(
             slug,
@@ -1682,6 +1702,7 @@ def dispatch_start_cmd(
             cwd=cwd,
             model=resolved.model,
             model_flag=tier_cfg.flag_for(host),
+            tier=resolved.tier,
         )
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
@@ -1762,6 +1783,28 @@ def dispatch_status_cmd(
     for state in states:
         live = refresh(state, root=root)
         _print_dispatch_row(live, root=root, verbose=False)
+
+    _print_tier_utilization(root)
+
+
+def _print_tier_utilization(root: Path) -> None:
+    """Show live-vs-cap per tier so the operator can see the fleet's headroom.
+
+    Printed after the dispatch table because it answers the question the
+    table provokes: "can I start another one?"
+    """
+    from nightly_core.config import load_parallelism_config  # noqa: PLC0415 - lazy
+    from nightly_core.dispatch import tier_utilization  # noqa: PLC0415 - lazy
+
+    config = load_parallelism_config(root)
+    util = tier_utilization(config, root)
+    cells = [
+        f"{tier} {used}/{cap or '∞'}" + (" FULL" if cap and used >= cap else "")
+        for tier, (used, cap) in util.items()
+    ]
+    total = sum(used for used, _ in util.values())
+    overall = config.max_concurrent_specialists or "∞"
+    typer.echo(f"\ncapacity: {'  '.join(cells)}   (total {total}/{overall})")
 
 
 def _print_dispatch_row(
