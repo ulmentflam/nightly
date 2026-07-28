@@ -33,6 +33,7 @@ is for "make my install correct."
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -223,6 +224,110 @@ def _check_model_tiers(root: Path) -> DoctorCheck:
             f"no tier→model binding for: {', '.join(unbound)} "
             "(dispatches use the host CLI's default model)"
         ),
+    )
+
+
+def _git_out(root: Path, *args: str) -> str | None:
+    """Run a read-only git command; None on any failure. Never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _signing_is_broken(root: Path) -> bool:
+    """True when commits are configured to be signed but signing will fail.
+
+    Only the SSH-agent path is detectable locally and cheaply: if
+    `gpg.format` is `ssh` and the agent holds no identities, every commit
+    will fail. A 1Password or Secretive agent that has auto-locked is the
+    common cause, and it fails the push too, since the same agent holds
+    the auth key.
+    """
+    if (_git_out(root, "config", "--get", "commit.gpgsign") or "").strip() != "true":
+        return False
+    if (_git_out(root, "config", "--get", "gpg.format") or "").strip() != "ssh":
+        return False
+    try:
+        proc = subprocess.run(
+            ["ssh-add", "-l"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "no identities" in proc.stdout.lower()
+
+
+def _branches_without_upstream(root: Path) -> list[str]:
+    """Nightly branches that have never been pushed anywhere."""
+    listing = _git_out(
+        root, "for-each-ref", "--format=%(refname:short)|%(upstream)", "refs/heads/nightly/"
+    )
+    if not listing:
+        return []
+    out = []
+    for line in (ln for ln in listing.splitlines() if ln.strip()):
+        branch, _, upstream = line.partition("|")
+        if not upstream.strip():
+            out.append(branch)
+    return out
+
+
+def _check_push_readiness(root: Path) -> DoctorCheck:
+    """Can this machine's Nightly work actually reach the remote?
+
+    Advisory, never repaired — pushing is the operator's call, and a
+    locked signing agent is theirs to unlock.
+
+    This check exists because the failure is silent and expensive: an
+    overnight run can complete real work, commit it, and be unable to
+    push, and nothing in `status` or `doctor` said so. The work looks
+    done from inside the session and is invisible from outside it. An
+    operator who reads a morning briefing without noticing has lost the
+    night.
+    """
+    name, desc = "push_readiness", "unpushed Nightly work"
+
+    listing = _git_out(
+        root, "for-each-ref", "--format=%(refname:short)|%(upstream:track)", "refs/heads/nightly/"
+    )
+    if listing is None:
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="git unavailable")
+
+    ahead: list[str] = []
+    for line in (ln for ln in listing.splitlines() if ln.strip()):
+        branch, _, track = line.partition("|")
+        track = track.strip()
+        # `[gone]` upstreams are merged-and-deleted branches — local
+        # cruft, not lost work. An empty track means in sync.
+        if "ahead" in track:
+            ahead.append(f"{branch} {track}")
+
+    never_pushed = _branches_without_upstream(root)
+
+    signer_broken = _signing_is_broken(root)
+    problems: list[str] = []
+    if ahead:
+        problems.append(f"unpushed: {', '.join(ahead)}")
+    if never_pushed:
+        problems.append(f"never pushed: {', '.join(never_pushed)}")
+    if signer_broken:
+        problems.append("commit signing configured but the ssh agent holds no identities")
+
+    if not problems:
+        return DoctorCheck(name=name, description=desc, status="ok", detail="all branches pushed")
+    return DoctorCheck(
+        name=name,
+        description=desc,
+        status="warning",
+        detail="; ".join(problems),
     )
 
 
@@ -584,6 +689,7 @@ def diagnose_and_repair(
     checks.append(_check_nightly_scaffold(root, dry_run=dry_run))
     checks.append(_check_config(root, dry_run=dry_run))
     checks.append(_check_model_tiers(root))
+    checks.append(_check_push_readiness(root))
     checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))
     checks.append(_check_synthesis_prompt())
