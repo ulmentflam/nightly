@@ -270,3 +270,67 @@ def test_digest_always_written_on_planning_reroute(
     assert "GENUINE WORK IS NEVER EXHAUSTED" in decision.payload["reason"]
     run_dir = next(p for p in (armed_repo / ".nightly" / "runs").iterdir() if p.is_dir())
     assert (run_dir / "digest.md").is_file()
+
+
+# ── issue #30: the reroute that stopped working ───────────────────────────
+
+
+def test_escalation_names_the_stuck_pick() -> None:
+    """The generic prompt failed 130 times in issue #30's log precisely
+    because it never said *which* pick was stuck."""
+    from nightly_core.keepalive_hook import _spin_escalation_block
+
+    class Choice:
+        source = "accepted_rfc"
+        summary = "A1. `ModelTier` literal"
+
+    block = _spin_escalation_block(Choice(), 9)
+    assert "accepted_rfc" in block
+    assert "A1. `ModelTier` literal" in block
+    assert "#9" in block
+
+
+def test_escalation_tells_the_agent_how_to_discharge_the_pick() -> None:
+    """ "Treat it as nothing" without saying how leaves an agent that
+    believes the item IS actionable with nowhere to go — which is the
+    loop. The escalation names the reconciliation commit instead."""
+    from nightly_core.keepalive_hook import _spin_escalation_block
+
+    class Choice:
+        source = "accepted_rfc"
+        summary = "x"
+
+    block = _spin_escalation_block(Choice(), 7)
+    assert "docs(rfc-NNN): tick" in block
+    assert "already implemented in" in block
+
+
+def test_escalation_forbids_the_acknowledge_and_stop_pattern() -> None:
+    """Issue #30's log is 130 turns of ~1700 tokens each — an
+    acknowledgement and an immediate stop, which is what burns the host's
+    without-progress budget and gets the session killed."""
+    from nightly_core.keepalive_hook import _spin_escalation_block
+
+    class Choice:
+        source = "github_issue"
+        summary = "y"
+
+    block = _spin_escalation_block(Choice(), 8)
+    assert "Do NOT emit a short acknowledgement and stop" in block
+
+
+def test_escalation_survives_a_choice_without_fields() -> None:
+    """The hook must never crash on a malformed cascade choice."""
+    from nightly_core.keepalive_hook import _spin_escalation_block
+
+    block = _spin_escalation_block(object(), 5)
+    assert "(unknown pick)" in block
+
+
+def test_escalation_threshold_is_above_the_reroute_threshold() -> None:
+    """Escalating on the same turn the reroute first fires would skip the
+    cheaper remedy; escalating never is issue #30."""
+    from nightly_core.keepalive_hook import _LIVELOCK_ESCALATE_AFTER, _LIVELOCK_REPICKS
+
+    assert _LIVELOCK_ESCALATE_AFTER >= 1
+    assert _LIVELOCK_REPICKS + _LIVELOCK_ESCALATE_AFTER > _LIVELOCK_REPICKS
