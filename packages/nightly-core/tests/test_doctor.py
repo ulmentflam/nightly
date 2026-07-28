@@ -643,3 +643,39 @@ def test_drift_check_never_writes(tmp_path: Path) -> None:
     before = path.read_text(encoding="utf-8")
     _check_config_blocks(tmp_path)
     assert path.read_text(encoding="utf-8") == before
+
+
+# ── check registry ────────────────────────────────────────────────────────
+
+
+def test_every_check_helper_is_wired_into_the_report() -> None:
+    """A `_check_*` helper that nobody calls runs zero times and reports
+    nothing — silently, forever. The wiring is a hand-edited list that
+    grew by four in one session; this makes the omission structural
+    rather than a matter of remembering.
+    """
+    import inspect
+
+    from nightly_core import doctor as doctor_mod
+
+    wiring = inspect.getsource(doctor_mod.diagnose_and_repair)
+    helpers = [
+        name
+        for name, obj in vars(doctor_mod).items()
+        if name.startswith("_check_")
+        and inspect.isfunction(obj)
+        # `_check_host` is called per host inside the loop, not appended
+        # once like the rest.
+        and name != "_check_host"
+    ]
+    assert helpers, "no check helpers found — did the naming convention change?"
+    unwired = [n for n in helpers if n not in wiring]
+    assert not unwired, f"defined but never called in diagnose_and_repair: {unwired}"
+
+
+def test_report_check_names_are_unique(repo: Path) -> None:
+    """Two checks sharing a name makes the report ambiguous to read and
+    impossible to filter."""
+    report = diagnose_and_repair(repo, dry_run=True, host_loader={})
+    names = [c.name for c in report.checks]
+    assert len(names) == len(set(names))

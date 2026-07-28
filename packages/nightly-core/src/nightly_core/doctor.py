@@ -8,7 +8,7 @@ boring, idempotent broom that walks the install surface and puts it
 back together without the user having to remember the exact sequence
 of `init` flags that produced their setup.
 
-What it checks (and repairs by default):
+Checks fall into two groups. **Repairing** checks fix what they find:
 
 1. `.nightly/` scaffold — the five canonical subdirs from `cli.py`
    (`runs`, `plans`, `atlas`, `memory`, `prompts`).
@@ -21,6 +21,23 @@ What it checks (and repairs by default):
    in the `forced` keep-alive tier). Hosts the user never installed are
    left alone unless the caller explicitly passes them via
    `extra_hosts`.
+
+**Advisory** checks report and never write, because the right fix is a
+judgment call the operator owns:
+
+5. Config schema drift — blocks an existing `config.yml` never learned,
+   which default silently forever.
+6. Model-tier bindings — hosts with no tier→model mapping, where
+   routing is inert.
+7. Tier/model agreement — a tier bound to a different band's model,
+   which is silent and expensive.
+8. Push readiness — Nightly work that cannot leave the machine
+   (unpushed branches, a locked signing agent).
+9. Worktree location — a repo under iCloud, where git state corrupts.
+
+Adding a check means writing a `_check_*` helper **and** appending it in
+`diagnose_and_repair`; a helper that exists but is never called runs zero
+times and reports nothing. `test_every_check_helper_is_wired` pins that.
 
 Design parallels `update.refresh_repo_install` — both walk host loaders
 and call `install("project")` — but doctor's contract is broader: it
