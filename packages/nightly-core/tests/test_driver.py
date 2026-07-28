@@ -391,39 +391,56 @@ async def test_run_loop_concurrency_batches(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_loop_concurrency_actually_parallel(tmp_path: Path) -> None:
-    """With concurrency=2, two slow dispatches should run together (not sequentially).
+    """With concurrency=2, dispatches must genuinely overlap.
 
-    We simulate slow dispatch with `asyncio.sleep(0.05)`. Serial run would
-    take ≥ 0.2s for four tasks; concurrent run with N=2 should be ≤ 0.15s.
+    Measured structurally — by counting how many dispatches are in flight
+    at once — rather than by wall-clock elapsed time.
+
+    The previous version timed the loop and asserted `elapsed < 0.25`.
+    That ceiling had already been raised once (180ms, which flaked at
+    182ms) and then failed in CI at **964ms** on a loaded runner. The
+    approach cannot be rescued by raising it again: a threshold generous
+    enough to survive a slow runner is also generous enough to pass a
+    fully serial run (200ms baseline), at which point the test asserts
+    nothing at all.
+
+    Counting in-flight dispatches is immune to runner load and strictly
+    stronger — it also catches *over*-concurrency, which a duration check
+    never could.
     """
     _seed_in_progress_plans(tmp_path, ["a", "b", "c", "d"])
 
-    class _SlowHost(_FakeHost):
-        async def run_headless(self, prompt, *, cwd=None, timeout_s=None):  # type: ignore[override]
-            await asyncio.sleep(0.05)
-            return await super().run_headless(prompt, cwd=cwd, timeout_s=timeout_s)
+    peak = 0
+    in_flight = 0
 
-    host = _SlowHost(results=[_ok_result()] * 4)
+    class _TrackingHost(_FakeHost):
+        async def run_headless(self, prompt, *, cwd=None, timeout_s=None):  # type: ignore[override]
+            nonlocal peak, in_flight
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                # Yield long enough that a genuinely concurrent scheduler
+                # overlaps the tasks; the assertion does not depend on how
+                # long this takes.
+                await asyncio.sleep(0.05)
+                return await super().run_headless(prompt, cwd=cwd, timeout_s=timeout_s)
+            finally:
+                in_flight -= 1
+
+    host = _TrackingHost(results=[_ok_result()] * 4)
     git_runner, _ = _git_runner_factory()
 
-    import time
-
-    start = time.monotonic()
     outcomes = await run_loop(
         root=tmp_path,
         host=host,
         config=DriverConfig(concurrency=2),
         git_runner=git_runner,
     )
-    elapsed = time.monotonic() - start
 
     assert len(outcomes) == 4
-    # 4 tasks * 50ms = 200ms serial; concurrency=2 should be ~100-150ms.
-    # Threshold is wide enough to absorb GHA macos runner jitter — a
-    # 180ms ceiling was flaking at 182ms (commit 1fa51b6's run on
-    # 2026-06-05). 250ms still definitively excludes serial dispatch
-    # (200ms baseline) while tolerating noisier scheduler latency.
-    assert elapsed < 0.25, f"expected concurrent dispatch < 0.25s, got {elapsed:.3f}s"
+    assert peak > 1, "dispatches ran serially — concurrency had no effect"
+    assert peak <= 2, f"concurrency=2 exceeded: {peak} dispatches in flight"
+    assert in_flight == 0, "a dispatch leaked past the end of the run"
 
 
 @pytest.mark.asyncio
