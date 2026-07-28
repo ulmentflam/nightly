@@ -202,6 +202,16 @@
     </section>
   {% endif %}
 
+  {# ── dispatch mix by model tier (RFC 007 §8) ─────────────────────── #}
+  {% if tier_breakdown %}
+    <section class="narrative">
+      <div class="label">dispatches by tier</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 0.8rem; color: var(--muted);">
+        {{ tier_breakdown }}
+      </div>
+    </section>
+  {% endif %}
+
   {# ── session narrative (agent-authored, optional) ────────────────── #}
   {% if session_narrative %}
     <section class="narrative">

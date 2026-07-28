@@ -10,6 +10,7 @@ author: nightly-seed
 source: interactive_seed
 estimated_effort: ~7h across 3 phases
 phase_a: implemented
+status_note: all three phases implemented 2026-07-28
 ---
 
 # RFC 007 — Model-tier routing for cost-aware specialist dispatch
@@ -514,7 +515,12 @@ missing config; README updated.
 - [x] B1. `nightly dispatch start` reads resolved model id and passes it
       with the **discovered** model flag (see B6)
 - [ ] B2. Task-tool fallback documented across six host skill.md
-- [ ] B3. Briefing tier-breakdown line
+- [x] B3. Briefing tier-breakdown line — a `dispatches by tier` panel
+      rendered from each task's `dispatch.json`. Reads the run's task
+      dirs directly rather than via `list_dispatches`, which resolves the
+      *current* run; the briefing renders arbitrary (including concluded)
+      runs. Untiered pre-RFC-007 records are surfaced as `unrouted`
+      rather than dropped.
 - [x] B4. `nightly specialist --tier <tier>` flag
 - [x] B5. Dispatch resolution tests across tiers + host-miss fallback
       (`tests/test_routing.py`); end-to-end argv assertions still open

@@ -21,6 +21,7 @@ template degrades cleanly when those slots are absent.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 from markdown_it import MarkdownIt
 from markupsafe import Markup
 
+from nightly_core.contract import MODEL_TIERS
 from nightly_core.runs import Run
 
 __all__ = [
@@ -97,6 +99,52 @@ class BriefingContext:
     compacted: str | None = None
     """RFC 006 §B2 — "yes" if session compaction fired, "no" if it did not,
     None if default omitted (e.g. keepalive.log absent)."""
+
+    tier_breakdown: str | None = None
+    """RFC 007 §8 — dispatches by model tier, e.g. `lite x 3, coding x 5,
+    reasoning x 1`. None when the run backgrounded no specialists.
+
+    This is the operator's only view into whether routing is doing what
+    they configured. A run that shows `reasoning x 12` is burning the
+    expensive tier on work that should have been cheap; one that shows no
+    `reasoning` at all probably reviewed nothing."""
+
+
+def _load_tier_breakdown(run: Run) -> str | None:
+    """Count this run's dispatches by model tier — RFC 007 Resolved #8.
+
+    Reads each task's `dispatch.json` directly rather than going through
+    `list_dispatches`, which resolves the *current* run; the briefing
+    renders arbitrary runs, including concluded ones.
+
+    Untiered records (written before RFC 007) are counted under
+    `unrouted` rather than dropped — silently omitting them would make an
+    old run look like it dispatched less than it did.
+    """
+    tasks_dir = run.path / "tasks"
+    if not tasks_dir.is_dir():
+        return None
+
+    counts: dict[str, int] = {}
+    for task_dir in sorted(tasks_dir.iterdir()):
+        state = task_dir / "dispatch.json"
+        if not state.is_file():
+            continue
+        try:
+            data = json.loads(state.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # A corrupt state file must not sink the whole briefing.
+            continue
+        tier = data.get("tier") or "unrouted"
+        counts[str(tier)] = counts.get(str(tier), 0) + 1
+
+    if not counts:
+        return None
+
+    # Canonical tier order first, then anything unrecognized.
+    ordered = [t for t in MODEL_TIERS if t in counts]
+    ordered += sorted(k for k in counts if k not in MODEL_TIERS)
+    return ", ".join(f"{name} x {counts[name]}" for name in ordered)
 
 
 def _load_tasks(run: Run) -> list[dict[str, Any]]:
@@ -293,6 +341,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         stacked_geometry=stacked,
         current_branch=current_branch,
         compacted=compacted,
+        tier_breakdown=_load_tier_breakdown(run),
     )
 
 
@@ -315,6 +364,7 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         stacked_geometry=ctx.stacked_geometry,
         current_branch=ctx.current_branch,
         compacted=ctx.compacted,
+        tier_breakdown=ctx.tier_breakdown,
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -339,3 +340,85 @@ def test_briefing_omits_compacted_slot_when_absent(tmp_path: Path) -> None:
     assert ctx.compacted is None
     html = render_briefing(run)
     assert "Compacted:" not in html
+
+
+# ── tier breakdown (RFC 007 §8 / B3) ──────────────────────────────────────
+
+
+def _write_dispatch(run_path: Path, slug: str, tier: str | None) -> None:
+    task_dir = run_path / "tasks" / slug
+    task_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {"slug": slug, "pid": 1, "status": "completed"}
+    if tier is not None:
+        payload["tier"] = tier
+    (task_dir / "dispatch.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_tier_breakdown_is_none_without_dispatches(tmp_path: Path) -> None:
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    assert _load_tier_breakdown(run) is None
+
+
+def test_tier_breakdown_counts_each_tier(tmp_path: Path) -> None:
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "lite")
+    _write_dispatch(run.path, "0002-b", "lite")
+    _write_dispatch(run.path, "0003-c", "reasoning")
+    assert _load_tier_breakdown(run) == "lite x 2, reasoning x 1"
+
+
+def test_tier_breakdown_uses_canonical_tier_order(tmp_path: Path) -> None:
+    """Reading order should match the tier ladder, not directory order."""
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "reasoning")
+    _write_dispatch(run.path, "0002-b", "lite")
+    _write_dispatch(run.path, "0003-c", "coding")
+    assert _load_tier_breakdown(run) == "lite x 1, coding x 1, reasoning x 1"
+
+
+def test_untiered_dispatches_are_surfaced_not_dropped(tmp_path: Path) -> None:
+    """Pre-RFC-007 records have no tier; omitting them would make an old
+    run look like it dispatched less than it actually did."""
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", None)
+    _write_dispatch(run.path, "0002-b", "coding")
+    assert _load_tier_breakdown(run) == "coding x 1, unrouted x 1"
+
+
+def test_corrupt_dispatch_state_does_not_sink_the_briefing(tmp_path: Path) -> None:
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "lite")
+    bad = run.path / "tasks" / "0002-b"
+    bad.mkdir(parents=True, exist_ok=True)
+    (bad / "dispatch.json").write_text("{not json", encoding="utf-8")
+    assert _load_tier_breakdown(run) == "lite x 1"
+
+
+def test_tier_breakdown_reaches_the_rendered_briefing(tmp_path: Path) -> None:
+    from nightly_core.briefing import render_briefing
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "reasoning")
+    html = render_briefing(run)
+    assert "dispatches by tier" in html
+    assert "reasoning x 1" in html
+
+
+def test_breakdown_renders_without_a_session_narrative(tmp_path: Path) -> None:
+    """The mix is useful even on a run where no narrative was authored."""
+    from nightly_core.briefing import render_briefing
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "coding")
+    assert not (run.path / "briefing.md").exists()
+    assert "coding x 1" in render_briefing(run)
