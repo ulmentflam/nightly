@@ -93,6 +93,7 @@ __all__ = [
     "STOP_FILENAME",
     "HookFormat",
     "StopHookDecision",
+    "_spin_escalation_block",
     "arm_session",
     "compute_stop_hook_decision",
     "context_diet_block",
@@ -224,16 +225,61 @@ detecting."""
 
 
 _LIVELOCK_REROUTE_SOURCES = frozenset({"github_issue", "accepted_rfc"})
-"""Cascade sources eligible for the livelock reroute.
 
-Only these two convert into a task plan within one turn, after which a
-higher cascade rung (`resume_in_flight`) takes over and the fingerprint
-changes — so a sustained identical re-pick means the agent is holding,
-not working. The other long-lived sources are deliberately excluded:
-`resume_in_flight` / `unblocked_approval` / `pr_rescue` legitimately
-repeat across many turns of honest work (one PR can take many turns) and
-must NOT reroute; `ideate` / `nothing` already lead to the planning
-phase, so rerouting them would be redundant."""
+_LIVELOCK_ESCALATE_AFTER = 3
+"""Extra identical reroutes tolerated before the prompt changes — issue #30.
+
+The v0.0.11 reroute detects a repeated pick and injects the planning
+prompt. What it did *not* do is notice when that injection stops working:
+it re-sent byte-identical text on every subsequent boundary. Issue #30's
+log shows **130 consecutive identical reroutes**, one every 10-30 seconds,
+with context growing ~1700 tokens per turn — the agent emitting a
+sentence and stopping, the hook blocking, forever.
+
+That spin is not merely unproductive. It burns the host's
+without-progress budget, which is what produces the "involuntary stop"
+the issue reports: the session is killed mid-chain and only
+RESPAWN_REQUESTED is left behind. Repeating an instruction that has
+already failed N times is the bug; after this many, the prompt escalates
+and names the stuck pick instead."""
+
+
+def _spin_escalation_block(choice: object, repeats: int) -> str:
+    """Prompt prefix for a reroute that has itself stopped working.
+
+    Names the specific pick the agent keeps returning to, because the
+    generic planning prompt demonstrably did not dislodge it. Explicitly
+    authorises recording the pick as non-actionable — the previous text
+    said "treat it as nothing" without saying how, which leaves an agent
+    that believes the item IS actionable with nowhere to go.
+    """
+    summary = getattr(choice, "summary", "") or "(unknown pick)"
+    source = getattr(choice, "source", "") or "cascade"
+    lines = [
+        f"\u26a0 REROUTE NOT WORKING \u2014 this is reroute #{repeats} for the SAME "
+        f"pick ({source}: {summary}). The planning-phase prompt below has "
+        "already been injected repeatedly and has not dislodged it, so "
+        "re-reading it will not help either.",
+        "",
+        "Do exactly this, in order:",
+        "1. Verify the pick is genuinely done or not actionable \u2014 check the "
+        "symbol/file exists, check `git log` and any unmerged `nightly/*` "
+        "branch, check open PRs. (Rule 13, pre-flight verification.)",
+        "2. If it IS already done: tick the checklist box and commit "
+        "`docs(rfc-NNN): tick <ITEM> \u2014 already implemented in <SHA>`. That "
+        "reconciliation is real work and it stops this loop.",
+        "3. If it is NOT actionable for another reason: record why in the task "
+        "plan or an approval note, so the next turn has evidence instead of "
+        "re-deriving it.",
+        "4. Only then pick different work.",
+        "",
+        "Do NOT emit a short acknowledgement and stop \u2014 that is what has "
+        "happened on every prior boundary, and the host will eventually kill "
+        "the session for lack of progress.",
+        "",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 # ── context-size measurement ──────────────────────────────────────────────
@@ -536,11 +582,15 @@ def compute_stop_hook_decision(  # noqa: PLR0912 - one branch per off-ramp / rou
                 "plan new work instead."
             ),
         )
+        spinning = repeats >= _LIVELOCK_REPICKS + _LIVELOCK_ESCALATE_AFTER
+        if spinning:
+            reason = _spin_escalation_block(choice, repeats) + reason
         reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens)
         message = (
             f"run {run.id} turn {turn_count}: blocking stop and injecting "
-            f"planning-phase prompt (livelock reroute: {choice.source} pick "
-            f"repeated {repeats}x)."
+            f"{'ESCALATED ' if spinning else ''}planning-phase prompt "
+            f"(livelock reroute: {choice.source} pick repeated {repeats}x"
+            f"{'; reroute itself not working — issue #30' if spinning else ''})."
         )
         return StopHookDecision(
             payload={"decision": "block", "reason": reason},
