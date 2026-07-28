@@ -443,6 +443,21 @@ N` in parallel) it:
 Single-process by contract: two concurrent `nightly run` invocations
 against the same repo can race on plan-status updates.
 
+Worktrees outlive the tasks that made them, so clear the spent ones
+with:
+
+```bash
+nightly worktree prune --dry-run   # what would go, and why the rest stays
+nightly worktree prune             # remove them, and their branches
+```
+
+A worktree is removed only when losing it cannot lose work: clean tree,
+and no commits `--base` (default `main`) does not already have.
+Anything else is kept with the reason printed, and a check that cannot
+be *run* counts as a blocker rather than as consent. `--force` removes
+the kept ones too, but still preserves the branch of any worktree
+holding unmerged commits so that history stays reachable.
+
 Fan-out is bounded by the `parallelism:` block, and the bounds are
 enforced rather than advisory — `nightly dispatch start` exits 3 when a
 tier is at capacity, and worktree creation refuses past `max_worktrees`.

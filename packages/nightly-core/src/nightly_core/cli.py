@@ -1610,6 +1610,100 @@ def worktree_list_cmd(
         typer.echo(f"{h.branch:<60} {h.path}")
 
 
+@worktree_app.command(name="prune")
+def worktree_prune_cmd(
+    base_branch: Annotated[
+        str,
+        typer.Option(
+            "--base",
+            help="Branch a worktree's commits must already be in to count as spent.",
+        ),
+    ] = "main",
+    branch_prefix: Annotated[
+        str,
+        typer.Option(
+            "--prefix",
+            help="Only consider worktrees whose branch starts with this prefix.",
+        ),
+    ] = "nightly/",
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Report what WOULD be removed, but don't touch anything.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Remove blocked worktrees too. Discards uncommitted changes.",
+        ),
+    ] = False,
+    keep_branches: Annotated[
+        bool,
+        typer.Option(
+            "--keep-branches",
+            help="Remove the worktrees but leave their branches in place.",
+        ),
+    ] = False,
+) -> None:
+    """Remove Nightly worktrees that have nothing left to lose.
+
+    `worktree create` shipped without a counterpart, so worktrees
+    accumulated: one repo held five stale checkouts at ~93MB each, the
+    oldest two months old, every one already merged. Nothing surfaced
+    them, because `worktree list` reports them as ordinary state.
+
+    A worktree is removed only when losing it cannot lose work — clean
+    tree, and no commits `--base` does not already have. Anything else is
+    kept and the reason printed. A check that cannot be *run* counts as a
+    blocker, never as consent.
+
+    Branches are deleted alongside the worktrees they belonged to, since a
+    fully-merged branch is the same residue in another form. `--force`
+    removes blocked worktrees, but still keeps the branch of any worktree
+    holding unmerged commits, so that history stays reachable.
+    """
+    from nightly_core.worktree import prune_worktrees  # noqa: PLC0415 - lazy import
+
+    root = repo_root()
+    try:
+        report = asyncio.run(
+            prune_worktrees(
+                root,
+                base_branch=base_branch,
+                branch_prefix=branch_prefix,
+                force=force,
+                delete_branch=not keep_branches,
+                dry_run=dry_run,
+            )
+        )
+    except RuntimeError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if report.considered == 0:
+        typer.echo(f"· no worktrees with branch prefix `{branch_prefix}`")
+        return
+
+    verb = "would remove" if dry_run else "removed"
+    for verdict in report.removed:
+        note = " (stale metadata)" if verdict.missing else ""
+        if force and not verdict.disposable:
+            note += f" — FORCED past: {'; '.join(verdict.blockers)}"
+        typer.echo(f"✓ {verb} {verdict.handle.branch}{note}")
+    for verdict in report.kept:
+        typer.echo(f"· kept {verdict.handle.branch} — {'; '.join(verdict.blockers)}")
+
+    kept_n = len(report.kept)
+    typer.echo(
+        f"\n{len(report.removed)} {verb}, {kept_n} kept (of {report.considered} considered)."
+    )
+    if kept_n and not force:
+        typer.echo("  Re-run with --force to remove the kept ones anyway.")
+
+
 @worktree_app.command(name="doctor")
 def worktree_doctor_cmd(
     remediate: Annotated[
