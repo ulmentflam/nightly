@@ -25,6 +25,11 @@ def test_host_id_literal_covers_supported_hosts() -> None:
         "opencode",
         "antigravity",
         "gemini",
+        # Recognized at the routing layer (model-tier config + `nightly
+        # init`'s model probe) but shipping no integration package yet —
+        # see the `HostId` docstring.
+        "pi",
+        "hermes",
     }
 
 

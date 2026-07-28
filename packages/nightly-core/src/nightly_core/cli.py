@@ -43,7 +43,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -62,6 +62,7 @@ from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config
 from nightly_core.contract import (
     HostId,
     InstallScope,
+    ModelTier,
     NightlyHostIntegration,
     SpecialistRole,
 )
@@ -110,6 +111,39 @@ app = typer.Typer(
 
 
 _DEFAULT_CONFIG_YML = DEFAULT_CONFIG_YML
+
+
+def _render_discovered_config() -> str:
+    """Render config.yml with model controls probed from the live harness.
+
+    RFC 007's tier table is only useful if the ids and the
+    model-selection flag match the harness the operator actually runs in.
+    Rather than ship a table that goes stale, `nightly init` asks each
+    installed host CLI what it accepts (`nightly_core.model_probe`) and
+    writes that down. Discovery only ever *adds* certainty: probe results
+    merge over the seeded defaults, and a pinned default outranks a
+    floating alias the help text happened to mention.
+
+    Any probe failure degrades to the seeded template — init must never
+    fail because a host CLI misbehaved.
+    """
+    from nightly_core.config import (  # noqa: PLC0415 - lazy
+        DEFAULT_TIER_MODELS,
+        render_config_yml,
+    )
+
+    try:
+        from nightly_core.model_probe import (  # noqa: PLC0415 - lazy
+            discover_tier_bindings,
+            merge_discovered_tiers,
+        )
+
+        discovered, flags = discover_tier_bindings()
+    except Exception:  # never let a probe break `init`
+        return DEFAULT_CONFIG_YML
+    if not discovered and not flags:
+        return DEFAULT_CONFIG_YML
+    return render_config_yml(merge_discovered_tiers(DEFAULT_TIER_MODELS, discovered), flags)
 
 
 _NIGHTLY_SUBDIRS: tuple[str, ...] = ("runs", "plans", "atlas", "memory", "prompts")
@@ -204,7 +238,7 @@ def _ensure_config(nightly: Path) -> bool:
     config = nightly / "config.yml"
     if config.exists():
         return False
-    config.write_text(_DEFAULT_CONFIG_YML, encoding="utf-8")
+    config.write_text(_render_discovered_config(), encoding="utf-8")
     return True
 
 
@@ -698,13 +732,41 @@ def specialist(
         SpecialistRole,
         typer.Argument(help="Specialist role: implementer | tester | reviewer | researcher."),
     ],
+    tier: Annotated[
+        str | None,
+        typer.Option(
+            "--tier",
+            help=(
+                "Model tier (lite | coding | reasoning). Appends the tier's "
+                "deliberation directive to the prompt. Omit to use the "
+                "role's default tier without the directive."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Print the system prompt for a specialist role.
 
     Inside Claude Code, the Nightly skill uses this to seed a Task-tool
     sub-agent with the right role-specific instructions.
+
+    With `--tier`, the tier's reasoning-effort directive is appended (RFC
+    007 Resolved #10/#11). The role instructions themselves don't change
+    between tiers — what changes is how much the sub-agent is told to
+    deliberate before acting.
     """
-    typer.echo(specialist_prompt(role), nl=False)
+    prompt = specialist_prompt(role)
+    if tier is not None:
+        from nightly_core.contract import MODEL_TIERS  # noqa: PLC0415 - lazy
+        from nightly_core.routing import effort_directive  # noqa: PLC0415 - lazy
+
+        if tier not in MODEL_TIERS:
+            typer.echo(f"unknown tier: {tier} (expected one of {', '.join(MODEL_TIERS)})", err=True)
+            raise typer.Exit(code=2)
+        from nightly_core.config import load_model_tier_config  # noqa: PLC0415 - lazy
+
+        cfg = load_model_tier_config(repo_root())
+        prompt = f"{prompt}\n{effort_directive(cfg.effort[cast('ModelTier', tier)])}\n"
+    typer.echo(prompt, nl=False)
 
 
 @app.command()
@@ -1518,6 +1580,24 @@ def worktree_doctor_cmd(
 # ── dispatch — background specialist sub-processes ────────────────────────
 
 
+def _plan_model_tier(slug: str, root: Path) -> ModelTier | None:
+    """Read `model_tier:` from the task's plan.md frontmatter, if present.
+
+    Returns None whenever the plan can't be located or declares nothing —
+    the dispatch then falls back to the specialist role's default tier,
+    which is the intended common case (RFC 007 Resolved #6).
+    """
+    from nightly_core.plans import list_plans  # noqa: PLC0415 - lazy
+
+    try:
+        for plan in list_plans(root=root):
+            if plan.slug == slug or plan.slug.endswith(f"-{slug}"):
+                return plan.model_tier
+    except Exception:  # a malformed plan must not block the dispatch
+        return None
+    return None
+
+
 @dispatch_app.command(name="start")
 def dispatch_start_cmd(
     slug: Annotated[
@@ -1571,11 +1651,27 @@ def dispatch_start_cmd(
     `nightly dispatch status` to poll, `nightly dispatch tail` to
     follow output, `nightly dispatch wait` to block.
     """
+    from nightly_core.config import load_model_tier_config  # noqa: PLC0415 - lazy
     from nightly_core.dispatch import start_background  # noqa: PLC0415 - lazy
+    from nightly_core.routing import (  # noqa: PLC0415 - lazy
+        effort_directive,
+        resolve_model_for_task,
+    )
     from nightly_core.specialists import specialist_prompt  # noqa: PLC0415 - lazy
 
     root = repo_root()
     body = prompt or _default_dispatch_prompt(role=role, slug=slug, specialist=specialist_prompt)
+
+    tier_cfg = load_model_tier_config(root)
+    resolved = resolve_model_for_task(
+        host=host,
+        role=role,
+        config=tier_cfg,
+        plan_tier=_plan_model_tier(slug, root),
+    )
+    if tier_cfg.enabled:
+        body = f"{body}\n{effort_directive(resolved.effort)}\n"
+
     try:
         result = start_background(
             slug,
@@ -1584,6 +1680,8 @@ def dispatch_start_cmd(
             prompt=body,
             root=root,
             cwd=cwd,
+            model=resolved.model,
+            model_flag=tier_cfg.flag_for(host),
         )
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
@@ -1595,6 +1693,9 @@ def dispatch_start_cmd(
     typer.echo(f"slug={result.slug}")
     typer.echo(f"role={result.role}")
     typer.echo(f"host={result.host}")
+    typer.echo(f"tier={resolved.tier}")
+    typer.echo(f"model={resolved.model or '<host default>'}")
+    typer.echo(f"effort={resolved.effort}")
 
 
 def _default_dispatch_prompt(

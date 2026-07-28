@@ -19,12 +19,28 @@ from pydantic import BaseModel
 
 from nightly_core.headless import HeadlessResult
 
-HostId = Literal["claude", "codex", "cursor", "opencode", "antigravity", "gemini"]
-"""The six supported interactive hosts.
+HostId = Literal[
+    "claude",
+    "codex",
+    "cursor",
+    "opencode",
+    "antigravity",
+    "gemini",
+    "pi",
+    "hermes",
+]
+"""The supported interactive hosts.
 
 `antigravity` and `gemini` both write under `.gemini/` — the former is the
 desktop IDE's managed-agent surface (`.gemini/antigravity/agents/`), the
-latter is vanilla Gemini CLI custom commands (`.gemini/commands/`)."""
+latter is vanilla Gemini CLI custom commands (`.gemini/commands/`).
+
+`pi` and `hermes` are recognized at the *routing* layer — `nightly init`
+probes them for model controls and tiers them like any other harness (see
+`nightly_core.model_probe`) — but they do not yet ship integration
+packages, so skill install and keep-alive hooks are unavailable for them.
+Listing them here is what lets the model-tier config address them at all;
+a host with no integration simply has no loader in `cli._HOST_LOADERS`."""
 
 SpecialistRole = Literal["implementer", "tester", "reviewer", "researcher"]
 """Roles dispatched as sub-agents through the host's native primitive."""

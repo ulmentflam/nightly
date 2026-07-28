@@ -107,12 +107,31 @@ class BackgroundDispatchResult:
 # ── per-host argv ────────────────────────────────────────────────────────
 
 
-def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> list[str] | None:  # noqa: PLR0911 - one return per host backend is the whole point
+def build_argv(  # noqa: PLR0911, PLR0912 - one branch per host backend is the whole point
+    host: HostId,
+    prompt: str,
+    *,
+    session_id: str | None = None,
+    model: str | None = None,
+    model_flag: str | None = None,
+) -> list[str] | None:
     """Build the headless argv for `host`. Returns None when the host
     has no usable headless backend yet (cursor, antigravity).
 
     Reuses the same flags each host's `run_headless` already invokes —
     see the integration packages for canonical references.
+
+    `model` is the RFC 007 tier-resolved model id and `model_flag` is the
+    option that carries it — discovered from the host CLI's own `--help`
+    by `nightly init` (see `nightly_core.model_probe`) and stored under
+    `model_tiers.<host>.flag`. Both must be present for the id to be
+    applied: Nightly emits a discovered flag, never a guessed one, because
+    a wrong flag is a hard spawn failure at 3am while an omitted one still
+    gets the work done on the host's default model. Tier intent still
+    reaches those hosts through the effort directive in the prompt.
+
+    Claude Code's `--model` is the one flag verified in-tree, so it is the
+    fallback when discovery produced nothing for that host.
     """
     if host == "claude":
         binary = shutil.which("claude")
@@ -127,6 +146,8 @@ def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> l
             "--permission-mode",
             "acceptEdits",
         ]
+        if model:
+            argv += [model_flag or "--model", model]
         if session_id:
             argv += ["--session-id", session_id]
         return argv
@@ -135,7 +156,7 @@ def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> l
         binary = shutil.which("codex")
         if binary is None:
             return None
-        return [
+        argv = [
             binary,
             "exec",
             "--json",
@@ -143,20 +164,28 @@ def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> l
             "workspace-write",
             "--ask-for-approval",
             "never",
-            prompt,
         ]
+        if model and model_flag:
+            argv += [model_flag, model]
+        return [*argv, prompt]
 
     if host == "opencode":
         binary = shutil.which("opencode")
         if binary is None:
             return None
-        return [binary, "run", prompt, "--format", "json"]
+        argv = [binary, "run", prompt, "--format", "json"]
+        if model and model_flag:
+            argv += [model_flag, model]
+        return argv
 
     if host == "gemini":
         binary = shutil.which("gemini")
         if binary is None:
             return None
-        return [binary, "--prompt", prompt]
+        argv = [binary, "--prompt", prompt]
+        if model and model_flag:
+            argv += [model_flag, model]
+        return argv
 
     # cursor + antigravity don't expose a usable headless CLI today.
     # Callers can fall back to the host's blocking primitive (Background
@@ -178,6 +207,8 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     cwd: Path | None = None,
     session_id: str | None = None,
     now: datetime | None = None,
+    model: str | None = None,
+    model_flag: str | None = None,
     popen_factory: object | None = None,
 ) -> BackgroundDispatchResult:
     """Spawn the host's headless CLI as a detached background process.
@@ -190,7 +221,7 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     `popen_factory` is injectable for tests — defaults to
     `subprocess.Popen`. Production callers leave it unset.
     """
-    argv = build_argv(host, prompt, session_id=session_id)
+    argv = build_argv(host, prompt, session_id=session_id, model=model, model_flag=model_flag)
     if argv is None:
         msg = (
             f"no background dispatch backend for host '{host}'. "

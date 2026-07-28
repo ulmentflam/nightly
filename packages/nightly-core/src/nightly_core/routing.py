@@ -30,9 +30,53 @@ __all__ = [
     "ContextThresholds",
     "ResolvedDispatch",
     "context_window_for",
+    "effort_directive",
     "resolve_context_thresholds",
     "resolve_model_for_task",
 ]
+
+
+_EFFORT_DIRECTIVES: dict[ReasoningEffort, str] = {
+    "low": (
+        "Work at LOW deliberation. Act rather than plan: make the edit, run "
+        "the check, move on. Consolidate tool calls, skip preamble, and do "
+        "not narrate routine actions or survey options you will not take. "
+        "`nightly verify` is the correctness gate — reach it quickly rather "
+        "than reasoning your way to certainty first."
+    ),
+    "medium": (
+        "Work at MEDIUM deliberation. Think through the approach once, then "
+        "execute. Keep preamble short and avoid exploratory detours."
+    ),
+    "high": (
+        "Work at HIGH deliberation. This task is intelligence-sensitive: "
+        "reason carefully before acting, and state the reasoning that "
+        "changes the outcome."
+    ),
+    "xhigh": (
+        "Work at VERY HIGH deliberation. You are the judgment step — "
+        "orchestration, validation, or merge adjudication. Nothing "
+        "downstream re-checks your conclusion, so verify claims against "
+        "evidence rather than plausibility, and say plainly what you could "
+        "not confirm."
+    ),
+    "max": (
+        "Work at MAXIMUM deliberation. Correctness dominates cost here: "
+        "exhaust the alternatives, verify every claim against evidence, and "
+        "flag anything you could not confirm."
+    ),
+}
+
+
+def effort_directive(effort: ReasoningEffort) -> str:
+    """Prompt text telling a dispatched agent how much to deliberate.
+
+    Injected into the dispatch prompt rather than passed as a CLI flag.
+    The flag surface differs per host and several hosts expose none, while
+    prompt text works everywhere and degrades to a harmless no-op on a
+    model that ignores it — see RFC 007 Resolved #11.
+    """
+    return _EFFORT_DIRECTIVES[effort]
 
 
 @dataclass(frozen=True)

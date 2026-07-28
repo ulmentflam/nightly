@@ -23,6 +23,7 @@ from nightly_core.contract import MODEL_TIERS, HostId, ModelTier, ReasoningEffor
 from nightly_core.paths import nightly_dir
 
 __all__ = [
+    "DEFAULT_CONFIG_YML",
     "DEFAULT_MODEL_CONTEXT_TOKENS",
     "DEFAULT_TIER_EFFORT",
     "DEFAULT_TIER_MODELS",
@@ -43,6 +44,7 @@ __all__ = [
     "load_parallelism_config",
     "load_vault_config",
     "load_worktree_config",
+    "render_config_yml",
 ]
 
 _log = logging.getLogger(__name__)
@@ -402,6 +404,17 @@ class ModelTierConfig:
     )
     """Per-tier reasoning effort, merged over `DEFAULT_TIER_EFFORT`."""
 
+    flags: dict[HostId, str] = field(default_factory=dict)
+    """Per-host model-selection flag, discovered by `nightly init` from the
+    host CLI's own `--help` (see `nightly_core.model_probe`). Absent means
+    "this host has no known model flag" — dispatch then runs on the host's
+    default model, with the tier still applied via the effort directive in
+    the prompt. Nightly never guesses a flag."""
+
+    def flag_for(self, host: HostId) -> str | None:
+        """The discovered model-selection flag for `host`, if any."""
+        return self.flags.get(host)
+
     def binding(self, host: HostId, tier: ModelTier) -> TierBinding:
         """Resolve `(model, effort)` for `host` at `tier`.
 
@@ -451,6 +464,8 @@ def _merge_tier_models(block: dict[str, Any], path: Path) -> dict[HostId, dict[M
         host = cast("HostId", raw_host)
         merged = dict(models.get(host, {}))
         for raw_tier, model_id in tiers.items():
+            if raw_tier == "flag":
+                continue  # handled by `_merge_tier_flags`
             if raw_tier not in MODEL_TIERS:
                 _log.warning("%s: unknown model tier %r under model_tiers.%s", path, raw_tier, host)
                 continue
@@ -459,6 +474,19 @@ def _merge_tier_models(block: dict[str, Any], path: Path) -> dict[HostId, dict[M
                 merged[cast("ModelTier", raw_tier)] = text
         models[host] = merged
     return models
+
+
+def _merge_tier_flags(block: dict[str, Any]) -> dict[HostId, str]:
+    """Collect per-host `flag:` entries written by `nightly init`'s probe."""
+    known_hosts = set(get_args(HostId))
+    flags: dict[HostId, str] = {}
+    for raw_host, tiers in block.items():
+        if raw_host not in known_hosts or not isinstance(tiers, dict):
+            continue
+        flag = str(tiers.get("flag", "")).strip()
+        if flag.startswith("-"):
+            flags[cast("HostId", raw_host)] = flag
+    return flags
 
 
 def load_model_tier_config(root: Path | None = None) -> ModelTierConfig:
@@ -489,6 +517,7 @@ def load_model_tier_config(root: Path | None = None) -> ModelTierConfig:
         enabled=bool(block.get("enabled", defaults.enabled)),
         models=_merge_tier_models(block, path),
         effort=_merge_tier_effort(block, path),
+        flags=_merge_tier_flags(block),
     )
 
 
@@ -784,7 +813,7 @@ def load_compact_config(root: Path | None = None) -> CompactConfig:
 
 # ── default config template ──────────────────────────────────────────────
 
-DEFAULT_CONFIG_YML = """\
+_CONFIG_YML_TEMPLATE = """\
 # .nightly/config.yml — written by `nightly init`. Edit as needed.
 # See `.nightly/config.yml.example` (if present) for the full schema, or
 # `.planning/brainstorm.html` §05 for the design rationale.
@@ -891,20 +920,7 @@ agents:
 # Hosts absent from this block (codex, gemini, antigravity) fall through
 # to the host CLI's own default model and log a friction note — wire your
 # own ids below to enable routing for them.
-model_tiers:
-  enabled: true
-  effort:
-    lite:      low
-    coding:    low
-    reasoning: xhigh
-  claude:
-    lite:      claude-haiku-4-5
-    coding:    claude-sonnet-5
-    reasoning: claude-opus-5
-  # codex:
-  #   lite:      <vendor model id>
-  #   coding:    <vendor model id>
-  #   reasoning: <vendor model id>
+__MODEL_TIERS_BLOCK__
 
 # parallelism caps how wide the fleet runs (RFC 012). Defaults lean wide:
 # background dispatch keeps the chat free, worktrees isolate the
@@ -960,12 +976,52 @@ compact:
   enabled:           true
   context_token_cap: 256000
 """
-"""Canonical `.nightly/config.yml` scaffold written by `nightly init`
-and by `nightly doctor --fix`.
 
-Lives here rather than in `cli.py` because both writers need it and
-`cli` imports `doctor`, not the reverse. Keeping two copies is what
-let the doctor template silently drift out of sync with init's — it
-had lost the `vault:` and `worktree:` blocks entirely, so a repo
-repaired by `doctor --fix` got a different config than a freshly
-initialized one."""
+
+def render_config_yml(
+    tier_models: dict[HostId, dict[ModelTier, str]] | None = None,
+    model_flags: dict[HostId, str] | None = None,
+) -> str:
+    """Render `.nightly/config.yml`, with the `model_tiers:` block filled in.
+
+    `nightly init` passes what `nightly_core.model_probe` discovered from
+    the harness that is running it, so the written config names the models
+    that harness actually offers and the model-selection flag it actually
+    accepts — rather than a table Nightly would have to keep current by
+    hand. With no arguments this renders the seeded defaults, which is
+    what `DEFAULT_CONFIG_YML` is.
+    """
+    models = tier_models if tier_models is not None else DEFAULT_TIER_MODELS
+    flags = model_flags or {}
+
+    lines = [
+        "model_tiers:",
+        "  enabled: true",
+        "  effort:",
+    ]
+    lines += [f"    {tier + ':':<11}{DEFAULT_TIER_EFFORT[tier]}" for tier in MODEL_TIERS]
+
+    for host in sorted(set(models) | set(flags)):
+        host_tiers = models.get(host, {})
+        if not host_tiers and host not in flags:
+            continue
+        lines.append(f"  {host}:")
+        if host in flags:
+            # Discovered from `<host> --help`; `build_argv` emits it verbatim.
+            lines.append(f"    {'flag:':<11}{flags[host]}")
+        lines += [
+            f"    {tier + ':':<11}{host_tiers[tier]}" for tier in MODEL_TIERS if tier in host_tiers
+        ]
+
+    if not any(models.values()) and not flags:
+        lines.append("  # no host CLI was detected on PATH at init time.")
+        lines.append("  # Re-run `nightly doctor` after installing one, or")
+        lines.append("  # add `<host>: {lite:, coding:, reasoning:}` by hand.")
+
+    return _CONFIG_YML_TEMPLATE.replace("__MODEL_TIERS_BLOCK__", "\n".join(lines))
+
+
+DEFAULT_CONFIG_YML = render_config_yml()
+"""Canonical `.nightly/config.yml` scaffold with seeded (undiscovered)
+model tiers. `nightly init` prefers `render_config_yml(...)` with probe
+results; this is the fallback and the shape tests pin."""
