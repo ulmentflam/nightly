@@ -2239,10 +2239,13 @@ def verify_cmd(
         ),
     ] = False,
     timeout: Annotated[
-        float,
+        float | None,
         typer.Option(
             "--timeout",
-            help="Per-check timeout in seconds. Default: 300.",
+            help=(
+                "Per-check timeout in seconds. Default: `verify.timeout_seconds` "
+                "from .nightly/config.yml (300 if unset)."
+            ),
         ),
     ] = 300.0,
 ) -> None:
@@ -2257,12 +2260,14 @@ def verify_cmd(
     Exits non-zero on any failed check or missing configured tool so
     the agent can branch on `$?` from the prompt.
     """
+    from nightly_core.config import load_verify_config  # noqa: PLC0415 - lazy
+
     root = repo_root()
     report = run_verify(
         root,
         dry_run=dry_run,
         only=only,
-        timeout_s=timeout,
+        timeout_s=timeout if timeout is not None else load_verify_config(root).timeout_seconds,
     )
     _print_verify_report(report, root=root)
     if report.failed or report.not_found:

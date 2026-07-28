@@ -35,6 +35,7 @@ __all__ = [
     "ParallelismConfig",
     "TierBinding",
     "VaultConfig",
+    "VerifyConfig",
     "WorktreeConfig",
     "load_agents_config",
     "load_compact_config",
@@ -43,6 +44,7 @@ __all__ = [
     "load_model_tier_config",
     "load_parallelism_config",
     "load_vault_config",
+    "load_verify_config",
     "load_worktree_config",
     "render_config_yml",
 ]
@@ -755,6 +757,49 @@ def load_context_config(root: Path | None = None) -> ContextConfig:
 
 
 @dataclass(frozen=True)
+class VerifyConfig:
+    """The `verify:` block of `.nightly/config.yml`."""
+
+    timeout_seconds: int = 300
+    """Per-check wall-clock cap for `nightly verify`.
+
+    300s suits a fast suite and is wrong for a slow one. Because
+    `nightly verify` gates every PR (rules block, rule 7), a check that
+    times out blocks work that was actually fine — the most annoying
+    possible failure, since re-running changes nothing. Projects whose
+    test target legitimately runs longer raise this once here rather than
+    passing `--timeout` on every invocation and remembering to thread it
+    through `nightly run`."""
+
+
+def load_verify_config(root: Path | None = None) -> VerifyConfig:
+    """Parse the `verify:` block from `<root>/.nightly/config.yml`.
+
+    A non-positive or non-numeric value degrades to the default rather
+    than disabling the cap — an accidental `0` should not mean "let a
+    hung check block the run forever"."""
+    defaults = VerifyConfig()
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return defaults
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return defaults
+    block = data.get("verify") if isinstance(data, dict) else None
+    if not isinstance(block, dict):
+        return defaults
+    try:
+        seconds = int(block.get("timeout_seconds", defaults.timeout_seconds))
+    except (TypeError, ValueError):
+        return defaults
+    return VerifyConfig(timeout_seconds=seconds if seconds > 0 else defaults.timeout_seconds)
+
+
+@dataclass(frozen=True)
 class CompactConfig:
     """Configuration for session compaction (RFC 006)."""
 
@@ -967,6 +1012,14 @@ context:
   handoff_hard_ratio: 0.50
   # model_context_tokens:
   #   <vendor model id>: 256000
+
+# verify governs `nightly verify`, the gate every PR must pass.
+# - `timeout_seconds` caps each individual check. Raise it when the
+#   repo's own test target legitimately runs longer than the default —
+#   a timeout here blocks work that was actually fine, and re-running
+#   changes nothing. `--timeout` overrides per invocation.
+verify:
+  timeout_seconds: 300
 
 # compact governs the session compaction triggers (RFC 006).
 # - `enabled` flips both triggers (boundary and threshold) on or off.
