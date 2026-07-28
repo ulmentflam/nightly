@@ -253,6 +253,45 @@ session over context size, and never refuse host compaction.**
    solution was the cap, which then created the new failure of
    ending sessions early. v0.0.3+ instead consolidates without
    capping.
+12. **Run the fleet wide and cheap; spend reasoning tokens only on
+   judgment.** Nightly routes each dispatch to a model sized for the
+   job (RFC 007) and caps how many run at once (RFC 012). Both are
+   enforced — `nightly dispatch start` refuses over-cap requests with
+   exit 3, and worktree creation refuses past `max_worktrees` — so the
+   contract here is about *using* the headroom, not respecting it.
+
+   - **Fan out to the cap by default.** When a task decomposes into
+     independent work (several files to read, several modules to
+     probe, several tests to write), dispatch those specialists in one
+     batch rather than serially. `nightly dispatch status` prints a
+     `capacity:` line showing live/cap per tier; if a tier has
+     headroom and the work is independent, use it. Serial dispatch
+     when parallel was available is the most common way an overnight
+     run wastes its night.
+   - **Let the tier default stand unless role and complexity
+     diverge.** implementer/tester are `coding`, reviewer is
+     `reasoning` (review *is* result validation, and nothing
+     downstream re-checks it), researcher is `lite` (file search and
+     summarization over code already on disk). Override with
+     `model_tier:` in the plan frontmatter only when the task's
+     complexity genuinely differs from its role — a one-line README
+     fix dispatched through implementer is `lite`; an architecture
+     audit dispatched through researcher is `reasoning`.
+   - **Never route around a full reasoning tier by downgrading.** If
+     the reasoning slots are busy, wait for one. Silently taking a
+     lite-tier review is how a bad diff reaches a PR with an LGTM
+     nobody should trust.
+   - **Hand off before you degrade.** Each agent gets a soft threshold
+     at 25% of its model's context window and a hard one at 50%
+     (`context.handoff_*_ratio`; ratios, so they scale with whatever
+     model the tier resolved to). At the soft threshold: finish the
+     task you are on, write a handoff summary naming the goals that
+     remain, and let a fresh agent resume with a clean context. At the
+     hard threshold: stop where you are and write the summary anyway —
+     past halfway, "just one more step" risks truncating a write,
+     which loses work rather than merely wasting tokens. The summary
+     carries goals and state, never a transcript; shedding the history
+     is the whole point.
 
 ### Human shutdown intervention
 

@@ -268,7 +268,8 @@ produces a handoff summary naming its unfinished goals.
       cut so a refused request leaves nothing behind. Both callers
       (`nightly worktree`, the headless driver) pass the configured cap;
       CLI exits 3, matching `dispatch start`.
-- [ ] B4. Six host skills: fan-out-to-cap guidance
+- [x] B4. Fan-out-to-cap guidance — same delivery as RFC 007 C1: rule 12
+      of the shared rules block, not six skill files.
 - [x] B5. Admission tests (`tests/test_admission.py`, 14 cases) —
       including the liveness rule: a dispatch whose PID is gone must not
       occupy a slot, or an unpolled crash wedges the fleet
@@ -277,4 +278,6 @@ produces a handoff summary naming its unfinished goals.
 - [ ] C1. Keepalive threshold comparison + prompt injection
 - [ ] C2. `handoff:` section in `digest.md`
 - [ ] C3. Briefing handoff counts
-- [ ] C4. Six host skills: two-threshold protocol text
+- [x] C4. Two-threshold protocol text — in rule 12. (C1–C3, the
+      keepalive enforcement, remain open: the doctrine is documented but
+      the hook does not yet compare against the thresholds.)

@@ -524,6 +524,11 @@ missing config; README updated.
       See `nightly_core.model_probe` and RFC 007 Resolved #12.
 
 **Phase C — Auto-tag heuristic + doctor + docs**
-- [ ] C1. Auto-tag scoping paragraph on six host skills
+- [x] C1. Tier-scoping guidance — delivered as **rule 12 of the shared
+      rules block** (`nightly_core.rules`) rather than six near-duplicate
+      skill files. `seed_rules` propagates one marker-delimited block to
+      every host's AGENTS.md / CLAUDE.md, so one edit reaches all seven
+      harnesses and cannot drift between them. B2 is satisfied by the
+      same change.
 - [ ] C2. Doctor flags missing `model_tiers` block
 - [ ] C3. README "Cost-aware dispatch" section
