@@ -405,3 +405,34 @@ def test_tier_of_model_has_no_opinion_on_unknown_ids() -> None:
     assert tier_of_model("claude-opus-5") == "reasoning"
     assert tier_of_model("claude-haiku-4-5") == "lite"
     assert tier_of_model("mystery-model-9") is None
+
+
+def test_partially_bound_host_is_reported_as_unbound(tmp_path: Path) -> None:
+    """A host bound for only one tier looks configured while the other two
+    silently fall through to the host CLI's default — the more dangerous
+    shape than an entirely empty map."""
+    from nightly_core.doctor import _check_model_tiers
+
+    _write_config(
+        tmp_path,
+        "hosts:\n  - codex\nmodel_tiers:\n  codex:\n    coding: some-vendor-model\n",
+    )
+    check = _check_model_tiers(tmp_path)
+    assert check.status == "warning"
+    assert "codex" in check.detail
+    assert "lite" in check.detail
+    assert "reasoning" in check.detail
+    # The bound tier must not be listed as missing.
+    assert "coding" not in check.detail.split("(")[1].split(")")[0]
+
+
+def test_ok_detail_covers_every_configured_host(tmp_path: Path) -> None:
+    """The detail used to sample only the first host, so a second host's
+    bindings were never shown."""
+    from nightly_core.doctor import _check_model_tiers
+
+    _write_config(tmp_path, "hosts:\n  - claude\n  - cursor\n")
+    check = _check_model_tiers(tmp_path)
+    assert check.status == "ok"
+    assert "claude:" in check.detail
+    assert "cursor:" in check.detail

@@ -271,12 +271,21 @@ def _check_model_tiers(root: Path) -> DoctorCheck:
         )
 
     hosts = _configured_hosts(root)
-    unbound = sorted(h for h in hosts if not cfg.models.get(h))
+    # A host is unbound if *any* tier is missing, not only if the whole map
+    # is. A partial map is the more dangerous shape: routing looks
+    # configured, and only the unbound tiers silently fall through to the
+    # host CLI's default model.
+    unbound: list[str] = []
+    for host in sorted(hosts):
+        missing = [tier for tier in MODEL_TIERS if not cfg.binding(host, tier).model]
+        if missing:
+            unbound.append(f"{host} ({', '.join(missing)})")
+
     if not unbound:
-        bound = ", ".join(
-            f"{tier}={cfg.binding(host, tier).model}"
-            for host in sorted(hosts)[:1]
-            for tier in MODEL_TIERS
+        bound = "; ".join(
+            f"{host}: "
+            + " ".join(f"{tier}={cfg.binding(host, tier).model}" for tier in MODEL_TIERS)
+            for host in sorted(hosts)
         )
         return DoctorCheck(
             name="model_tiers",
@@ -290,7 +299,7 @@ def _check_model_tiers(root: Path) -> DoctorCheck:
         status="warning",
         detail=(
             f"no tier→model binding for: {', '.join(unbound)} "
-            "(dispatches use the host CLI's default model)"
+            "(those tiers use the host CLI's default model)"
         ),
     )
 

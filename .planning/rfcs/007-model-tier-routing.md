@@ -65,9 +65,10 @@ task shape to choose a tier:
 
 - `nightly specialist implementer` — coding tier
 - `nightly specialist tester` — coding tier
-- `nightly specialist reviewer` — coding tier (could be lite for
-  trivial diffs; conservative default is coding)
-- `nightly specialist researcher` — reasoning tier
+- `nightly specialist reviewer` — reasoning tier (review *is* result
+  validation; nothing downstream re-checks it — see Resolved #4)
+- `nightly specialist researcher` — lite tier (file search and
+  summarization over code already on disk — see Resolved #4)
 - Plan body says "audit-only" / "doc-only" / "briefing-only" →
   lite tier
 - Plan frontmatter declares `model_tier: reasoning` → override
@@ -203,31 +204,29 @@ Sonnet 4.7 doesn't break the config; only the model id under
 pointing at concrete model ids:
 
 ```yaml
+# Shipped defaults — the only ids Nightly states authoritatively.
 model_tiers:
   claude:
     lite:       claude-haiku-4-5
-    coding:     claude-sonnet-4-6
-    reasoning:  claude-opus-4-7
-  codex:
-    lite:       gpt-5-mini
-    coding:     gpt-5
-    reasoning:  gpt-5-reasoning
-  cursor:
+    coding:     claude-sonnet-5
+    reasoning:  claude-opus-5
+  cursor:       # Anthropic-backed, same ids
     lite:       claude-haiku-4-5
-    coding:     claude-sonnet-4-6
-    reasoning:  claude-opus-4-7
-  gemini:
-    lite:       gemini-2.5-flash
-    coding:     gemini-2.5-pro
-    reasoning:  gemini-3.5-pro
-  antigravity:
-    lite:       gemini-2.5-flash
-    coding:     gemini-2.5-pro
-    reasoning:  gemini-3.5-pro
-  opencode:
+    coding:     claude-sonnet-5
+    reasoning:  claude-opus-5
+  opencode:     # Anthropic-backed, same ids
     lite:       claude-haiku-4-5
-    coding:     claude-sonnet-4-6
-    reasoning:  claude-opus-4-7
+    coding:     claude-sonnet-5
+    reasoning:  claude-opus-5
+
+# ILLUSTRATIVE ONLY — not shipped, and the ids below are placeholders.
+# `codex`, `gemini`, and `antigravity` resolve to no binding by default;
+# their dispatches fall through to the host CLI's own model. Wire real
+# ids yourself, or let `nightly init` discover them (Resolved #12).
+#  codex:
+#    lite:       <vendor model id>
+#    coding:     <vendor model id>
+#    reasoning:  <vendor model id>
 ```
 
 `nightly init` and `nightly doctor` write this default block.
