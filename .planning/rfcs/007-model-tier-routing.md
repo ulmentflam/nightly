@@ -5,9 +5,11 @@ title: Model-tier routing for cost-aware specialist dispatch
 created: 2026-06-04
 sized_on: 2026-06-04
 accepted_on: 2026-06-04
+amended_on: 2026-07-28
 author: nightly-seed
 source: interactive_seed
 estimated_effort: ~7h across 3 phases
+phase_a: implemented
 ---
 
 # RFC 007 — Model-tier routing for cost-aware specialist dispatch
@@ -38,11 +40,18 @@ For a complex multi-file refactor, Opus earns its rate.
 Three of Anthropic's currently shipping models bracket the cost /
 capability tradeoff cleanly:
 
-| Tier | Claude | OpenAI | Google | Notes |
-|------|--------|--------|--------|-------|
-| Lite | Haiku 4.5 | GPT-5-mini | Gemini 2.5 Flash | docs, formatting, narrative |
-| Coding | Sonnet 4.6 | GPT-5 | Gemini 2.5 Pro | implementer / tester / reviewer |
-| Reasoning | Opus 4.7 (1M) | GPT-5 Reasoning | Gemini 3.5 Pro | architecture, long refactors |
+| Tier | Claude | Notes |
+|------|--------|-------|
+| Lite | `claude-haiku-4-5` (200K ctx) | file search, summarization, docs, narrative |
+| Coding | `claude-sonnet-5` (1M ctx) | implementation + test authoring |
+| Reasoning | `claude-opus-5` (1M ctx) | orchestration, result validation, merge adjudication |
+
+*(Amended 2026-07-28. The original table listed Opus 4.7 / Sonnet 4.6 /
+Haiku 4.5 alongside speculative OpenAI and Google rows. Only the Claude
+column ships as a default: those are ids Nightly can state
+authoritatively. Other vendors' ids are operator-supplied — the schema
+accepts any string, and an unbound host falls through to its CLI's own
+default model rather than hard-failing on a guessed id.)*
 
 The tier mapping is host-specific because each provider's lineup is
 different — Claude has 1M-context variants that bump Opus into the
@@ -223,21 +232,41 @@ model_tiers:
 `nightly init` and `nightly doctor` write this default block.
 Operators override per-host without changing the schema.
 
-**4. Specialist defaults — table:** Existing `SpecialistRole`
-literal in `nightly_core.contract` gains a parallel `SPECIALIST_TIER_DEFAULTS:
-dict[SpecialistRole, ModelTier]` table:
+**4. Specialist defaults — table (AMENDED 2026-07-28):** Existing
+`SpecialistRole` literal in `nightly_core.contract` gains a parallel
+`SPECIALIST_TIER_DEFAULTS: dict[SpecialistRole, ModelTier]` table:
 
-| Role | Default tier |
-|------|--------------|
-| `implementer` | `coding` |
-| `tester` | `coding` |
-| `reviewer` | `coding` |
-| `researcher` | `reasoning` |
+| Role | Default tier | Why |
+|------|--------------|-----|
+| `implementer` | `coding` | output is gated by `nightly verify` |
+| `tester` | `coding` | same gate |
+| `reviewer` | `reasoning` | result validation — nothing downstream re-checks it |
+| `researcher` | `lite` | file search + summarization over code already on disk |
 
-Future roles add an entry to the table. The `coding` default for
-the three implementation-cycle roles preserves today's behavior:
-nothing routes to lite or reasoning automatically — the agent must
-opt in via plan frontmatter.
+The original draft paired role with *seniority*: reviewer sat at
+`coding` because it was "part of the implementation cycle," and
+researcher at `reasoning` because research sounded hard. Both were
+wrong, and for the same reason — the axis that matters is not how
+senior the role sounds, it is **how expensive it is to be wrong and
+not notice**.
+
+- The reviewer is the last judgment call before a diff becomes a PR.
+  A lite-tier mis-approval is caught by nothing: lint, types, and
+  tests all already passed by the time review runs, which is exactly
+  why review exists. Original Risk item "lite-tier reviewer
+  mis-approves a bad diff" identified this hazard and then mitigated
+  it with `coding` — half a step. `reasoning` is the whole step.
+- The researcher, despite the name, does file search and
+  summarization against a codebase already on disk. It is
+  high-volume reading and low-stakes synthesis: the role that
+  benefits *least* from deliberation and is cheapest to run wide.
+- Implementer and tester stay at `coding`. Their output passes
+  through `nightly verify` before it can reach a PR, so a cheap
+  model's mistakes surface mechanically rather than silently.
+
+Future roles add an entry to the table; `tier_for_role` falls back
+to `coding` for any role without one, so a new role degrades to
+today's behavior rather than silently routing to lite.
 
 **5. Plan frontmatter field: `model_tier`.** New constant
 `MODEL_TIER_KEY = "model_tier"` in `nightly_core.plans` alongside
@@ -288,6 +317,30 @@ doesn't change between tiers — same role-specific instructions —
 but the dispatch invocation that follows reads the tier for model
 selection.
 
+**11. Reasoning effort is a per-tier dial (ADDED 2026-07-28).** The
+`model_tiers:` block gains an `effort:` sub-map binding each tier to a
+reasoning-effort level:
+
+| Tier | Effort | Rationale |
+|------|--------|-----------|
+| `lite` | `low` | read and summarize; do not deliberate |
+| `coding` | `low` | write the files; `nightly verify` is the check |
+| `reasoning` | `xhigh` | the tier whose whole job is judgment |
+
+Model choice alone under-delivers on the cost goal. A fast model run
+at high effort spends its savings on preamble and exploratory tool
+calls — the exact behavior the lite and coding tiers are meant to
+avoid. Lower effort yields fewer, more-consolidated tool calls and
+less preamble, which is what "more writing, less thinking" means
+operationally.
+
+Effort is injected as prompt-preamble text rather than as a
+vendor-specific CLI flag. That is deliberate: the flag surface differs
+per host and some hosts have none, whereas prompt text works
+everywhere and degrades to a no-op on a model that ignores it. A
+future phase can upgrade specific hosts to a native flag without
+changing the config schema.
+
 ## Risks
 
 - **Tier mis-pick at the borderline.** Agent judgment will
@@ -316,11 +369,19 @@ selection.
   config block `model_tiers:` (not `models:`) to keep the noun
   composable with a `budget:` block later.
 
-- **Lite-tier reviewer mis-approves a bad diff.** A reviewer
-  dispatched on Haiku may LGTM a diff Opus would have rejected.
-  Mitigation: reviewer default is `coding`, not `lite` (Resolved
-  #4). The auto-tag rule (Resolved #7) doesn't apply to reviewer
-  outputs.
+- **Lite-tier reviewer mis-approves a bad diff.** *(Resolved by the
+  2026-07-28 amendment.)* A reviewer dispatched on a lite model may
+  LGTM a diff a reasoning model would have rejected, and nothing
+  downstream catches it. Mitigation is now structural: the reviewer
+  default is `reasoning` (Resolved #4), and the auto-tag rule
+  (Resolved #7) does not apply to reviewer dispatches.
+
+- **Reasoning-tier cost concentration.** Moving reviewer to
+  `reasoning` raises per-review cost. Mitigation: RFC 012's
+  `parallelism.per_tier.reasoning` cap (default 2) bounds how many
+  reasoning dispatches can run at once, so the wide fleet stays wide
+  in the cheap tiers and scarce in the expensive one. The tier
+  breakdown in the briefing (Resolved #8) surfaces the mix.
 
 - **`nightly verify` runs across all tiers.** The lint / type /
   test gates don't care which tier produced the code, but if a
@@ -402,14 +463,23 @@ missing config; README updated.
 
 ## Sized checklist
 
-**Phase A — Config schema + tier resolver**
-- [ ] A1. `ModelTier` literal in `nightly_core.contract`
-- [ ] A2. `MODEL_TIER_KEY` + `PlanRecord.model_tier` accessor
-- [ ] A3. `model_tiers:` default config block
-- [ ] A4. `load_model_tier_config` helper
-- [ ] A5. `SPECIALIST_TIER_DEFAULTS` table
-- [ ] A6. `resolve_model_for_task` helper
-- [ ] A7. Unit tests covering all resolution branches
+**Phase A — Config schema + tier resolver** — *implemented 2026-07-28*
+- [x] A1. `ModelTier` literal in `nightly_core.contract` (+ `MODEL_TIERS`
+      tuple and the `ReasoningEffort` literal from Resolved #11)
+- [x] A2. `MODEL_TIER_KEY` + `PlanRecord.model_tier` accessor
+- [x] A3. `model_tiers:` default config block — written to the single
+      consolidated `DEFAULT_CONFIG_YML` in `nightly_core.config`
+- [x] A4. `load_model_tier_config` helper (merge-over-defaults semantics)
+- [x] A5. `SPECIALIST_TIER_DEFAULTS` table + `tier_for_role`
+- [x] A6. `resolve_model_for_task` helper — lives in the new
+      `nightly_core.routing` module alongside the RFC 012 threshold
+      resolver, since both answer "what budget does this dispatch get?"
+- [x] A7. Unit tests covering all resolution branches
+      (`tests/test_routing.py`, 49 cases)
+- [x] A8. *(unplanned)* `nightly doctor` advisory check for hosts with no
+      tier binding — pulled forward from Phase C's C2 because the
+      reviewer-tier change makes a silently-inert routing config more
+      consequential than it was when C2 was scheduled.
 
 **Phase B — Dispatch integration**
 - [ ] B1. `nightly dispatch start` reads resolved model id

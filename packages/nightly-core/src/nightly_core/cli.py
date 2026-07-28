@@ -58,7 +58,7 @@ from nightly_core.bug import write_report as write_bug_report
 from nightly_core.cascade import next_task as cascade_next
 from nightly_core.cascade import pick_pr_rescue
 from nightly_core.ci_watch import PRCIStatus, list_ci_status
-from nightly_core.config import load_git_config
+from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config
 from nightly_core.contract import (
     HostId,
     InstallScope,
@@ -109,118 +109,7 @@ app = typer.Typer(
 )
 
 
-_DEFAULT_CONFIG_YML = """\
-# .nightly/config.yml — written by `nightly init`. Edit as needed.
-# See `.nightly/config.yml.example` (if present) for the full schema, or
-# `.planning/brainstorm.html` §05 for the design rationale.
-
-hosts:
-  - claude
-
-git:
-  base_branch:   main
-  branch_prefix: nightly/
-  wip_prefix:    nightly/wip-
-  protected:     [main, master, "release/*"]
-  # Where per-task worktrees are placed. Leave unset to nest them under a
-  # sibling `<repo>-nightly/` dir. Set an absolute/`~` path to keep trees off a
-  # synced filesystem — REQUIRED on macOS if this repo lives in iCloud Drive
-  # (~/Documents, ~/Desktop), where FileProvider silently corrupts git state.
-  # Nightly auto-relocates to ~/.cache/nightly/worktrees if it detects iCloud.
-  # worktree_root: ~/.cache/nightly/worktrees
-
-refuse:
-  destructive_git:        true
-  production_state:       true
-  external_communication: true
-  network_egress_unknown: true
-  scope_creep:            true
-  bypass_test_or_type:    true
-
-# pr_feedback governs the `pr_rescue` cascade step.
-# - `enabled` flips the whole feature off without removing the block.
-# - `review_bots` extends the default bot allowlist (CodeRabbit, Cursor BugBot,
-#   Copilot reviewer, Greptile, Amp, etc.) with project-specific accounts.
-# - `treat_bots_as_human` flips a bot login into the "human" bucket — useful
-#   for an internally-trusted automation that should outrank ordinary bots.
-pr_feedback:
-  enabled:              true
-  review_bots:          []
-  treat_bots_as_human:  []
-
-# vault governs the .nightly/vault/ knowledge graph (RFC 003).
-# - `enabled: false` skips the vault build step in `nightly brief`.
-# - `open_on_brief: true` pops the dashboard in a browser at brief time.
-vault:
-  enabled:       true
-  open_on_brief: false
-
-# worktree governs the readiness probe (RFC 002).
-# - `probe_enabled: false` skips the probe entirely.
-# - `remediate_enabled: false` surfaces remediable failures rather than
-#   auto-fixing via `uv sync` / `pre-commit install --install-hooks`.
-worktree:
-  probe_enabled:     true
-  remediate_enabled: true
-
-# ideate governs the proposer suite (RFC 009).
-# - `category_ordering: false` reverts the cascade to score-only ordering
-#   (pre-v0.0.6 behavior). With it on, cleaning proposals outrank
-#   capability proposals even at lower scores — "fix what's broken
-#   before inventing new things."
-# - `synthesis.enabled: false` disables the LLM-driven SynthesisProposer
-#   entirely; the three Phase-5 narrow proposers still run.
-# - `synthesis.timeout_seconds` caps the host CLI spawn wall-clock.
-# - `synthesis.max_proposals` caps total synthesis output so the morning
-#   briefing stays readable.
-ideate:
-  category_ordering: true
-  synthesis:
-    enabled:          true
-    timeout_seconds:  120
-    max_proposals:    25
-
-# agents governs how specialist sub-agents (implementer / tester /
-# reviewer / researcher) are dispatched in interactive sessions.
-# - `background_dispatch: true` (default, and the preferred setting for
-#   Claude Code / Codex / Cursor / Antigravity sessions) — specialists
-#   spawn as detached host processes via `nightly dispatch start <slug>
-#   --role <role>` so the operator's chat stays free for other work.
-#   Poll via `nightly dispatch status / tail / wait`.
-# - `background_dispatch: false` — fall back to the host's native
-#   Task-tool surface (blocking the calling chat until the sub-agent
-#   returns). Use only when you explicitly want to watch the
-#   specialist's progress in-band (debugging an unfamiliar host,
-#   eyeballing a long-running review).
-# `nightly run` headless ignores this preference — each task gets its
-# own host process by construction.
-agents:
-  background_dispatch: true
-
-# context governs the context-compaction feature (v0.0.12). Nothing can
-# programmatically trigger Claude Code's /compact, so Nightly instead makes
-# compaction lossless (a digest re-injected via the SessionStart hook) and
-# nudges the live session toward hygiene before it bloats.
-# - `budget_tokens` is a SOFT ceiling: when the keepalive hook estimates the
-#   session exceeds it, it prepends a "context diet" nudge to the continuation
-#   prompt (finish delicate work first, lean on the digest, background heavy
-#   work). 0 disables budget steering.
-# - `digest_every_turns` writes .nightly/runs/<id>/digest.md every N keepalive
-#   turns so the SessionStart(compact) hook re-injects fresh state. 0 disables
-#   the interval write (the digest is still written on every planning-phase
-#   reroute regardless).
-context:
-  budget_tokens:      256000
-  digest_every_turns: 1
-
-# compact governs the session compaction triggers (RFC 006).
-# - `enabled` flips both triggers (boundary and threshold) on or off.
-# - `context_token_cap` is the threshold (in tokens) at which the mid-loop
-#   trigger fires to compact the session context.
-compact:
-  enabled:           true
-  context_token_cap: 256000
-"""
+_DEFAULT_CONFIG_YML = DEFAULT_CONFIG_YML
 
 
 _NIGHTLY_SUBDIRS: tuple[str, ...] = ("runs", "plans", "atlas", "memory", "prompts")

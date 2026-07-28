@@ -50,12 +50,24 @@ from nightly_core.conclude_skill import (
     INIT_SKILL_MD,
     UPDATE_SKILL_MD,
 )
+from nightly_core.config import (
+    ContextConfig,
+    ModelTierConfig,
+    ParallelismConfig,
+    TierBinding,
+    load_context_config,
+    load_model_tier_config,
+    load_parallelism_config,
+)
 from nightly_core.contract import (
+    MODEL_TIERS,
     AuthStatus,
     HostId,
     InstallScope,
     KeepaliveSupport,
+    ModelTier,
     NightlyHostIntegration,
+    ReasoningEffort,
     SpecialistRole,
     SubAgentResult,
 )
@@ -84,6 +96,7 @@ from nightly_core.paths import (
     runs_dir,
 )
 from nightly_core.plans import (
+    MODEL_TIER_KEY,
     PLAN_STATUSES,
     PlanRecord,
     PlanStatus,
@@ -100,6 +113,12 @@ from nightly_core.proposers import (
     TypeHoleProposer,
     default_proposers,
 )
+from nightly_core.routing import (
+    ContextThresholds,
+    ResolvedDispatch,
+    resolve_context_thresholds,
+    resolve_model_for_task,
+)
 from nightly_core.runs import (
     Run,
     TaskDir,
@@ -111,7 +130,12 @@ from nightly_core.runs import (
     slugify,
     start_run,
 )
-from nightly_core.specialists import all_roles, specialist_prompt
+from nightly_core.specialists import (
+    SPECIALIST_TIER_DEFAULTS,
+    all_roles,
+    specialist_prompt,
+    tier_for_role,
+)
 from nightly_core.triage import (
     IssueFetcher,
     IssueRanking,
@@ -130,7 +154,10 @@ __all__ = [
     "CONCLUDE_SKILL_MD",
     "DEFAULT_BUG_REPO",
     "INIT_SKILL_MD",
+    "MODEL_TIERS",
+    "MODEL_TIER_KEY",
     "PLAN_STATUSES",
+    "SPECIALIST_TIER_DEFAULTS",
     "UPDATE_SKILL_MD",
     "AuthStatus",
     "BriefingContext",
@@ -138,6 +165,8 @@ __all__ = [
     "CICheck",
     "CascadeChoice",
     "CascadeSource",
+    "ContextConfig",
+    "ContextThresholds",
     "DoctorCheck",
     "DoctorReport",
     "DriverConfig",
@@ -149,19 +178,25 @@ __all__ = [
     "IssueRecord",
     "KeepaliveSupport",
     "LintDebtProposer",
+    "ModelTier",
+    "ModelTierConfig",
     "NightlyHostIntegration",
     "PRCIStatus",
+    "ParallelismConfig",
     "PlanRecord",
     "PlanStatus",
     "Proposal",
     "Proposer",
     "ProposerCategory",
+    "ReasoningEffort",
+    "ResolvedDispatch",
     "Run",
     "SpecialistRole",
     "SubAgentResult",
     "SubprocessRunner",
     "TaskDir",
     "TaskOutcome",
+    "TierBinding",
     "TodoFixmeProposer",
     "TypeHoleProposer",
     "VerifyCheck",
@@ -188,6 +223,9 @@ __all__ = [
     "list_ci_status",
     "list_plans",
     "list_runs",
+    "load_context_config",
+    "load_model_tier_config",
+    "load_parallelism_config",
     "new_run_id",
     "new_task",
     "next_task_index",
@@ -203,6 +241,8 @@ __all__ = [
     "read_plan",
     "render_briefing",
     "repo_root",
+    "resolve_context_thresholds",
+    "resolve_model_for_task",
     "run_dir",
     "run_loop",
     "run_one_task",
@@ -215,6 +255,7 @@ __all__ = [
     "specialist_prompt",
     "start_run",
     "submit_bug_report",
+    "tier_for_role",
     "top_auto_pr",
     "update_plan_status",
     "write_briefing",

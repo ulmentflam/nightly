@@ -36,10 +36,10 @@ import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, cast, get_args
 
-from nightly_core.config import load_git_config
-from nightly_core.contract import HostId, InstallScope, NightlyHostIntegration
+from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config
+from nightly_core.contract import MODEL_TIERS, HostId, InstallScope, NightlyHostIntegration
 from nightly_core.paths import nightly_dir
 from nightly_core.rules import seed_rules
 from nightly_core.worktree import is_icloud_path
@@ -57,77 +57,7 @@ __all__ = [
 DEFAULT_NIGHTLY_SUBDIRS: tuple[str, ...] = ("runs", "plans", "atlas", "memory", "prompts")
 
 
-_DEFAULT_CONFIG_YML = """\
-# .nightly/config.yml — written by `nightly init`. Edit as needed.
-# See `.nightly/config.yml.example` (if present) for the full schema, or
-# `.planning/brainstorm.html` §05 for the design rationale.
-
-hosts:
-  - claude
-
-git:
-  base_branch:   main
-  branch_prefix: nightly/
-  wip_prefix:    nightly/wip-
-  protected:     [main, master, "release/*"]
-  # Where per-task worktrees are placed. Leave unset to nest them under a
-  # sibling `<repo>-nightly/` dir. Set an absolute/`~` path to keep trees off a
-  # synced filesystem — REQUIRED on macOS if this repo lives in iCloud Drive
-  # (~/Documents, ~/Desktop), where FileProvider silently corrupts git state.
-  # Nightly auto-relocates to ~/.cache/nightly/worktrees if it detects iCloud.
-  # worktree_root: ~/.cache/nightly/worktrees
-
-refuse:
-  destructive_git:        true
-  production_state:       true
-  external_communication: true
-  network_egress_unknown: true
-  scope_creep:            true
-  bypass_test_or_type:    true
-
-# pr_feedback governs the `pr_rescue` cascade step (Phase 9).
-# - `enabled` flips the whole feature off without removing the block.
-# - `review_bots` extends the default bot allowlist (CodeRabbit, Cursor BugBot,
-#   Copilot reviewer, Greptile, Amp, etc.) with project-specific accounts.
-# - `treat_bots_as_human` flips a bot login into the "human" bucket — useful
-#   for an internally-trusted automation that should outrank ordinary bots.
-pr_feedback:
-  enabled:              true
-  review_bots:          []
-  treat_bots_as_human:  []
-
-# ideate governs the proposer suite (RFC 009).
-# - `category_ordering: false` reverts to score-only ordering.
-# - `synthesis.enabled: false` disables the LLM-driven proposer.
-ideate:
-  category_ordering: true
-  synthesis:
-    enabled:          true
-    timeout_seconds:  120
-    max_proposals:    25
-
-# agents governs interactive specialist dispatch.
-# - `background_dispatch: true` (default) — `nightly dispatch start`
-#   spawns specialists as detached host processes so the operator's
-#   chat stays free.
-# - `background_dispatch: false` — fall back to the host's Task tool,
-#   which blocks the calling chat until the sub-agent returns.
-agents:
-  background_dispatch: true
-
-# context governs the context-compaction feature (v0.0.12).
-context:
-  budget_tokens:      256000
-  digest_every_turns: 1
-
-# compact governs the session compaction triggers (RFC 006).
-# - `enabled` flips both triggers (boundary and threshold) on or off.
-# - `context_token_cap` is the threshold (in tokens) at which the mid-loop
-#   trigger fires to compact the session context.
-compact:
-  enabled:           true
-  context_token_cap: 256000
-"""
+_DEFAULT_CONFIG_YML = DEFAULT_CONFIG_YML
 
 
 CheckStatus = Literal["ok", "repaired", "missing", "skipped", "error", "warning"]
@@ -226,6 +156,73 @@ def _check_config(root: Path, *, dry_run: bool) -> DoctorCheck:
         description=".nightly/config.yml",
         status="repaired",
         detail="wrote default config",
+    )
+
+
+def _configured_hosts(root: Path) -> tuple[HostId, ...]:
+    """Host ids listed under `hosts:` in `.nightly/config.yml`.
+
+    Falls back to `("claude",)` — the default `nightly init` writes — when
+    the file is missing, malformed, or lists nothing recognizable. Unknown
+    ids are dropped silently here; `_check_host` is the surface that
+    reports on host validity.
+    """
+    import yaml  # noqa: PLC0415 - lazy, doctor is not on a hot path
+
+    try:
+        data = yaml.safe_load((nightly_dir(root) / "config.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return ("claude",)
+    raw = data.get("hosts") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return ("claude",)
+    known = set(get_args(HostId))
+    hosts = tuple(h for h in (str(x).strip() for x in raw) if h in known)
+    return cast("tuple[HostId, ...]", hosts) or ("claude",)
+
+
+def _check_model_tiers(root: Path) -> DoctorCheck:
+    """Warn when the installed hosts have no `model_tiers:` binding — RFC 007.
+
+    Advisory, never repaired. A config predating RFC 007 still works: every
+    dispatch falls through to the host CLI's own default model, exactly as
+    before. But it also means tier routing is silently inert, which is
+    worth saying out loud rather than letting the operator assume their
+    `lite` researcher is actually running on a lite model.
+    """
+    from nightly_core.config import load_model_tier_config  # noqa: PLC0415
+
+    cfg = load_model_tier_config(root)
+    if not cfg.enabled:
+        return DoctorCheck(
+            name="model_tiers",
+            description="model-tier routing",
+            status="skipped",
+            detail="disabled via model_tiers.enabled: false",
+        )
+
+    hosts = _configured_hosts(root)
+    unbound = sorted(h for h in hosts if not cfg.models.get(h))
+    if not unbound:
+        bound = ", ".join(
+            f"{tier}={cfg.binding(host, tier).model}"
+            for host in sorted(hosts)[:1]
+            for tier in MODEL_TIERS
+        )
+        return DoctorCheck(
+            name="model_tiers",
+            description="model-tier routing",
+            status="ok",
+            detail=bound,
+        )
+    return DoctorCheck(
+        name="model_tiers",
+        description="model-tier routing",
+        status="warning",
+        detail=(
+            f"no tier→model binding for: {', '.join(unbound)} "
+            "(dispatches use the host CLI's default model)"
+        ),
     )
 
 
@@ -586,6 +583,7 @@ def diagnose_and_repair(
     checks: list[DoctorCheck] = []
     checks.append(_check_nightly_scaffold(root, dry_run=dry_run))
     checks.append(_check_config(root, dry_run=dry_run))
+    checks.append(_check_model_tiers(root))
     checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))
     checks.append(_check_synthesis_prompt())
