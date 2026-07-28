@@ -56,6 +56,7 @@ from nightly_core.paths import repo_root
 __all__ = [
     "DEFAULT_LOG_FILENAME",
     "DEFAULT_STATE_FILENAME",
+    "HEADLESS_HOSTS",
     "BackgroundDispatchResult",
     "DispatchStatus",
     "active_dispatches",
@@ -66,6 +67,7 @@ __all__ = [
     "read_dispatch_state",
     "start_background",
     "tier_utilization",
+    "unsupported_host_message",
     "wait_for",
     "write_dispatch_state",
 ]
@@ -75,6 +77,16 @@ DEFAULT_STATE_FILENAME = "dispatch.json"
 DEFAULT_LOG_FILENAME = "dispatch.log"
 
 DispatchStatus = Literal["running", "completed", "failed", "unknown"]
+
+HEADLESS_HOSTS: tuple[HostId, ...] = ("claude", "codex", "opencode", "gemini")
+"""Hosts `build_argv` knows how to spawn headlessly.
+
+The single source of truth for "can this host be backgrounded". It used
+to be restated in prose inside the failure message, and the two drifted
+the moment `pi` and `hermes` joined `HostId` — the message enumerated
+every host *except* the one the operator had asked about. Deriving the
+message from this tuple makes that class of drift impossible rather than
+merely fixed."""
 
 # Module-local factory alias for the default Popen. Tests can monkeypatch
 # THIS without affecting global `subprocess.Popen` (which click + typer
@@ -197,11 +209,50 @@ def build_argv(  # noqa: PLR0911, PLR0912 - one branch per host backend is the w
             argv += [model_flag, model]
         return argv
 
-    # cursor + antigravity don't expose a usable headless CLI today.
-    # Callers can fall back to the host's blocking primitive (Background
-    # Agent / Agent Manager registration) or to claude/codex if those
-    # binaries are also on PATH.
+    # Every other host — cursor, antigravity, pi, hermes — exposes no
+    # usable headless CLI today. Callers fall back to the host's own
+    # blocking primitive, or to a host from `HEADLESS_HOSTS` whose binary
+    # is on PATH. See `unsupported_host_message` for the operator-facing
+    # explanation.
     return None
+
+
+def unsupported_host_message(host: HostId) -> str:
+    """Explain why `host` cannot be dispatched to, and what to do instead.
+
+    Distinguishes the two failures the old message conflated:
+
+    - **No headless CLI.** The host has no non-interactive entry point at
+      all. Nothing the operator installs will change that; the fix is to
+      use the host's own primitive or pick another host.
+    - **Binary not on PATH.** The host is supported; its CLI just isn't
+      installed or isn't visible from here. That is a five-second fix,
+      and the old message never said so — asking for `claude` on a box
+      without it produced the same wall of text as asking for `cursor`.
+    """
+    if host not in HEADLESS_HOSTS:
+        supported = ", ".join(HEADLESS_HOSTS)
+        return (
+            f"host '{host}' has no headless CLI, so it cannot run a background "
+            f"dispatch. Use its own sub-agent primitive instead, or dispatch to "
+            f"one of: {supported}."
+        )
+
+    # Exclude the failing host: recommending the binary that just failed
+    # to resolve is worse than saying nothing.
+    available = [h for h in HEADLESS_HOSTS if h != host and shutil.which(h)]
+    if available:
+        return (
+            f"host '{host}' supports background dispatch but its `{host}` binary "
+            f"is not on PATH. Install it, or use --host with one of the "
+            f"binaries you do have: {', '.join(available)}."
+        )
+    others = ", ".join(h for h in HEADLESS_HOSTS if h != host)
+    return (
+        f"host '{host}' supports background dispatch but its `{host}` binary is "
+        f"not on PATH — and no other dispatchable host's binary is either. "
+        f"Install `{host}`, or one of: {others}."
+    )
 
 
 # ── spawn ────────────────────────────────────────────────────────────────
@@ -234,14 +285,7 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     """
     argv = build_argv(host, prompt, session_id=session_id, model=model, model_flag=model_flag)
     if argv is None:
-        msg = (
-            f"no background dispatch backend for host '{host}'. "
-            "claude/codex/opencode/gemini are supported when their binaries "
-            "are on PATH; cursor/antigravity have no headless CLI today — "
-            "use the host's native primitive (Background Agent / Agent "
-            "Manager) for those."
-        )
-        raise RuntimeError(msg)
+        raise RuntimeError(unsupported_host_message(host))
 
     repo = (root or repo_root()).resolve()
     work_cwd = (cwd or repo).resolve()

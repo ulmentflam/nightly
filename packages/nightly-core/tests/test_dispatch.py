@@ -6,13 +6,16 @@ import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from typer.testing import CliRunner
 
 from nightly_core import dispatch
 from nightly_core.cli import app
+from nightly_core.contract import HostId
 from nightly_core.dispatch import (
+    HEADLESS_HOSTS,
     BackgroundDispatchResult,
     build_argv,
     is_alive,
@@ -21,6 +24,7 @@ from nightly_core.dispatch import (
     refresh,
     start_background,
     supported_hosts,
+    unsupported_host_message,
     write_dispatch_state,
 )
 from nightly_core.runs import new_task, start_run
@@ -180,7 +184,7 @@ def test_start_background_raises_for_unsupported_host(
     repo, slug = repo_with_task
     # cursor has no headless backend; build_argv returns None.
     monkeypatch.setattr(dispatch.shutil, "which", lambda _: "/anywhere")
-    with pytest.raises(RuntimeError, match="no background dispatch backend"):
+    with pytest.raises(RuntimeError, match="no headless CLI"):
         start_background(
             slug,
             role="implementer",
@@ -522,3 +526,72 @@ def test_dispatch_state_file_lives_under_task_dir(
     payload = json.loads((task_dir / "dispatch.json").read_text(encoding="utf-8"))
     assert payload["slug"] == slug
     assert payload["status"] == "running"
+
+
+# ── host-support errors (derived, not restated) ───────────────────────────
+
+
+def test_headless_hosts_matches_what_build_argv_actually_supports(monkeypatch) -> None:
+    """The tuple is the single source of truth — prove it isn't a lie.
+
+    A host in `HEADLESS_HOSTS` must produce argv when its binary exists;
+    a host outside it must not, whatever is on PATH.
+    """
+    from nightly_core import dispatch as d
+
+    monkeypatch.setattr(d.shutil, "which", lambda name: f"/usr/local/bin/{name}")
+    for host in get_args(HostId):
+        argv = d.build_argv(host, "prompt")
+        assert (argv is not None) == (host in d.HEADLESS_HOSTS), host
+
+
+def test_no_cli_host_message_names_the_host_asked_for() -> None:
+    """The old message enumerated every host except the one requested."""
+    msg = unsupported_host_message("pi")
+    assert "'pi'" in msg
+    assert "no headless CLI" in msg
+
+
+def test_no_cli_host_message_lists_the_alternatives() -> None:
+    msg = unsupported_host_message("cursor")
+    for host in HEADLESS_HOSTS:
+        assert host in msg
+
+
+def test_missing_binary_is_distinguished_from_no_cli(monkeypatch) -> None:
+    """Two different failures needing two different fixes; the old message
+    gave the same wall of text for both."""
+    from nightly_core import dispatch as d
+
+    monkeypatch.setattr(d.shutil, "which", lambda _name: None)
+    supported = unsupported_host_message("claude")
+    unsupported = unsupported_host_message("cursor")
+    assert "not on PATH" in supported
+    assert "not on PATH" not in unsupported
+    assert "no headless CLI" in unsupported
+
+
+def test_suggestions_never_include_the_failing_host(monkeypatch) -> None:
+    """Recommending the binary that just failed is worse than silence."""
+    from nightly_core import dispatch as d
+
+    monkeypatch.setattr(d.shutil, "which", lambda name: None if name == "codex" else f"/bin/{name}")
+    msg = unsupported_host_message("codex")
+    suggestions = msg.split("binaries you do have:")[1]
+    assert "codex" not in suggestions
+
+
+def test_message_when_nothing_dispatchable_is_installed(monkeypatch) -> None:
+    from nightly_core import dispatch as d
+
+    monkeypatch.setattr(d.shutil, "which", lambda _name: None)
+    msg = unsupported_host_message("claude")
+    assert "no other dispatchable host" in msg
+
+
+def test_start_background_raises_the_derived_message(monkeypatch, tmp_path: Path) -> None:
+    from nightly_core import dispatch as d
+
+    monkeypatch.setattr(d.shutil, "which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="no headless CLI"):
+        d.start_background("slug", role="implementer", host="pi", prompt="p", root=tmp_path)
