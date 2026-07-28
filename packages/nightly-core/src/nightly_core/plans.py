@@ -25,10 +25,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from nightly_core.contract import MODEL_TIERS, ModelTier
 from nightly_core.paths import runs_dir
 
 __all__ = [
     "DEPENDS_ON_PR_KEY",
+    "MODEL_TIER_KEY",
     "PLAN_STATUSES",
     "PROPOSER_FINGERPRINT_KEY",
     "PR_LAST_RECONCILED_KEY",
@@ -67,6 +69,17 @@ forces branch-from-`main`. See RFC 004 for the prevention-by-default
 semantics; bias is toward false negatives (omitted declarations →
 conflicts surface at CI) over false positives (spurious declarations →
 stacked PRs the operator must review)."""
+
+MODEL_TIER_KEY = "model_tier"
+"""Frontmatter key overriding the specialist role's default model tier —
+RFC 007. Accepts `lite`, `coding`, or `reasoning`; anything else (or an
+absent key) resolves to None, meaning "use the role default" from
+`nightly_core.specialists.SPECIALIST_TIER_DEFAULTS`.
+
+The agent sets this at scoping time, the same way it sets
+`depends_on_pr` — markdown-only deliverables get `lite`, multi-file
+refactors and architecture changes get `reasoning`, everything else
+relies on the role default."""
 
 
 PlanStatus = Literal[
@@ -158,6 +171,18 @@ class PlanRecord:
         except ValueError:
             return None
         return number if number > 0 else None
+
+    @property
+    def model_tier(self) -> ModelTier | None:
+        """The plan's declared model tier, or None to use the role default.
+
+        Malformed values (a typo'd tier name, a stray integer) return None
+        rather than raising — same forgiving posture as `depends_on_pr`.
+        Falling back to the specialist default is always safe; crashing the
+        cascade over a frontmatter typo is not.
+        """
+        raw = self.metadata.get(MODEL_TIER_KEY, "").strip().lower()
+        return raw if raw in MODEL_TIERS else None  # type: ignore[return-value]
 
 
 # ── frontmatter parsing ───────────────────────────────────────────────────

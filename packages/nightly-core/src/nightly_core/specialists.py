@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from typing import get_args
 
-from nightly_core.contract import SpecialistRole
+from nightly_core.contract import ModelTier, SpecialistRole
 
-__all__ = ["all_roles", "specialist_prompt"]
+__all__ = ["SPECIALIST_TIER_DEFAULTS", "all_roles", "specialist_prompt", "tier_for_role"]
 
 
 _IMPLEMENTER = """\
@@ -116,9 +116,54 @@ _PROMPTS: dict[SpecialistRole, str] = {
 }
 
 
+SPECIALIST_TIER_DEFAULTS: dict[SpecialistRole, ModelTier] = {
+    "implementer": "coding",
+    "tester": "coding",
+    "reviewer": "reasoning",
+    "researcher": "lite",
+}
+"""Default model tier per specialist role — RFC 007 Resolved #4.
+
+The mapping follows one principle: **spend reasoning tokens where a wrong
+answer is expensive to detect, and spend fast tokens everywhere else.**
+
+- `implementer` / `tester` → `coding`. These roles turn a settled plan
+  into files. They are the fan-out of the fleet, and their output is
+  checked by `nightly verify` (lint + type + test) before it can reach a
+  PR — so a cheap model's mistakes get caught mechanically. Run them wide
+  and at low effort.
+- `reviewer` → `reasoning`. Review *is* result validation: the reviewer
+  is the last judgment call before a diff becomes a PR, and a missed bug
+  here costs far more than the token delta. This is the one place where a
+  lite-tier mis-approval is not caught by anything downstream.
+- `researcher` → `lite`. Despite the name, this role does file search and
+  summarization over a codebase that is already on disk — high-volume
+  reading, low-stakes synthesis. It is the cheapest role to run wide and
+  the one that benefits least from deliberation.
+
+Plan frontmatter (`model_tier:`) overrides any of these per task; see
+`nightly_core.routing.resolve_model_for_task` for the resolution order.
+
+Note this inverts the reviewer/researcher assignment sketched in RFC
+007's original draft, which paired role with *seniority* rather than with
+*cost-of-being-wrong*. See RFC 007 Resolved #4 for the reconciliation.
+"""
+
+
 def specialist_prompt(role: SpecialistRole) -> str:
     """Return the system prompt for `role`."""
     return _PROMPTS[role]
+
+
+def tier_for_role(role: SpecialistRole) -> ModelTier:
+    """Return the default model tier for `role`.
+
+    Unknown roles fall back to `coding` — the conservative middle tier.
+    A future role added to `SpecialistRole` without a matching entry in
+    `SPECIALIST_TIER_DEFAULTS` therefore degrades to "same as today"
+    rather than silently routing to lite.
+    """
+    return SPECIALIST_TIER_DEFAULTS.get(role, "coding")
 
 
 def all_roles() -> list[SpecialistRole]:

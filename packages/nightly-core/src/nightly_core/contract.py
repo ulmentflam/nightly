@@ -29,6 +29,34 @@ latter is vanilla Gemini CLI custom commands (`.gemini/commands/`)."""
 SpecialistRole = Literal["implementer", "tester", "reviewer", "researcher"]
 """Roles dispatched as sub-agents through the host's native primitive."""
 
+ModelTier = Literal["lite", "coding", "reasoning"]
+"""Task-complexity bands used to route a dispatch to a concrete model — RFC 007.
+
+Named after the *task*, not the vendor, so the abstraction survives model
+churn: when a vendor ships a new coding model, only the `model_tiers:`
+entry in `.nightly/config.yml` changes.
+
+- `lite`: file search, summarization, docs, narrative. High fan-out, low
+  deliberation — these agents should be reading and writing, not planning.
+- `coding`: implementation and test authoring. The bulk of the fleet.
+- `reasoning`: orchestration, result validation, and merge adjudication.
+  Deliberately scarce — see `ParallelismConfig.per_tier`.
+"""
+
+MODEL_TIERS: tuple[ModelTier, ...] = ("lite", "coding", "reasoning")
+"""The three tiers in ascending capability order. Iteration order is
+stable so config templates, briefing breakdowns, and doctor output all
+list tiers the same way."""
+
+ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
+"""How much deliberation a dispatch should spend before acting — RFC 007.
+
+Paired with `ModelTier` in the `model_tiers:` config block. Lower effort
+means fewer, more-consolidated tool calls and less preamble, which is
+exactly what the `lite` and `coding` tiers want: those agents earn their
+keep by writing files, not by thinking about writing files.
+"""
+
 InstallScope = Literal["project", "user"]
 """Where to install the host launcher — repo-local or user-global."""
 
