@@ -531,4 +531,9 @@ missing config; README updated.
       harnesses and cannot drift between them. B2 is satisfied by the
       same change.
 - [ ] C2. Doctor flags missing `model_tiers` block
-- [ ] C3. README "Cost-aware dispatch" section
+- [x] C3. README "Cost-aware dispatch" section — plus a "Context
+      handoff" section, the `parallelism:` enforcement note, and the
+      previously-undocumented `nightly dispatch` command family in the
+      CLI reference. Backed by `tests/test_readme_claims.py`, which pins
+      the tier/effort/ratio tables against the code so prose and
+      behavior cannot drift apart.
