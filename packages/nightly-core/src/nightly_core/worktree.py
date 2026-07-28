@@ -24,12 +24,16 @@ from pathlib import Path
 
 __all__ = [
     "GitRunner",
+    "PruneReport",
+    "PruneVerdict",
     "WorktreeCapReached",
     "WorktreeHandle",
+    "assess_worktree",
     "create_worktree",
     "default_git_runner",
     "is_icloud_path",
     "list_worktrees",
+    "prune_worktrees",
     "remove_worktree",
 ]
 
@@ -460,3 +464,160 @@ async def remove_worktree(
             shutil.rmtree(handle.path, ignore_errors=True)
     if delete_branch:
         await run(["branch", "-D", handle.branch], root)
+
+
+# ── pruning ───────────────────────────────────────────────────────────────
+#
+# `create_worktree` had no counterpart. Nightly made a worktree per task and
+# never removed one, so a long-lived repo accumulated them silently — five
+# stale checkouts at ~93MB each were found in one repo, the oldest two months
+# old, every one of them fully merged. `remove_worktree` above exists, but it
+# is a driver primitive: it forces, and it deletes the branch with `-D`. That
+# is the right shape for a driver that already knows the task is finished and
+# the wrong shape for an operator cleaning up by hand.
+#
+# So the safety judgement lives here, separately from the removal, and the
+# rule is that a worktree is disposable only when losing it cannot lose work:
+# clean tree, and no commits the base branch does not already have.
+
+
+@dataclass(frozen=True)
+class PruneVerdict:
+    """Whether one worktree can be removed without losing anything."""
+
+    handle: WorktreeHandle
+
+    blockers: tuple[str, ...]
+    """Human-readable reasons this worktree must be kept. Empty means safe."""
+
+    missing: bool = False
+    """The recorded path is gone — only stale git metadata remains."""
+
+    @property
+    def disposable(self) -> bool:
+        return not self.blockers
+
+
+@dataclass(frozen=True)
+class PruneReport:
+    """The outcome of a prune sweep."""
+
+    removed: tuple[PruneVerdict, ...] = ()
+    kept: tuple[PruneVerdict, ...] = ()
+    dry_run: bool = False
+
+    @property
+    def considered(self) -> int:
+        return len(self.removed) + len(self.kept)
+
+
+async def _git_text(run: GitRunner, args: Sequence[str], cwd: Path | None) -> tuple[str, int]:
+    stdout, _stderr, code = await run(args, cwd)
+    return stdout.decode("utf-8", errors="replace").strip(), code
+
+
+async def assess_worktree(
+    handle: WorktreeHandle,
+    *,
+    root: Path,
+    base_branch: str = "main",
+    current: Path | None = None,
+    runner: GitRunner | None = None,
+) -> PruneVerdict:
+    """Decide whether `handle` can be removed without losing work.
+
+    Every blocker is phrased as what would be lost, because that is the
+    question the operator is actually asking. A worktree is kept when any
+    check cannot be *proved* safe — a git invocation that fails is a
+    blocker, not a shrug, since "I could not tell" and "nothing to lose"
+    must never collapse into the same answer.
+    """
+    run = runner or default_git_runner
+    blockers: list[str] = []
+
+    # Standing in it. `git worktree remove` refuses this anyway, but saying
+    # so plainly beats surfacing git's error.
+    here = (current or Path.cwd()).resolve()
+    with contextlib.suppress(OSError):
+        if handle.path.resolve() == here:
+            blockers.append("this is the current worktree")
+
+    if not handle.path.exists():
+        # Nothing on disk to lose; the metadata is the only thing left.
+        return PruneVerdict(handle=handle, blockers=tuple(blockers), missing=True)
+
+    status, code = await _git_text(run, ["status", "--porcelain"], handle.path)
+    if code != 0:
+        blockers.append("could not read working-tree status")
+    elif status:
+        n = len(status.splitlines())
+        blockers.append(f"{n} uncommitted change(s)")
+
+    # Commits the base branch does not have. This is the check that decides
+    # most cases, and the one worth being strict about: `rev-list` failing
+    # (unknown base, detached HEAD, corrupt ref) must read as "keep".
+    counted, code = await _git_text(
+        run, ["rev-list", "--count", f"{base_branch}..{handle.branch}"], root
+    )
+    if code != 0 or not counted.isdigit():
+        blockers.append(f"could not compare `{handle.branch}` against `{base_branch}`")
+    elif int(counted) > 0:
+        blockers.append(f"{counted} commit(s) not in `{base_branch}`")
+
+    return PruneVerdict(handle=handle, blockers=tuple(blockers))
+
+
+async def prune_worktrees(  # noqa: PLR0913 - mirrors create_worktree's dimensions
+    root: Path,
+    *,
+    base_branch: str = "main",
+    branch_prefix: str = DEFAULT_BRANCH_PREFIX,
+    force: bool = False,
+    delete_branch: bool = True,
+    dry_run: bool = False,
+    current: Path | None = None,
+    runner: GitRunner | None = None,
+) -> PruneReport:
+    """Remove every Nightly-owned worktree that has nothing left to lose.
+
+    `force` removes blocked worktrees too — with one exception that `force`
+    does not override: the worktree the caller is standing in. That is not
+    caution, it is that removing it cannot work.
+
+    `delete_branch` defaults to True here, unlike `remove_worktree`. A
+    branch whose every commit is already in `base_branch` is exactly the
+    residue this command exists to clear; leaving it behind would trade
+    stale worktrees for stale branches. Under `force` the branch of a
+    worktree with unmerged commits is deliberately **kept**, so the commits
+    stay reachable.
+    """
+    run = runner or default_git_runner
+    handles = await list_worktrees(root, branch_prefix=branch_prefix, runner=run)
+
+    removed: list[PruneVerdict] = []
+    kept: list[PruneVerdict] = []
+    for handle in handles:
+        verdict = await assess_worktree(
+            handle, root=root, base_branch=base_branch, current=current, runner=run
+        )
+        standing_in_it = "this is the current worktree" in verdict.blockers
+        if not (verdict.disposable or force) or standing_in_it:
+            kept.append(verdict)
+            continue
+        if not dry_run:
+            await remove_worktree(
+                handle,
+                root=root,
+                # Under force, a branch carrying unmerged commits keeps its
+                # branch — the worktree is disposable, the history is not.
+                delete_branch=delete_branch and verdict.disposable,
+                runner=run,
+            )
+        removed.append(verdict)
+
+    if removed and not dry_run:
+        # Clear metadata for anything removed out from under git.
+        with contextlib.suppress(Exception):
+            await run(["worktree", "prune"], root)
+
+    return PruneReport(removed=tuple(removed), kept=tuple(kept), dry_run=dry_run)
