@@ -1480,6 +1480,9 @@ def worktree_create(
         typer.echo(f"worktree_root={worktree_root_cfg or '(auto)'}")
         return
 
+    from nightly_core.config import load_parallelism_config  # noqa: PLC0415 - lazy
+    from nightly_core.worktree import WorktreeCapReached  # noqa: PLC0415 - lazy
+
     try:
         handle = asyncio.run(
             create_worktree(
@@ -1488,8 +1491,14 @@ def worktree_create(
                 base_branch=base_branch,
                 branch_prefix=branch_prefix,
                 worktree_root=worktree_root_cfg,
+                max_worktrees=load_parallelism_config(root).max_worktrees,
             )
         )
+    except WorktreeCapReached as exc:
+        # Exit 3 matches `dispatch start`'s at-capacity code: both mean
+        # "wait for a slot", not "something broke".
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=3) from None
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(code=1) from None

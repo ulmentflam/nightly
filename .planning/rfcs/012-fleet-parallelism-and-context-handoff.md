@@ -262,7 +262,12 @@ produces a handoff summary naming its unfinished goals.
       now persists its tier so counting doesn't re-resolve the plan.
 - [x] B2. `dispatch status` shows a `capacity:` line (live/cap per tier
       plus the global total)
-- [ ] B3. Worktree creation honors `max_worktrees`
+- [x] B3. Worktree creation honors `max_worktrees` — raises the typed
+      `WorktreeCapReached` (not a bare RuntimeError, so "at capacity" is
+      distinguishable from "git failed"), checked before the branch is
+      cut so a refused request leaves nothing behind. Both callers
+      (`nightly worktree`, the headless driver) pass the configured cap;
+      CLI exits 3, matching `dispatch start`.
 - [ ] B4. Six host skills: fan-out-to-cap guidance
 - [x] B5. Admission tests (`tests/test_admission.py`, 14 cases) —
       including the liveness rule: a dispatch whose PID is gone must not

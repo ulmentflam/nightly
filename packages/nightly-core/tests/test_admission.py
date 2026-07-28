@@ -172,3 +172,69 @@ def test_dead_dispatches_do_not_occupy_a_slot(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(dispatch_mod, "list_dispatches", lambda _root=None: [stale, stale])
     monkeypatch.setattr(dispatch_mod, "is_alive", lambda _pid: False)
     assert dispatch_mod.active_dispatches() == []
+
+
+# ── worktree cap (RFC 012 B3) ─────────────────────────────────────────────
+
+
+async def _fake_git(handles: int):
+    """Git runner whose `worktree list --porcelain` reports `handles`
+    Nightly-owned worktrees, and whose `worktree add` always succeeds."""
+    lines = []
+    for i in range(handles):
+        lines += [f"worktree /tmp/wt-{i}", f"branch refs/heads/nightly/task-{i}", ""]
+    porcelain = "\n".join(lines).encode()
+
+    async def run(args, _root):
+        if args[:2] == ["worktree", "list"]:
+            return porcelain, b"", 0
+        return b"", b"", 0
+
+    return run
+
+
+@pytest.mark.asyncio
+async def test_worktree_creation_blocked_at_cap(tmp_path: Path) -> None:
+    from nightly_core.worktree import WorktreeCapReached, create_worktree
+
+    with pytest.raises(WorktreeCapReached) as excinfo:
+        await create_worktree(tmp_path, "new-task", runner=await _fake_git(8), max_worktrees=8)
+    assert excinfo.value.live == 8
+    assert excinfo.value.cap == 8
+    assert "max_worktrees" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_worktree_creation_allowed_below_cap(tmp_path: Path) -> None:
+    from nightly_core.worktree import create_worktree
+
+    handle = await create_worktree(tmp_path, "new-task", runner=await _fake_git(3), max_worktrees=8)
+    assert handle.branch.startswith("nightly/new-task")
+
+
+@pytest.mark.asyncio
+async def test_zero_max_worktrees_is_unlimited(tmp_path: Path) -> None:
+    from nightly_core.worktree import create_worktree
+
+    handle = await create_worktree(
+        tmp_path, "new-task", runner=await _fake_git(99), max_worktrees=0
+    )
+    assert handle.branch.startswith("nightly/new-task")
+
+
+@pytest.mark.asyncio
+async def test_cap_is_checked_before_the_branch_is_cut(tmp_path: Path) -> None:
+    """A refused request must leave nothing behind — no branch, no dir."""
+    from nightly_core.worktree import WorktreeCapReached, create_worktree
+
+    calls: list[list[str]] = []
+    inner = await _fake_git(8)
+
+    async def run(args, root):
+        calls.append(list(args))
+        return await inner(args, root)
+
+    with pytest.raises(WorktreeCapReached):
+        await create_worktree(tmp_path, "new-task", runner=run, max_worktrees=8)
+
+    assert not any(a[:2] == ["worktree", "add"] for a in calls)
