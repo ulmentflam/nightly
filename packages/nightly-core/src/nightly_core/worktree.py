@@ -493,6 +493,18 @@ class PruneVerdict:
     missing: bool = False
     """The recorded path is gone — only stale git metadata remains."""
 
+    notes: tuple[str, ...] = ()
+    """Why a check passed, when it passed on weaker evidence than usual."""
+
+    branch_is_spent: bool = False
+    """Every commit on the branch is demonstrably in the base branch.
+
+    Distinct from `disposable`, which only governs the *directory*. A
+    squash-merged branch is disposable but not spent: its commits are in
+    the base branch by content while remaining unreachable from it by
+    ancestry, so deleting the ref would strand them.
+    """
+
     @property
     def disposable(self) -> bool:
         return not self.blockers
@@ -556,15 +568,54 @@ async def assess_worktree(
     # Commits the base branch does not have. This is the check that decides
     # most cases, and the one worth being strict about: `rev-list` failing
     # (unknown base, detached HEAD, corrupt ref) must read as "keep".
+    notes: list[str] = []
+    spent = False
     counted, code = await _git_text(
         run, ["rev-list", "--count", f"{base_branch}..{handle.branch}"], root
     )
     if code != 0 or not counted.isdigit():
         blockers.append(f"could not compare `{handle.branch}` against `{base_branch}`")
-    elif int(counted) > 0:
+    elif int(counted) == 0:
+        spent = True
+    elif await _upstream_was_deleted(run, handle.branch, root):
+        # Ancestry says unmerged; the forge says otherwise. A squash merge
+        # lands the branch's content on the base as one *new* commit, so
+        # the originals are never ancestors of it — under a strict ancestry
+        # check every squash-merged worktree looks like unfinished work and
+        # is kept forever, which is the accumulation this command exists to
+        # stop. A branch that was pushed and then had its remote ref
+        # deleted has been through a PR, so the directory is spent.
+        #
+        # Deliberately weaker than the ancestry check, and treated as such:
+        # this clears the *worktree* only. The branch is not `spent`, so
+        # the ref survives and the commits stay reachable. If the PR was
+        # closed rather than merged, nothing is lost but disk.
+        notes.append(f"{counted} commit(s) not in `{base_branch}`, but its remote branch")
+        notes.append("was deleted (merged PR) — removing the worktree, keeping the branch")
+    else:
         blockers.append(f"{counted} commit(s) not in `{base_branch}`")
 
-    return PruneVerdict(handle=handle, blockers=tuple(blockers))
+    return PruneVerdict(
+        handle=handle,
+        blockers=tuple(blockers),
+        notes=tuple(notes),
+        branch_is_spent=spent,
+    )
+
+
+async def _upstream_was_deleted(run: GitRunner, branch: str, root: Path) -> bool:
+    """True when `branch` tracked a remote ref that no longer exists.
+
+    `%(upstream:track)` renders `[gone]` for exactly that state. A branch
+    that never had an upstream renders empty, which is *not* evidence of
+    anything — it has simply never left the machine.
+    """
+    tracked, code = await _git_text(
+        run,
+        ["for-each-ref", "--format=%(upstream:track)", f"refs/heads/{branch}"],
+        root,
+    )
+    return code == 0 and tracked.strip() == "[gone]"
 
 
 async def prune_worktrees(  # noqa: PLR0913 - mirrors create_worktree's dimensions
@@ -587,9 +638,15 @@ async def prune_worktrees(  # noqa: PLR0913 - mirrors create_worktree's dimensio
     `delete_branch` defaults to True here, unlike `remove_worktree`. A
     branch whose every commit is already in `base_branch` is exactly the
     residue this command exists to clear; leaving it behind would trade
-    stale worktrees for stale branches. Under `force` the branch of a
-    worktree with unmerged commits is deliberately **kept**, so the commits
-    stay reachable.
+    stale worktrees for stale branches.
+
+    But it applies only to branches that are *spent* — every commit
+    reachable from the base branch. A worktree can be disposable while its
+    branch is not: a squash-merged branch is cleared for removal on the
+    strength of its deleted remote ref, which is weaker evidence than
+    ancestry, so its ref survives and its commits stay reachable. Same
+    under `force` for a branch with genuinely unmerged commits. The
+    directory is what this command reclaims; history is never the cost.
     """
     run = runner or default_git_runner
     handles = await list_worktrees(root, branch_prefix=branch_prefix, runner=run)
@@ -608,9 +665,10 @@ async def prune_worktrees(  # noqa: PLR0913 - mirrors create_worktree's dimensio
             await remove_worktree(
                 handle,
                 root=root,
-                # Under force, a branch carrying unmerged commits keeps its
-                # branch — the worktree is disposable, the history is not.
-                delete_branch=delete_branch and verdict.disposable,
+                # Only a branch proved spent by ancestry is deleted. The
+                # worktree being disposable is not enough — see the
+                # docstring; the directory is the thing being reclaimed.
+                delete_branch=delete_branch and verdict.branch_is_spent,
                 runner=run,
             )
         removed.append(verdict)

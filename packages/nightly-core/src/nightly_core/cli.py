@@ -1692,6 +1692,8 @@ def worktree_prune_cmd(
         note = " (stale metadata)" if verdict.missing else ""
         if force and not verdict.disposable:
             note += f" — FORCED past: {'; '.join(verdict.blockers)}"
+        elif verdict.notes:
+            note += f" — {' '.join(verdict.notes)}"
         typer.echo(f"✓ {verb} {verdict.handle.branch}{note}")
     for verdict in report.kept:
         typer.echo(f"· kept {verdict.handle.branch} — {'; '.join(verdict.blockers)}")
