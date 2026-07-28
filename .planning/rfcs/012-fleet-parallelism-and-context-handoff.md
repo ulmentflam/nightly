@@ -9,6 +9,8 @@ author: operator
 source: interactive_seed
 estimated_effort: ~5h across 3 phases
 phase_a: implemented
+phase_b: implemented
+phase_c: partial (C1)
 ---
 
 # RFC 012 — Fleet parallelism and context-handoff protocol
@@ -274,8 +276,13 @@ produces a handoff summary naming its unfinished goals.
       including the liveness rule: a dispatch whose PID is gone must not
       occupy a slot, or an unpolled crash wedges the fleet
 
-**Phase C — Handoff protocol**
-- [ ] C1. Keepalive threshold comparison + prompt injection
+**Phase C — Handoff protocol** — *C1 landed 2026-07-28*
+- [x] C1. Keepalive threshold comparison + prompt injection — a three-rung
+      ladder (hard handoff > soft handoff > the v0.0.12 diet nudge). The
+      handoff block *replaces* the diet block rather than stacking; two
+      competing directives in one prompt is how an agent follows neither.
+      Session thresholds resolve against the reasoning tier's model, per
+      Resolved #8 and rule 12.
 - [ ] C2. `handoff:` section in `digest.md`
 - [ ] C3. Briefing handoff counts
 - [x] C4. Two-threshold protocol text — in rule 12. (C1–C3, the
