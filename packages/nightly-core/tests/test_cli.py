@@ -673,7 +673,7 @@ def test_status_shows_compact_line(repo: Path) -> None:
     # 1. Default (enabled, 256K)
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
-    assert "compact:   enabled=enabled (threshold cap 256K)" in result.output
+    assert "compact:   enabled (threshold cap 256K)" in result.output
 
     # 2. Disabled or custom cap
     cfg_file = repo / ".nightly" / "config.yml"
@@ -682,7 +682,7 @@ def test_status_shows_compact_line(repo: Path) -> None:
     )
     result2 = runner.invoke(app, ["status"])
     assert result2.exit_code == 0
-    assert "compact:   enabled=disabled (threshold cap 128K)" in result2.output
+    assert "compact:   disabled (threshold cap 128K)" in result2.output
 
 
 # ── Phase 3 commands ──────────────────────────────────────────────────────
@@ -1371,3 +1371,74 @@ def test_worktree_create_dry_run_honors_config_worktree_root(repo: Path, tmp_pat
     assert result.exit_code == 0, result.output
     assert str(custom_root) in result.output
     assert f"worktree_root={custom_root}" in result.output
+
+
+# ── status: routing + fleet surfaces ──────────────────────────────────────
+
+
+def _init_repo(tmp_path: Path, runner_: CliRunner, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    runner_.invoke(app, ["init", "--host", "claude"])
+
+
+def test_status_compact_line_is_not_doubled(tmp_path: Path, monkeypatch) -> None:
+    """It used to read `enabled=enabled` — and `enabled=disabled`."""
+    _init_repo(tmp_path, runner, monkeypatch)
+    out = runner.invoke(app, ["status"]).output
+    assert "enabled=enabled" not in out
+    assert "enabled=disabled" not in out
+    assert "compact:" in out
+
+
+def test_status_shows_the_tier_bindings(tmp_path: Path, monkeypatch) -> None:
+    """An operator shouldn't have to open config.yml to learn which model
+    their own run will use."""
+    _init_repo(tmp_path, runner, monkeypatch)
+    out = runner.invoke(app, ["status"]).output
+    assert "tiers:" in out
+    for tier in ("lite", "coding", "reasoning"):
+        assert tier in out
+
+
+def test_status_shows_fleet_caps(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path, runner, monkeypatch)
+    out = runner.invoke(app, ["status"]).output
+    assert "fleet:" in out
+    assert "worktrees=" in out
+
+
+def test_status_shows_handoff_thresholds(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path, runner, monkeypatch)
+    out = runner.invoke(app, ["status"]).output
+    assert "handoff:" in out
+    assert "soft=" in out
+    assert "hard=" in out
+
+
+def test_status_reports_disabled_tier_routing(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path, runner, monkeypatch)
+    cfg = tmp_path / ".nightly" / "config.yml"
+    cfg.write_text("model_tiers:\n  enabled: false\n", encoding="utf-8")
+    out = runner.invoke(app, ["status"]).output
+    assert "tiers:     disabled" in out
+
+
+def test_status_marks_unlimited_caps_legibly(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path, runner, monkeypatch)
+    cfg = tmp_path / ".nightly" / "config.yml"
+    cfg.write_text(
+        "parallelism:\n  max_concurrent_specialists: 0\n  max_worktrees: 0\n"
+        "  per_tier:\n    lite: 0\n    coding: 0\n    reasoning: 0\n",
+        encoding="utf-8",
+    )
+    out = runner.invoke(app, ["status"]).output
+    assert "∞" in out
+
+
+def test_status_survives_a_broken_config(tmp_path: Path, monkeypatch) -> None:
+    """`status` is a diagnostic — it must still render when config is bad."""
+    _init_repo(tmp_path, runner, monkeypatch)
+    (tmp_path / ".nightly" / "config.yml").write_text("model_tiers: [oops\n", encoding="utf-8")
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0
+    assert "tiers:" in result.output

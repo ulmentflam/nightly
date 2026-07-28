@@ -113,6 +113,73 @@ app = typer.Typer(
 _DEFAULT_CONFIG_YML = DEFAULT_CONFIG_YML
 
 
+def _echo_routing_status(root: Path) -> None:
+    """Print the model-tier and fleet-cap lines of `nightly status`.
+
+    These blocks decide which model every dispatch runs on and how wide
+    the fleet goes, and until now `status` showed neither — an operator
+    had to open `.nightly/config.yml` to learn what their own run would
+    do. `status` is where config gets eyeballed; anything that changes
+    behavior this much belongs in it.
+    """
+    from nightly_core.config import (  # noqa: PLC0415 - lazy
+        load_model_tier_config,
+        load_parallelism_config,
+    )
+    from nightly_core.contract import MODEL_TIERS  # noqa: PLC0415 - lazy
+    from nightly_core.routing import resolve_context_thresholds  # noqa: PLC0415 - lazy
+
+    tier_cfg = load_model_tier_config(root)
+    if not tier_cfg.enabled:
+        typer.echo("  tiers:     disabled (every dispatch uses the host default model)")
+    else:
+        host = _primary_host(root)
+        cells = []
+        for tier in MODEL_TIERS:
+            binding = tier_cfg.binding(host, tier)
+            cells.append(f"{tier}={binding.model or '<host default>'}")
+        flag = tier_cfg.flag_for(host)
+        suffix = f" via {flag}" if flag else " (no model flag discovered)"
+        typer.echo(f"  tiers:     [{host}] {'  '.join(cells)}{suffix}")
+
+    par = load_parallelism_config(root)
+    caps = "  ".join(f"{tier}={par.limit_for(tier) or '∞'}" for tier in MODEL_TIERS)
+    typer.echo(
+        f"  fleet:     {caps}  (worktrees={par.max_worktrees or '∞'}, "
+        f"total={par.max_concurrent_specialists or '∞'})"
+    )
+
+    from nightly_core.config import load_context_config  # noqa: PLC0415 - lazy
+
+    ctx = load_context_config(root)
+    model = tier_cfg.binding(_primary_host(root), "reasoning").model if tier_cfg.enabled else None
+    th = resolve_context_thresholds(model, ctx)
+    if th.soft_tokens or th.hard_tokens:
+        typer.echo(
+            f"  handoff:   soft={round(th.soft_tokens / 1000)}K "
+            f"hard={round(th.hard_tokens / 1000)}K "
+            f"(of a {round(th.window_tokens / 1000)}K window)"
+        )
+
+
+def _primary_host(root: Path) -> HostId:
+    """The host `status` reports tier bindings for.
+
+    Prefers the harness actually running the command, so the numbers
+    shown are the ones that will apply; falls back to the first
+    configured host, then `claude`.
+    """
+    from nightly_core.model_probe import detect_harness  # noqa: PLC0415 - lazy
+
+    harness = detect_harness()
+    if harness is not None:
+        return harness
+    from nightly_core.doctor import _configured_hosts  # noqa: PLC0415 - lazy
+
+    hosts = _configured_hosts(root)
+    return hosts[0] if hosts else "claude"
+
+
 def _render_discovered_config() -> str:
     """Render config.yml with model controls probed from the live harness.
 
@@ -465,9 +532,14 @@ def status() -> None:
 
     compact_cfg = load_compact_config(root)
     compact_state = "enabled" if compact_cfg.enabled else "disabled"
+    # `enabled={state}` rendered as "enabled=enabled" — and, worse,
+    # "enabled=disabled". The state word already carries the meaning.
     typer.echo(
-        f"  compact:   enabled={compact_state} (threshold cap {round(compact_cfg.context_token_cap / 1000)}K)"
+        f"  compact:   {compact_state} "
+        f"(threshold cap {round(compact_cfg.context_token_cap / 1000)}K)"
     )
+
+    _echo_routing_status(root)
 
     typer.echo("  runs:")
     run = current_run(root)
