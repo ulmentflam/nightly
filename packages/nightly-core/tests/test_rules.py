@@ -267,3 +267,39 @@ def test_rule_12_is_inside_the_seeded_block() -> None:
     assert rendered.startswith(MARKER_START)
     assert rendered.rstrip().endswith(MARKER_END)
     assert "Run the fleet wide and cheap" in rendered
+
+
+# ── rule 13: pre-flight verification (RFC 008 A5) ─────────────────────────
+
+
+def test_verifier_doctrine_is_in_the_rules_body() -> None:
+    from nightly_core.specialists import RFC_008_VERIFIER_PARAGRAPH
+
+    first_line = RFC_008_VERIFIER_PARAGRAPH.splitlines()[0]
+    assert first_line in NIGHTLY_RULES_BODY
+
+
+def test_verifier_states_the_unchecked_box_fallacy() -> None:
+    """The whole premise: unchecked means unticked, not undone."""
+    assert 'means "nobody ticked it", not "nobody did' in NIGHTLY_RULES_BODY
+
+
+def test_verifier_gives_the_reconciliation_commit_format() -> None:
+    """Without a format, agents write freeform messages and the audit
+    trail for auto-ticks becomes ungreppable."""
+    assert "docs(rfc-NNN): tick" in NIGHTLY_RULES_BODY
+    assert "already implemented in" in NIGHTLY_RULES_BODY
+
+
+def test_verifier_names_all_three_checks() -> None:
+    body = NIGHTLY_RULES_BODY
+    assert "grep" in body
+    assert "nightly/*` branch" in body
+    assert "open PR" in body
+
+
+def test_verifier_lands_inside_the_seeded_markers() -> None:
+    """Outside the markers it propagates to no host at all."""
+    rendered = _render_block()
+    assert "Pre-flight verification" in rendered
+    assert rendered.startswith(MARKER_START)

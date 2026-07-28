@@ -476,6 +476,16 @@ def _items_done_on_local_branches(rfc_path: Path, root: Path | None) -> set[str]
 def _is_item_in_flight(rfc_filename: str, item_text: str, pr_texts: list[tuple[str, str]]) -> bool:
     """Is this RFC item likely addressed by an open Nightly PR?
 
+    One of three guards against re-doing finished work, and the only one
+    that runs in the cascade walker. The other two are
+    `_items_done_on_local_branches` (committed but unmerged) and RFC
+    008's agent-side pre-flight verification
+    (`specialists.RFC_008_VERIFIER_PARAGRAPH`), which catches the case
+    neither can see: an item implemented under a different name, or one
+    whose checklist was simply never reconciled. They compose — this
+    skips what is *in flight*, the branch guard skips what is *done
+    locally*, and the verifier catches what is done and unrecorded.
+
     Two heuristics, biased toward false negatives (we'd rather re-pick
     an in-flight item than silently skip one that isn't addressed):
     - PR title or body contains the RFC filename (sans `.md`)

@@ -529,7 +529,10 @@ missing config; README updated.
 **Phase B — Dispatch integration** — *core landed 2026-07-28; B2/B3 open*
 - [x] B1. `nightly dispatch start` reads resolved model id and passes it
       with the **discovered** model flag (see B6)
-- [ ] B2. Task-tool fallback documented across six host skill.md
+- [x] B2. Task-tool fallback documented — delivered as rule 12 of the
+      shared rules block alongside C1, not six skill files. *(Ticked
+      2026-07-28 by RFC 008's own doctrine: implemented in `173a7e8`,
+      checklist never reconciled.)*
 - [x] B3. Briefing tier-breakdown line — a `dispatches by tier` panel
       rendered from each task's `dispatch.json`. Reads the run's task
       dirs directly rather than via `list_dispatches`, which resolves the
@@ -551,7 +554,10 @@ missing config; README updated.
       every host's AGENTS.md / CLAUDE.md, so one edit reaches all seven
       harnesses and cannot drift between them. B2 is satisfied by the
       same change.
-- [ ] C2. Doctor flags missing `model_tiers` block
+- [x] C2. Doctor flags missing `model_tiers` block — shipped early as
+      `_check_model_tiers` in `9b23ef1`. *(Ticked 2026-07-28; recorded
+      there as "A8, pulled forward from C2" but the C2 box was left
+      unchecked — exactly the drift RFC 008 exists to catch.)*
 - [x] C3. README "Cost-aware dispatch" section — plus a "Context
       handoff" section, the `parallelism:` enforcement note, and the
       previously-undocumented `nightly dispatch` command family in the
