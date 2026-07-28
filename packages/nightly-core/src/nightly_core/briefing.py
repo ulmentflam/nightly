@@ -22,7 +22,7 @@ template degrades cleanly when those slots are absent.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from markdown_it import MarkdownIt
 from markupsafe import Markup
 
 from nightly_core.contract import MODEL_TIERS
+from nightly_core.digest import find_handoffs
 from nightly_core.runs import Run
 
 __all__ = [
@@ -99,6 +100,14 @@ class BriefingContext:
     compacted: str | None = None
     """RFC 006 §B2 — "yes" if session compaction fired, "no" if it did not,
     None if default omitted (e.g. keepalive.log absent)."""
+
+    handoffs: list[dict[str, str]] = field(default_factory=list)
+    """RFC 012 C3 — tasks that wrote a `HANDOFF.md` because an agent
+    crossed a context threshold. Each entry has `slug` and `summary`.
+
+    Worth its own panel rather than a count: a handoff means work was
+    deliberately left unfinished, and the operator's first question in the
+    morning is *which* work — a number cannot answer that."""
 
     tier_breakdown: str | None = None
     """RFC 007 §8 — dispatches by model tier, e.g. `lite x 3, coding x 5,
@@ -342,6 +351,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         current_branch=current_branch,
         compacted=compacted,
         tier_breakdown=_load_tier_breakdown(run),
+        handoffs=[{"slug": slug, "summary": summary} for slug, summary in find_handoffs(run.path)],
     )
 
 
@@ -365,6 +375,7 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         current_branch=ctx.current_branch,
         compacted=ctx.compacted,
         tier_breakdown=ctx.tier_breakdown,
+        handoffs=ctx.handoffs,
     )
 
 

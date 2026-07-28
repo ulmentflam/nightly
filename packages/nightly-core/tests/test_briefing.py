@@ -422,3 +422,40 @@ def test_breakdown_renders_without_a_session_narrative(tmp_path: Path) -> None:
     _write_dispatch(run.path, "0001-a", "coding")
     assert not (run.path / "briefing.md").exists()
     assert "coding x 1" in render_briefing(run)
+
+
+# ── pending handoffs panel (RFC 012 C3) ───────────────────────────────────
+
+
+def _write_handoff_md(run_path: Path, slug: str, body: str) -> None:
+    d = run_path / "tasks" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "HANDOFF.md").write_text(body, encoding="utf-8")
+
+
+def test_briefing_context_has_no_handoffs_by_default(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    assert build_context(run).handoffs == []
+
+
+def test_briefing_context_collects_handoffs(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    _write_handoff_md(run.path, "0001-alpha", "# Handoff\n\nRFC 012 C2 still open.\n")
+    assert build_context(run).handoffs == [
+        {"slug": "0001-alpha", "summary": "RFC 012 C2 still open."}
+    ]
+
+
+def test_handoff_panel_names_the_task_not_just_a_count(tmp_path: Path) -> None:
+    """The operator's first morning question is *which* work was left."""
+    run = start_run(tmp_path)
+    _write_handoff_md(run.path, "0001-alpha", "# Handoff\n\nAdmission tests remain.\n")
+    html = render_briefing(run)
+    assert "handed off mid-task" in html
+    assert "0001-alpha" in html
+    assert "Admission tests remain." in html
+
+
+def test_no_handoff_panel_when_the_run_finished_cleanly(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    assert "handed off mid-task" not in render_briefing(run)

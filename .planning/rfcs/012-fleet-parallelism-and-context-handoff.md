@@ -10,14 +10,14 @@ source: interactive_seed
 estimated_effort: ~5h across 3 phases
 phase_a: implemented
 phase_b: implemented
-phase_c: partial (C1)
+phase_c: implemented
 ---
 
 # RFC 012 — Fleet parallelism and context-handoff protocol
 
 ## Status
 
-`accepted` — operator seed in the 2026-07-28 interactive session,
+`implemented` — all three phases landed 2026-07-28. Operator seed in the 2026-07-28 interactive session,
 alongside the RFC 007 amendment. Two knobs that only make sense
 together: how *wide* the fleet runs, and what an individual agent does
 when its context fills up. Phase A lands the config schema and the
@@ -283,8 +283,12 @@ produces a handoff summary naming its unfinished goals.
       competing directives in one prompt is how an agent follows neither.
       Session thresholds resolve against the reasoning tier's model, per
       Resolved #8 and rule 12.
-- [ ] C2. `handoff:` section in `digest.md`
-- [ ] C3. Briefing handoff counts
+- [x] C2. `Pending handoffs` section in `digest.md` — the digest is what
+      the `SessionStart(compact)` hook re-injects, so a handoff written
+      just before a compaction survives the very event it exists for.
+- [x] C3. Briefing handoff panel — names the task and its outstanding
+      work rather than a bare count; "which work was left" is the
+      operator's actual first question.
 - [x] C4. Two-threshold protocol text — in rule 12. (C1–C3, the
       keepalive enforcement, remain open: the doctrine is documented but
       the hook does not yet compare against the thresholds.)
