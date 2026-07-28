@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -339,3 +340,227 @@ def test_briefing_omits_compacted_slot_when_absent(tmp_path: Path) -> None:
     assert ctx.compacted is None
     html = render_briefing(run)
     assert "Compacted:" not in html
+
+
+# ── tier breakdown (RFC 007 §8 / B3) ──────────────────────────────────────
+
+
+def _write_dispatch(run_path: Path, slug: str, tier: str | None) -> None:
+    task_dir = run_path / "tasks" / slug
+    task_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {"slug": slug, "pid": 1, "status": "completed"}
+    if tier is not None:
+        payload["tier"] = tier
+    (task_dir / "dispatch.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_tier_breakdown_is_none_without_dispatches(tmp_path: Path) -> None:
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    assert _load_tier_breakdown(run) is None
+
+
+def test_tier_breakdown_counts_each_tier(tmp_path: Path) -> None:
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "lite")
+    _write_dispatch(run.path, "0002-b", "lite")
+    _write_dispatch(run.path, "0003-c", "reasoning")
+    assert _load_tier_breakdown(run) == "lite x 2, reasoning x 1"
+
+
+def test_tier_breakdown_uses_canonical_tier_order(tmp_path: Path) -> None:
+    """Reading order should match the tier ladder, not directory order."""
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "reasoning")
+    _write_dispatch(run.path, "0002-b", "lite")
+    _write_dispatch(run.path, "0003-c", "coding")
+    assert _load_tier_breakdown(run) == "lite x 1, coding x 1, reasoning x 1"
+
+
+def test_untiered_dispatches_are_surfaced_not_dropped(tmp_path: Path) -> None:
+    """Pre-RFC-007 records have no tier; omitting them would make an old
+    run look like it dispatched less than it actually did."""
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", None)
+    _write_dispatch(run.path, "0002-b", "coding")
+    assert _load_tier_breakdown(run) == "coding x 1, unrouted x 1"
+
+
+def test_corrupt_dispatch_state_does_not_sink_the_briefing(tmp_path: Path) -> None:
+    from nightly_core.briefing import _load_tier_breakdown
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "lite")
+    bad = run.path / "tasks" / "0002-b"
+    bad.mkdir(parents=True, exist_ok=True)
+    (bad / "dispatch.json").write_text("{not json", encoding="utf-8")
+    assert _load_tier_breakdown(run) == "lite x 1"
+
+
+def test_tier_breakdown_reaches_the_rendered_briefing(tmp_path: Path) -> None:
+    from nightly_core.briefing import render_briefing
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "reasoning")
+    html = render_briefing(run)
+    assert "dispatches by tier" in html
+    assert "reasoning x 1" in html
+
+
+def test_breakdown_renders_without_a_session_narrative(tmp_path: Path) -> None:
+    """The mix is useful even on a run where no narrative was authored."""
+    from nightly_core.briefing import render_briefing
+
+    run = start_run(tmp_path)
+    _write_dispatch(run.path, "0001-a", "coding")
+    assert not (run.path / "briefing.md").exists()
+    assert "coding x 1" in render_briefing(run)
+
+
+# ── pending handoffs panel (RFC 012 C3) ───────────────────────────────────
+
+
+def _write_handoff_md(run_path: Path, slug: str, body: str) -> None:
+    d = run_path / "tasks" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "HANDOFF.md").write_text(body, encoding="utf-8")
+
+
+def test_briefing_context_has_no_handoffs_by_default(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    assert build_context(run).handoffs == []
+
+
+def test_briefing_context_collects_handoffs(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    _write_handoff_md(run.path, "0001-alpha", "# Handoff\n\nRFC 012 C2 still open.\n")
+    assert build_context(run).handoffs == [
+        {"slug": "0001-alpha", "summary": "RFC 012 C2 still open."}
+    ]
+
+
+def test_handoff_panel_names_the_task_not_just_a_count(tmp_path: Path) -> None:
+    """The operator's first morning question is *which* work was left."""
+    run = start_run(tmp_path)
+    _write_handoff_md(run.path, "0001-alpha", "# Handoff\n\nAdmission tests remain.\n")
+    html = render_briefing(run)
+    assert "handed off mid-task" in html
+    assert "0001-alpha" in html
+    assert "Admission tests remain." in html
+
+
+def test_no_handoff_panel_when_the_run_finished_cleanly(tmp_path: Path) -> None:
+    run = start_run(tmp_path)
+    assert "handed off mid-task" not in render_briefing(run)
+
+
+# ── auto-ticked RFC items (RFC 008 B1/B3) ─────────────────────────────────
+
+
+def _git_repo(root: Path) -> None:
+    import subprocess
+
+    def g(*a: str) -> None:
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@example.com")
+    g("config", "user.name", "T")
+    g("config", "commit.gpgsign", "false")
+    (root / "f.txt").write_text("seed\n", encoding="utf-8")
+    g("add", "-A")
+    g("commit", "-qm", "seed")
+    g("checkout", "-q", "-b", "nightly/work")
+
+
+def _commit(root: Path, subject: str) -> None:
+    import subprocess
+
+    (root / "f.txt").write_text(subject, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", subject], cwd=root, check=True, capture_output=True)
+
+
+def test_no_auto_ticks_in_a_plain_branch(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "feat(x): ordinary work")
+    assert find_auto_ticks(tmp_path) == []
+
+
+def test_auto_tick_commit_is_captured(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "docs(rfc-008): tick A2 — already implemented in 173a7e8")
+    ticks = find_auto_ticks(tmp_path)
+    assert len(ticks) == 1
+    assert ticks[0]["rfc"] == "RFC 008"
+    assert ticks[0]["item"] == "A2"
+    assert ticks[0]["source"] == "173a7e8"
+
+
+def test_tick_without_a_source_sha_is_marked_unstated(tmp_path: Path) -> None:
+    """A tick claiming no evidence is the one most worth auditing."""
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "docs(rfc-012): tick C1")
+    assert find_auto_ticks(tmp_path)[0]["source"] == "unstated"
+
+
+def test_ordinary_docs_commits_are_not_mistaken_for_ticks(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "docs(rfc-007): reconcile Phase B checklist")
+    assert find_auto_ticks(tmp_path) == []
+
+
+def test_non_git_directory_yields_no_ticks(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    assert find_auto_ticks(tmp_path) == []
+
+
+def test_auto_tick_panel_tells_the_operator_to_verify(tmp_path: Path) -> None:
+    """The panel exists because a wrong auto-tick silently drops an item."""
+    run = start_run(tmp_path)
+    ctx_html = render_briefing(run)
+    assert "ticked as already-done" not in ctx_html  # none present
+
+    from nightly_core.briefing import _ENV, BriefingContext
+
+    template = _ENV.get_template("briefing.html.j2")
+    html = template.render(
+        run_id="r",
+        is_concluded=False,
+        tasks=[],
+        approvals=[],
+        planning=[],
+        issues=[],
+        issues_by_strategic_category=[],
+        ready_count=0,
+        generated_at="now",
+        session_narrative=None,
+        lessons=None,
+        stacked_geometry=[],
+        current_branch="",
+        compacted=None,
+        tier_breakdown=None,
+        handoffs=[],
+        auto_ticks=[{"rfc": "RFC 008", "item": "A2", "sha": "abc1234", "source": "173a7e8"}],
+    )
+    assert "ticked as already-done" in html
+    assert "verify these" in html
+    assert "RFC 008" in html
+    assert "173a7e8" in html
+    assert BriefingContext is not None

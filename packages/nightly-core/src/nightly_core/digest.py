@@ -33,6 +33,7 @@ from nightly_core._version import __version__
 from nightly_core.runs import current_run
 
 __all__ = [
+    "find_handoffs",
     "render_digest",
     "write_digest",
 ]
@@ -103,6 +104,14 @@ def render_digest(root: Path | None = None) -> str:
     lines.append("## Active plans")
     lines.append("")
     lines.extend(_render_plans(root))
+
+    # ── pending handoffs ──────────────────────────────────────────────
+    handoffs = _safe_list(_render_handoffs, run.path if run is not None else None)
+    if handoffs:
+        lines.append("")
+        lines.append("## Pending handoffs")
+        lines.append("")
+        lines.extend(handoffs)
 
     # ── open PRs ──────────────────────────────────────────────────────
     lines.append("")
@@ -256,6 +265,58 @@ def _render_open_prs(root: Path | None) -> list[str]:
     if not branches:
         return ["- _none open._"]
     return [f"- #{num} `{branch}`" for branch, num, _url in branches]
+
+
+def find_handoffs(run_path: Path | None) -> list[tuple[str, str]]:
+    """`(slug, first meaningful line)` for every `HANDOFF.md` under a run.
+
+    A handoff is written when an agent crosses a context threshold (RFC
+    012 C1) and hands its remaining goals to a successor. Surfacing them
+    is what makes the protocol survive the very event it exists for: a
+    compaction wipes the outgoing agent's context, and the digest is what
+    the `SessionStart(compact)` hook re-injects afterwards. A handoff
+    nobody re-reads is a summary written into the void.
+    """
+    if run_path is None:
+        return []
+    tasks = run_path / "tasks"
+    if not tasks.is_dir():
+        return []
+
+    out: list[tuple[str, str]] = []
+    for task_dir in sorted(tasks.iterdir()):
+        handoff = task_dir / "HANDOFF.md"
+        if not handoff.is_file():
+            continue
+        try:
+            text = handoff.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # Skip the markdown title and any blank lines — the first prose
+        # line is the one that says what is actually outstanding.
+        summary = next(
+            (
+                ln.strip()
+                for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")
+            ),
+            "(no summary)",
+        )
+        out.append((task_dir.name, summary))
+    return out
+
+
+def _render_handoffs(run_path: Path | None) -> list[str]:
+    return [f"- `{slug}` — {summary}" for slug, summary in find_handoffs(run_path)]
+
+
+def _safe_list(fn: object, *args: object) -> list[str]:
+    """`_safe` for section helpers that return lists. Never raises — the
+    digest is written from the Stop hook's hot path."""
+    try:
+        return fn(*args)  # type: ignore[operator]
+    except Exception:
+        return []
 
 
 def _read_int(path: Path) -> int:

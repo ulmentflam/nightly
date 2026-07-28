@@ -49,19 +49,25 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from nightly_core.contract import HostId, SpecialistRole
+from nightly_core.config import ParallelismConfig
+from nightly_core.contract import MODEL_TIERS, HostId, ModelTier, SpecialistRole
 from nightly_core.paths import repo_root
 
 __all__ = [
     "DEFAULT_LOG_FILENAME",
     "DEFAULT_STATE_FILENAME",
+    "HEADLESS_HOSTS",
     "BackgroundDispatchResult",
     "DispatchStatus",
+    "active_dispatches",
+    "admission_blocked",
     "build_argv",
     "is_alive",
     "list_dispatches",
     "read_dispatch_state",
     "start_background",
+    "tier_utilization",
+    "unsupported_host_message",
     "wait_for",
     "write_dispatch_state",
 ]
@@ -71,6 +77,16 @@ DEFAULT_STATE_FILENAME = "dispatch.json"
 DEFAULT_LOG_FILENAME = "dispatch.log"
 
 DispatchStatus = Literal["running", "completed", "failed", "unknown"]
+
+HEADLESS_HOSTS: tuple[HostId, ...] = ("claude", "codex", "opencode", "gemini")
+"""Hosts `build_argv` knows how to spawn headlessly.
+
+The single source of truth for "can this host be backgrounded". It used
+to be restated in prose inside the failure message, and the two drifted
+the moment `pi` and `hermes` joined `HostId` — the message enumerated
+every host *except* the one the operator had asked about. Deriving the
+message from this tuple makes that class of drift impossible rather than
+merely fixed."""
 
 # Module-local factory alias for the default Popen. Tests can monkeypatch
 # THIS without affecting global `subprocess.Popen` (which click + typer
@@ -102,17 +118,42 @@ class BackgroundDispatchResult:
     status: DispatchStatus = "running"
     exit_code: int | None = None
     finished_at: datetime | None = None
+    tier: ModelTier | None = None
+    """RFC 007 tier this dispatch was routed to. Persisted so admission
+    control can count live dispatches per tier without re-resolving the
+    plan (which may have changed, or been marked done, since the spawn).
+    None on dispatches written before RFC 012 — those count toward the
+    global cap only."""
 
 
 # ── per-host argv ────────────────────────────────────────────────────────
 
 
-def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> list[str] | None:  # noqa: PLR0911 - one return per host backend is the whole point
+def build_argv(  # noqa: PLR0911, PLR0912 - one branch per host backend is the whole point
+    host: HostId,
+    prompt: str,
+    *,
+    session_id: str | None = None,
+    model: str | None = None,
+    model_flag: str | None = None,
+) -> list[str] | None:
     """Build the headless argv for `host`. Returns None when the host
     has no usable headless backend yet (cursor, antigravity).
 
     Reuses the same flags each host's `run_headless` already invokes —
     see the integration packages for canonical references.
+
+    `model` is the RFC 007 tier-resolved model id and `model_flag` is the
+    option that carries it — discovered from the host CLI's own `--help`
+    by `nightly init` (see `nightly_core.model_probe`) and stored under
+    `model_tiers.<host>.flag`. Both must be present for the id to be
+    applied: Nightly emits a discovered flag, never a guessed one, because
+    a wrong flag is a hard spawn failure at 3am while an omitted one still
+    gets the work done on the host's default model. Tier intent still
+    reaches those hosts through the effort directive in the prompt.
+
+    Claude Code's `--model` is the one flag verified in-tree, so it is the
+    fallback when discovery produced nothing for that host.
     """
     if host == "claude":
         binary = shutil.which("claude")
@@ -127,6 +168,8 @@ def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> l
             "--permission-mode",
             "acceptEdits",
         ]
+        if model:
+            argv += [model_flag or "--model", model]
         if session_id:
             argv += ["--session-id", session_id]
         return argv
@@ -135,7 +178,7 @@ def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> l
         binary = shutil.which("codex")
         if binary is None:
             return None
-        return [
+        argv = [
             binary,
             "exec",
             "--json",
@@ -143,26 +186,73 @@ def build_argv(host: HostId, prompt: str, *, session_id: str | None = None) -> l
             "workspace-write",
             "--ask-for-approval",
             "never",
-            prompt,
         ]
+        if model and model_flag:
+            argv += [model_flag, model]
+        return [*argv, prompt]
 
     if host == "opencode":
         binary = shutil.which("opencode")
         if binary is None:
             return None
-        return [binary, "run", prompt, "--format", "json"]
+        argv = [binary, "run", prompt, "--format", "json"]
+        if model and model_flag:
+            argv += [model_flag, model]
+        return argv
 
     if host == "gemini":
         binary = shutil.which("gemini")
         if binary is None:
             return None
-        return [binary, "--prompt", prompt]
+        argv = [binary, "--prompt", prompt]
+        if model and model_flag:
+            argv += [model_flag, model]
+        return argv
 
-    # cursor + antigravity don't expose a usable headless CLI today.
-    # Callers can fall back to the host's blocking primitive (Background
-    # Agent / Agent Manager registration) or to claude/codex if those
-    # binaries are also on PATH.
+    # Every other host — cursor, antigravity, pi, hermes — exposes no
+    # usable headless CLI today. Callers fall back to the host's own
+    # blocking primitive, or to a host from `HEADLESS_HOSTS` whose binary
+    # is on PATH. See `unsupported_host_message` for the operator-facing
+    # explanation.
     return None
+
+
+def unsupported_host_message(host: HostId) -> str:
+    """Explain why `host` cannot be dispatched to, and what to do instead.
+
+    Distinguishes the two failures the old message conflated:
+
+    - **No headless CLI.** The host has no non-interactive entry point at
+      all. Nothing the operator installs will change that; the fix is to
+      use the host's own primitive or pick another host.
+    - **Binary not on PATH.** The host is supported; its CLI just isn't
+      installed or isn't visible from here. That is a five-second fix,
+      and the old message never said so — asking for `claude` on a box
+      without it produced the same wall of text as asking for `cursor`.
+    """
+    if host not in HEADLESS_HOSTS:
+        supported = ", ".join(HEADLESS_HOSTS)
+        return (
+            f"host '{host}' has no headless CLI, so it cannot run a background "
+            f"dispatch. Use its own sub-agent primitive instead, or dispatch to "
+            f"one of: {supported}."
+        )
+
+    # Exclude the failing host: recommending the binary that just failed
+    # to resolve is worse than saying nothing.
+    available = [h for h in HEADLESS_HOSTS if h != host and shutil.which(h)]
+    if available:
+        return (
+            f"host '{host}' supports background dispatch but its `{host}` binary "
+            f"is not on PATH. Install it, or use --host with one of the "
+            f"binaries you do have: {', '.join(available)}."
+        )
+    others = ", ".join(h for h in HEADLESS_HOSTS if h != host)
+    return (
+        f"host '{host}' supports background dispatch but its `{host}` binary is "
+        f"not on PATH — and no other dispatchable host's binary is either. "
+        f"Install `{host}`, or one of: {others}."
+    )
 
 
 # ── spawn ────────────────────────────────────────────────────────────────
@@ -178,6 +268,9 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     cwd: Path | None = None,
     session_id: str | None = None,
     now: datetime | None = None,
+    model: str | None = None,
+    model_flag: str | None = None,
+    tier: ModelTier | None = None,
     popen_factory: object | None = None,
 ) -> BackgroundDispatchResult:
     """Spawn the host's headless CLI as a detached background process.
@@ -190,16 +283,9 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     `popen_factory` is injectable for tests — defaults to
     `subprocess.Popen`. Production callers leave it unset.
     """
-    argv = build_argv(host, prompt, session_id=session_id)
+    argv = build_argv(host, prompt, session_id=session_id, model=model, model_flag=model_flag)
     if argv is None:
-        msg = (
-            f"no background dispatch backend for host '{host}'. "
-            "claude/codex/opencode/gemini are supported when their binaries "
-            "are on PATH; cursor/antigravity have no headless CLI today — "
-            "use the host's native primitive (Background Agent / Agent "
-            "Manager) for those."
-        )
-        raise RuntimeError(msg)
+        raise RuntimeError(unsupported_host_message(host))
 
     repo = (root or repo_root()).resolve()
     work_cwd = (cwd or repo).resolve()
@@ -237,6 +323,7 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
         status="running",
         exit_code=None,
         finished_at=None,
+        tier=tier,
     )
     write_dispatch_state(result, root=repo)
     return result
@@ -315,6 +402,7 @@ def read_dispatch_state(slug: str, *, root: Path | None = None) -> BackgroundDis
             log_path=Path(data["log_path"]),
             started_at=datetime.fromisoformat(data["started_at"]),
             argv=tuple(data.get("argv", [])),
+            tier=data.get("tier"),
             cwd=Path(data["cwd"]) if data.get("cwd") else None,
             status=data.get("status", "unknown"),
             exit_code=data.get("exit_code"),
@@ -450,3 +538,69 @@ def supported_hosts() -> Sequence[HostId]:
     populate help text and the SKILL.md "supported hosts" list.
     """
     return ("claude", "codex", "opencode", "gemini")
+
+
+# ── admission control (RFC 012 Phase B) ──────────────────────────────────
+
+
+def active_dispatches(root: Path | None = None) -> list[BackgroundDispatchResult]:
+    """Dispatches whose process is still alive.
+
+    Liveness is checked against the PID rather than trusting the recorded
+    status: a spawn that died without anyone polling it still has
+    `status: running` on disk, and counting those toward the cap would
+    wedge the fleet until someone ran `nightly dispatch status`.
+    """
+    return [d for d in list_dispatches(root) if d.status == "running" and is_alive(d.pid)]
+
+
+def tier_utilization(
+    config: ParallelismConfig,
+    root: Path | None = None,
+) -> dict[ModelTier, tuple[int, int]]:
+    """`{tier: (live_count, effective_cap)}` for every tier.
+
+    The cap is `ParallelismConfig.limit_for`, i.e. the tighter of the
+    per-tier and global ceilings; `0` means unlimited. Dispatches with no
+    recorded tier (pre-RFC-012 state files) are counted only against the
+    global total, which `admission_blocked` checks separately.
+    """
+    live = active_dispatches(root)
+    counts: dict[ModelTier, int] = dict.fromkeys(MODEL_TIERS, 0)
+    for dispatch in live:
+        if dispatch.tier in counts:
+            counts[dispatch.tier] += 1  # type: ignore[index]
+    return {tier: (counts[tier], config.limit_for(tier)) for tier in MODEL_TIERS}
+
+
+def admission_blocked(
+    tier: ModelTier,
+    config: ParallelismConfig,
+    root: Path | None = None,
+) -> str | None:
+    """Reason this dispatch must wait, or None when it may start.
+
+    Two ceilings are checked: the tier's own (via `limit_for`, which
+    already folds in the global cap) and the global count across every
+    live dispatch including untiered ones.
+
+    Deliberately returns "wait", never "run it on a cheaper tier". A
+    silent downgrade would defeat RFC 007's whole argument about the
+    reviewer sitting on the reasoning tier — the caller would get a
+    lite-tier review it never asked for and no signal that it happened.
+    """
+    live = active_dispatches(root)
+    total = len(live)
+    if config.max_concurrent_specialists and total >= config.max_concurrent_specialists:
+        return (
+            f"{total} specialist(s) already running; "
+            f"global cap is {config.max_concurrent_specialists}"
+        )
+
+    cap = config.limit_for(tier)
+    if not cap:
+        return None
+    used = sum(1 for d in live if d.tier == tier)
+    if used >= cap:
+        return f"{used} {tier}-tier dispatch(es) already running; cap is {cap}"
+    return None

@@ -171,8 +171,10 @@ def test_over_budget_prepends_diet_to_normal_reason(
     )
     decision = compute_stop_hook_decision(armed_repo, transcript_path=transcript)
     reason = decision.payload["reason"]
-    assert reason.startswith("⚠ CONTEXT BUDGET")
-    assert "Continue on:" in reason  # original reason preserved below the diet
+    # RFC 012: 300K is past the soft handoff threshold (25% of a 1M window),
+    # so the handoff instruction supersedes the older diet nudge.
+    assert reason.startswith("CONTEXT HANDOFF")
+    assert "Continue on:" in reason  # original reason preserved below the block
 
 
 def test_over_budget_prepends_diet_to_planning_phase(
@@ -186,7 +188,7 @@ def test_over_budget_prepends_diet_to_planning_phase(
     )
     decision = compute_stop_hook_decision(armed_repo, transcript_path=transcript)
     reason = decision.payload["reason"]
-    assert reason.startswith("⚠ CONTEXT BUDGET")
+    assert reason.startswith("CONTEXT HANDOFF")
     assert "GENUINE WORK IS NEVER EXHAUSTED" in reason
 
 
@@ -334,3 +336,114 @@ def test_escalation_threshold_is_above_the_reroute_threshold() -> None:
 
     assert _LIVELOCK_ESCALATE_AFTER >= 1
     assert _LIVELOCK_REPICKS + _LIVELOCK_ESCALATE_AFTER > _LIVELOCK_REPICKS
+
+
+# ── RFC 012 Phase C: handoff escalation ───────────────────────────────────
+
+
+def _cfg(tmp_path: Path, body: str) -> Path:
+    (tmp_path / ".nightly").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".nightly" / "config.yml").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def test_session_thresholds_assume_the_reasoning_tier(tmp_path: Path) -> None:
+    """Rule 12 puts orchestration on reasoning; the hook resolves to match."""
+    from nightly_core.keepalive_hook import session_context_thresholds
+
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    t = session_context_thresholds(tmp_path)
+    # claude reasoning default is a 1M-window model.
+    assert t.window_tokens == 1_000_000
+    assert t.soft_tokens == 250_000
+    assert t.hard_tokens == 500_000
+
+
+def test_soft_breach_says_finish_then_hand_off(tmp_path: Path) -> None:
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    out = _apply_context_diet("CONTINUE", 300_000, 256_000, tmp_path)
+    assert out.startswith("CONTEXT HANDOFF:")
+    assert "Finish the task you are on" in out
+    assert "HANDOFF.md" in out
+    assert out.endswith("CONTINUE")
+
+
+def test_hard_breach_says_stop_now(tmp_path: Path) -> None:
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    out = _apply_context_diet("CONTINUE", 600_000, 256_000, tmp_path)
+    assert out.startswith("HARD CONTEXT HANDOFF:")
+    assert "STOP the work you are on now" in out
+    assert "do not finish it" in out
+
+
+def test_handoff_replaces_the_diet_block_rather_than_stacking(tmp_path: Path) -> None:
+    """Two competing directives in one prompt is how an agent follows neither."""
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    out = _apply_context_diet("CONTINUE", 600_000, 256_000, tmp_path)
+    assert "CONTEXT BUDGET" not in out
+
+
+def test_handoff_summary_is_specified_as_goals_not_transcript(tmp_path: Path) -> None:
+    """An agent told only 'write a summary' reliably writes a transcript."""
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    out = _apply_context_diet("CONTINUE", 300_000, 256_000, tmp_path)
+    assert "NOT a transcript" in out
+
+
+def test_below_both_thresholds_falls_through_to_the_diet_block(tmp_path: Path) -> None:
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    # Below the 250K soft threshold but above an explicitly lower budget,
+    # the original hygiene nudge is still the right instruction.
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    out = _apply_context_diet("CONTINUE", 150_000, 100_000, tmp_path)
+    assert "CONTEXT BUDGET" in out
+    assert "HANDOFF" not in out
+
+
+def test_zero_ratios_disable_handoff_but_keep_the_diet(tmp_path: Path) -> None:
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(
+        tmp_path,
+        "hosts:\n  - claude\ncontext:\n  handoff_soft_ratio: 0\n  handoff_hard_ratio: 0\n",
+    )
+    out = _apply_context_diet("CONTINUE", 900_000, 256_000, tmp_path)
+    assert "HANDOFF" not in out
+    assert "CONTEXT BUDGET" in out
+
+
+def test_unmeasurable_context_injects_nothing(tmp_path: Path) -> None:
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(tmp_path, "hosts:\n  - claude\n")
+    assert _apply_context_diet("CONTINUE", None, 256_000, tmp_path) == "CONTINUE"
+
+
+def test_broken_config_never_breaks_the_hook(tmp_path: Path) -> None:
+    """The Stop hook runs every turn boundary; it must degrade, not raise."""
+    from nightly_core.keepalive_hook import _apply_context_diet
+
+    _cfg(tmp_path, "model_tiers: [not-a-mapping\n")
+    out = _apply_context_diet("CONTINUE", 900_000, 256_000, tmp_path)
+    assert out.endswith("CONTINUE")
+
+
+def test_small_window_hands_off_proportionally_earlier(tmp_path: Path) -> None:
+    """The whole point of ratios: a 200K agent recycles at 50K/100K."""
+    from nightly_core.keepalive_hook import session_context_thresholds
+
+    _cfg(
+        tmp_path,
+        "hosts:\n  - claude\nmodel_tiers:\n  claude:\n    reasoning: claude-haiku-4-5\n",
+    )
+    t = session_context_thresholds(tmp_path)
+    assert (t.window_tokens, t.soft_tokens, t.hard_tokens) == (200_000, 50_000, 100_000)

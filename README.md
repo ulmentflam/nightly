@@ -327,7 +327,11 @@ keepalive turn (configurable via `context.digest_every_turns`).
 | **Cascade** | `nightly next` | Walk the priority cascade; print the next pick + rationale. |
 | | `nightly triage [--top N]` | List ranked open GitHub issues (best-effort, needs `gh`). |
 | | `nightly plans` | Every plan across runs with status. |
-| | `nightly specialist <role>` | Print the system prompt for one of the 4 roles. |
+| | `nightly specialist <role> [--tier <t>]` | Print the system prompt for one of the 4 roles; `--tier` appends the deliberation directive. |
+| | `nightly dispatch start <slug> --role <r> [--force]` | Spawn a background specialist. Exits 3 when the tier is at capacity. |
+| | `nightly dispatch status [<slug>]` | List dispatches; prints live/cap headroom per tier. |
+| | `nightly dispatch tail <slug>` | Follow a running dispatch's log. |
+| | `nightly dispatch wait <slug>` | Block until a dispatch finishes. |
 | | `nightly keepalive [--name <s>]` | Show think-harder strategies when the cascade goes empty. |
 | **Ideation** | `nightly propose [--top N]` | Dry-run the proposer suite — list candidates. |
 | | `nightly ideate` | Run proposers; write draft issues to disk. |
@@ -438,6 +442,95 @@ N` in parallel) it:
 
 Single-process by contract: two concurrent `nightly run` invocations
 against the same repo can race on plan-status updates.
+
+Fan-out is bounded by the `parallelism:` block, and the bounds are
+enforced rather than advisory — `nightly dispatch start` exits 3 when a
+tier is at capacity, and worktree creation refuses past `max_worktrees`.
+`nightly dispatch status` prints the current headroom:
+
+```
+capacity: lite 2/8  coding 6/6 FULL  reasoning 1/2   (total 9/8)
+```
+
+`0` means unlimited on any axis. A blocked dispatch always means *wait*,
+never "run it on a cheaper model" — see below for why.
+
+### Cost-aware dispatch
+
+Not every task needs the same model. Nightly sorts dispatches into three
+tiers named after task complexity, so the abstraction survives model
+churn — when a vendor ships a new coding model, only one config line
+changes.
+
+| Tier | Does | Default effort |
+|---|---|---|
+| `lite` | file search, summarization, docs | `low` |
+| `coding` | implementation, test authoring | `low` |
+| `reasoning` | orchestration, result validation, merge adjudication | `xhigh` |
+
+Each specialist role has a default tier:
+
+| Role | Tier | Why |
+|---|---|---|
+| `implementer` | `coding` | output is gated by `nightly verify` |
+| `tester` | `coding` | same gate |
+| `reviewer` | **`reasoning`** | review *is* result validation — nothing downstream re-checks it |
+| `researcher` | **`lite`** | file search and summarization over code already on disk |
+
+The axis is *how expensive it is to be wrong and not notice*, not how
+senior the role sounds. A cheap implementer's mistakes surface as a red
+lint/type/test run; a cheap reviewer's mistakes surface as a merged bug.
+That's also why a full reasoning tier makes a dispatch **wait** rather
+than silently downgrade — a lite-tier review nobody asked for is worse
+than a slow one.
+
+Override per task with `model_tier:` in the plan's frontmatter, when a
+task's complexity genuinely differs from its role — a one-line README fix
+dispatched through `implementer` is `lite`; an architecture audit
+dispatched through `researcher` is `reasoning`.
+
+Effort ships as prompt text rather than a vendor flag, because the flag
+surface differs per host and several hosts expose none. `low` means act
+rather than deliberate: consolidate tool calls, skip preamble, reach
+`nightly verify` quickly instead of reasoning your way to certainty.
+
+**`nightly init` discovers the model controls** rather than shipping a
+table that goes stale. It reads each installed host CLI's own `--help`
+for the model-selection flag and the model ids it advertises, detects
+which harness is running init, and writes the result to
+`.nightly/config.yml`. A discovered *pinned* id (`claude-opus-5`)
+overrides the seeded default; a bare alias (`opus`) does not, because
+aliases float to whatever shipped most recently — fine interactively,
+wrong for an overnight run whose model should still be identifiable in
+the morning. Any probe failure degrades to the seeded defaults, so init
+never fails because a host CLI misbehaved. `nightly doctor` flags hosts
+with no tier binding.
+
+### Context handoff
+
+An agent is most productive early in its context window. Past halfway it
+re-reads its own history, thrashes, and eventually truncates mid-write —
+worst precisely when it is deepest into valuable work.
+
+So each agent gets two thresholds, expressed as **fractions of whatever
+model the tier resolved to** rather than absolute token counts. One
+setting therefore governs a mixed fleet:
+
+| Model window | Soft (0.25) | Hard (0.50) |
+|---|---|---|
+| 1M | 250K | 500K |
+| 200K | 50K | 100K |
+
+At the **soft** threshold: finish the task you are on, write a handoff
+summary naming the goals that remain, and let a fresh agent resume with a
+clean context. At the **hard** threshold: stop where you are and write
+the summary anyway. The summary carries goals and state, never a
+transcript — shedding the history is the entire point.
+
+Declare windows for models Nightly doesn't know under
+`context.model_context_tokens:`; anything undeclared falls back to a
+conservative 200K, since under-estimating costs one harmless early
+handoff while over-estimating costs a truncated one.
 
 ---
 

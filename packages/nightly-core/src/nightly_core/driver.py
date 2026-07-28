@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Literal
 
 from nightly_core.cascade import CascadeChoice, next_task
+from nightly_core.config import load_parallelism_config
 from nightly_core.contract import HostId, NightlyHostIntegration
 from nightly_core.headless import HeadlessResult
 from nightly_core.ideation import run_proposers
@@ -283,6 +284,7 @@ async def run_one_task(  # noqa: PLR0913 - per-task dispatch needs every dimensi
             branch_prefix=branch_prefix,
             worktree_root=worktree_root,
             runner=git_runner,
+            max_worktrees=load_parallelism_config(root).max_worktrees,
         )
         prompt = build_task_prompt(plan, plan.path.parent, cascade_choice=cascade_choice)
         headless = await host.run_headless(

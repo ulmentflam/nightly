@@ -96,3 +96,72 @@ def test_render_reads_last_history_line(repo: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("nightly_core.cascade.open_nightly_pr_branches", lambda root=None, **kw: [])
     text = render_digest(repo)
     assert "accepted_rfc|-|second" in text
+
+
+# ── pending handoffs (RFC 012 C2) ─────────────────────────────────────────
+
+
+def _write_handoff(run_path: Path, slug: str, body: str) -> None:
+    d = run_path / "tasks" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "HANDOFF.md").write_text(body, encoding="utf-8")
+
+
+def test_no_handoffs_found_in_a_clean_run(tmp_path: Path) -> None:
+    from nightly_core.digest import find_handoffs
+
+    run = start_run(tmp_path)
+    assert find_handoffs(run.path) == []
+
+
+def test_handoff_summary_skips_the_markdown_title(tmp_path: Path) -> None:
+    """The title says which task; the first prose line says what's left."""
+    from nightly_core.digest import find_handoffs
+
+    run = start_run(tmp_path)
+    _write_handoff(run.path, "0001-alpha", "# Handoff — alpha\n\nB2 remains: six skill files.\n")
+    assert find_handoffs(run.path) == [("0001-alpha", "B2 remains: six skill files.")]
+
+
+def test_handoff_without_prose_still_reports(tmp_path: Path) -> None:
+    from nightly_core.digest import find_handoffs
+
+    run = start_run(tmp_path)
+    _write_handoff(run.path, "0001-alpha", "# Handoff\n\n")
+    assert find_handoffs(run.path) == [("0001-alpha", "(no summary)")]
+
+
+def test_handoffs_are_sorted_by_slug(tmp_path: Path) -> None:
+    from nightly_core.digest import find_handoffs
+
+    run = start_run(tmp_path)
+    _write_handoff(run.path, "0002-beta", "second\n")
+    _write_handoff(run.path, "0001-alpha", "first\n")
+    assert [s for s, _ in find_handoffs(run.path)] == ["0001-alpha", "0002-beta"]
+
+
+def test_handoffs_absent_run_is_not_an_error(tmp_path: Path) -> None:
+    from nightly_core.digest import find_handoffs
+
+    assert find_handoffs(None) == []
+    assert find_handoffs(tmp_path / "nope") == []
+
+
+def test_digest_surfaces_pending_handoffs(tmp_path: Path, monkeypatch) -> None:
+    """The digest is what survives compaction — a handoff must ride along."""
+    from nightly_core.digest import render_digest
+
+    run = start_run(tmp_path)
+    _write_handoff(run.path, "0001-alpha", "# Handoff\n\nAdmission tests still to write.\n")
+    monkeypatch.chdir(tmp_path)
+    out = render_digest(tmp_path)
+    assert "Pending handoffs" in out
+    assert "Admission tests still to write." in out
+
+
+def test_digest_omits_the_section_when_there_are_none(tmp_path: Path, monkeypatch) -> None:
+    from nightly_core.digest import render_digest
+
+    start_run(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert "Pending handoffs" not in render_digest(tmp_path)

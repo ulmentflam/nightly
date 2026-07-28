@@ -8,6 +8,7 @@ from nightly_core.rules import (
     MARKER_END,
     MARKER_START,
     NIGHTLY_RULES_BODY,
+    _render_block,
     seed_rules,
 )
 
@@ -221,3 +222,84 @@ def test_rules_body_documents_blocking_pr_rescue_preempts_accepted_rfc() -> None
     assert "Draft PRs count too" in body or "draft" in body.lower()
     # Positive: `nightly verify` reminder before push.
     assert "nightly verify" in body
+
+
+# ── rule 12: fleet doctrine (RFC 007 C1 / RFC 012 B4) ────────────────────
+
+
+def test_rules_body_documents_the_tier_defaults() -> None:
+    """The machinery is invisible unless the rules block names it.
+
+    Routing, caps, and handoff thresholds all ship enforced, but an agent
+    that is never told the defaults will not override them intelligently
+    — and will not fan out at all.
+    """
+    body = NIGHTLY_RULES_BODY
+    assert "model_tier:" in body
+    for role in ("implementer", "tester", "reviewer", "researcher"):
+        assert role in body
+
+
+def test_rules_body_forbids_downgrading_past_a_full_reasoning_tier() -> None:
+    """The one rule that protects RFC 007's reviewer decision."""
+    body = NIGHTLY_RULES_BODY.lower()
+    assert "downgrad" in body
+    assert "wait for one" in body
+
+
+def test_rules_body_states_both_handoff_thresholds() -> None:
+    body = NIGHTLY_RULES_BODY
+    assert "25%" in body
+    assert "50%" in body
+    assert "handoff" in body.lower()
+
+
+def test_rules_body_tells_the_agent_to_fan_out() -> None:
+    body = NIGHTLY_RULES_BODY.lower()
+    assert "fan out" in body
+    assert "capacity:" in NIGHTLY_RULES_BODY
+
+
+def test_rule_12_is_inside_the_seeded_block() -> None:
+    """Rule 12 must land between the markers, or `seed_rules` won't
+    propagate it to AGENTS.md / CLAUDE.md on any host."""
+    rendered = _render_block()
+    assert rendered.startswith(MARKER_START)
+    assert rendered.rstrip().endswith(MARKER_END)
+    assert "Run the fleet wide and cheap" in rendered
+
+
+# ── rule 13: pre-flight verification (RFC 008 A5) ─────────────────────────
+
+
+def test_verifier_doctrine_is_in_the_rules_body() -> None:
+    from nightly_core.specialists import RFC_008_VERIFIER_PARAGRAPH
+
+    first_line = RFC_008_VERIFIER_PARAGRAPH.splitlines()[0]
+    assert first_line in NIGHTLY_RULES_BODY
+
+
+def test_verifier_states_the_unchecked_box_fallacy() -> None:
+    """The whole premise: unchecked means unticked, not undone."""
+    assert 'means "nobody ticked it", not "nobody did' in NIGHTLY_RULES_BODY
+
+
+def test_verifier_gives_the_reconciliation_commit_format() -> None:
+    """Without a format, agents write freeform messages and the audit
+    trail for auto-ticks becomes ungreppable."""
+    assert "docs(rfc-NNN): tick" in NIGHTLY_RULES_BODY
+    assert "already implemented in" in NIGHTLY_RULES_BODY
+
+
+def test_verifier_names_all_three_checks() -> None:
+    body = NIGHTLY_RULES_BODY
+    assert "grep" in body
+    assert "nightly/*` branch" in body
+    assert "open PR" in body
+
+
+def test_verifier_lands_inside_the_seeded_markers() -> None:
+    """Outside the markers it propagates to no host at all."""
+    rendered = _render_block()
+    assert "Pre-flight verification" in rendered
+    assert rendered.startswith(MARKER_START)

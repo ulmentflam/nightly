@@ -17,7 +17,13 @@ from typing import get_args
 
 from nightly_core.contract import ModelTier, SpecialistRole
 
-__all__ = ["SPECIALIST_TIER_DEFAULTS", "all_roles", "specialist_prompt", "tier_for_role"]
+__all__ = [
+    "RFC_008_VERIFIER_PARAGRAPH",
+    "SPECIALIST_TIER_DEFAULTS",
+    "all_roles",
+    "specialist_prompt",
+    "tier_for_role",
+]
 
 
 _IMPLEMENTER = """\
@@ -114,6 +120,36 @@ _PROMPTS: dict[SpecialistRole, str] = {
     "reviewer": _REVIEWER,
     "researcher": _RESEARCHER,
 }
+
+
+RFC_008_VERIFIER_PARAGRAPH = """\
+**Pre-flight verification — check the deliverable doesn't already exist.**
+Before implementing an RFC checklist item, verify it is actually
+outstanding. An unchecked box means "nobody ticked it", not "nobody did
+it": work lands in a branch that hasn't merged, an item gets implemented
+under a different name, or a phase ships and the checklist is never
+reconciled. Re-implementing it wastes the night and risks a conflicting
+second implementation.
+
+Check, in ascending cost:
+1. Does the named symbol / file / flag already exist? (`grep`, `ls`)
+2. Does an unmerged `nightly/*` branch already tick this item?
+   (`git show <branch>:<rfc-path>`)
+3. Does an open PR's title or body reference this RFC or item?
+
+If the deliverable exists, do NOT re-implement it. Tick the box and
+commit the reconciliation alone:
+
+    docs(rfc-NNN): tick <PHASE>.<ITEM> — already implemented in <SHA>
+
+Then take the next item. Reconciling a stale checklist IS progress; it
+is what stops the next agent from burning its night on the same item.
+"""
+"""Agent-facing doctrine for RFC 008 — verify before implementing.
+
+Lives here beside the specialist prompts because it is prompt text, not
+behavior. `nightly_core.rules` embeds it in the shared rules block so a
+single copy reaches every host."""
 
 
 SPECIALIST_TIER_DEFAULTS: dict[SpecialistRole, ModelTier] = {

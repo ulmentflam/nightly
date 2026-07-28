@@ -8,7 +8,7 @@ boring, idempotent broom that walks the install surface and puts it
 back together without the user having to remember the exact sequence
 of `init` flags that produced their setup.
 
-What it checks (and repairs by default):
+Checks fall into two groups. **Repairing** checks fix what they find:
 
 1. `.nightly/` scaffold — the five canonical subdirs from `cli.py`
    (`runs`, `plans`, `atlas`, `memory`, `prompts`).
@@ -22,6 +22,23 @@ What it checks (and repairs by default):
    left alone unless the caller explicitly passes them via
    `extra_hosts`.
 
+**Advisory** checks report and never write, because the right fix is a
+judgment call the operator owns:
+
+5. Config schema drift — blocks an existing `config.yml` never learned,
+   which default silently forever.
+6. Model-tier bindings — hosts with no tier→model mapping, where
+   routing is inert.
+7. Tier/model agreement — a tier bound to a different band's model,
+   which is silent and expensive.
+8. Push readiness — Nightly work that cannot leave the machine
+   (unpushed branches, a locked signing agent).
+9. Worktree location — a repo under iCloud, where git state corrupts.
+
+Adding a check means writing a `_check_*` helper **and** appending it in
+`diagnose_and_repair`; a helper that exists but is never called runs zero
+times and reports nothing. `test_every_check_helper_is_wired` pins that.
+
 Design parallels `update.refresh_repo_install` — both walk host loaders
 and call `install("project")` — but doctor's contract is broader: it
 also reconciles the non-host scaffold (`.nightly/`, config, rules) and
@@ -33,6 +50,7 @@ is for "make my install correct."
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,6 +177,57 @@ def _check_config(root: Path, *, dry_run: bool) -> DoctorCheck:
     )
 
 
+def _check_config_blocks(root: Path) -> DoctorCheck:
+    """Name the config blocks an existing `config.yml` has never heard of.
+
+    `_check_config` writes the full template only when the file is
+    *absent*. A repo initialized before a feature shipped therefore never
+    learns that feature's knobs exist: every loader defaults gracefully,
+    so nothing breaks and nothing complains. The operator's config quietly
+    diverges from the schema for as long as the repo lives — this repo was
+    missing eight blocks, half of them predating the current release.
+
+    Advisory, and deliberately never repaired. `config.yml` is
+    hand-edited and comment-rich; appending to it risks clobbering
+    ordering or duplicating a key the operator deliberately removed. A
+    wrong merge into the file that governs every other behavior is worse
+    than a message telling them what to copy.
+    """
+    import yaml  # noqa: PLC0415 - lazy, doctor is not a hot path
+
+    name, desc = "config_blocks", "config.yml schema drift"
+    config = nightly_dir(root) / "config.yml"
+    if not config.is_file():
+        # `_check_config` owns the absent case and writes the template.
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="no config yet")
+
+    try:
+        present = yaml.safe_load(config.read_text(encoding="utf-8"))
+        expected = yaml.safe_load(DEFAULT_CONFIG_YML)
+    except (OSError, yaml.YAMLError):
+        return DoctorCheck(
+            name=name, description=desc, status="skipped", detail="config unreadable"
+        )
+    if not isinstance(present, dict) or not isinstance(expected, dict):
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="not a mapping")
+
+    # Derived from the template itself, so this can never drift from the
+    # schema the way a hand-maintained list would.
+    missing = sorted(set(expected) - set(present))
+    if not missing:
+        return DoctorCheck(name=name, description=desc, status="ok", detail="all blocks present")
+    return DoctorCheck(
+        name=name,
+        description=desc,
+        status="warning",
+        detail=(
+            f"not configured (defaults apply): {', '.join(missing)} — "
+            "see `.nightly/config.yml` in a freshly-initialized repo for the "
+            "annotated blocks to copy"
+        ),
+    )
+
+
 def _configured_hosts(root: Path) -> tuple[HostId, ...]:
     """Host ids listed under `hosts:` in `.nightly/config.yml`.
 
@@ -202,12 +271,21 @@ def _check_model_tiers(root: Path) -> DoctorCheck:
         )
 
     hosts = _configured_hosts(root)
-    unbound = sorted(h for h in hosts if not cfg.models.get(h))
+    # A host is unbound if *any* tier is missing, not only if the whole map
+    # is. A partial map is the more dangerous shape: routing looks
+    # configured, and only the unbound tiers silently fall through to the
+    # host CLI's default model.
+    unbound: list[str] = []
+    for host in sorted(hosts):
+        missing = [tier for tier in MODEL_TIERS if not cfg.binding(host, tier).model]
+        if missing:
+            unbound.append(f"{host} ({', '.join(missing)})")
+
     if not unbound:
-        bound = ", ".join(
-            f"{tier}={cfg.binding(host, tier).model}"
-            for host in sorted(hosts)[:1]
-            for tier in MODEL_TIERS
+        bound = "; ".join(
+            f"{host}: "
+            + " ".join(f"{tier}={cfg.binding(host, tier).model}" for tier in MODEL_TIERS)
+            for host in sorted(hosts)
         )
         return DoctorCheck(
             name="model_tiers",
@@ -221,8 +299,152 @@ def _check_model_tiers(root: Path) -> DoctorCheck:
         status="warning",
         detail=(
             f"no tier→model binding for: {', '.join(unbound)} "
-            "(dispatches use the host CLI's default model)"
+            "(those tiers use the host CLI's default model)"
         ),
+    )
+
+
+def _git_out(root: Path, *args: str) -> str | None:
+    """Run a read-only git command; None on any failure. Never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _signing_is_broken(root: Path) -> bool:
+    """True when commits are configured to be signed but signing will fail.
+
+    Only the SSH-agent path is detectable locally and cheaply: if
+    `gpg.format` is `ssh` and the agent holds no identities, every commit
+    will fail. A 1Password or Secretive agent that has auto-locked is the
+    common cause, and it fails the push too, since the same agent holds
+    the auth key.
+    """
+    if (_git_out(root, "config", "--get", "commit.gpgsign") or "").strip() != "true":
+        return False
+    if (_git_out(root, "config", "--get", "gpg.format") or "").strip() != "ssh":
+        return False
+    try:
+        proc = subprocess.run(
+            ["ssh-add", "-l"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "no identities" in proc.stdout.lower()
+
+
+def _branches_without_upstream(root: Path) -> list[str]:
+    """Nightly branches that have never been pushed anywhere."""
+    listing = _git_out(
+        root, "for-each-ref", "--format=%(refname:short)|%(upstream)", "refs/heads/nightly/"
+    )
+    if not listing:
+        return []
+    out = []
+    for line in (ln for ln in listing.splitlines() if ln.strip()):
+        branch, _, upstream = line.partition("|")
+        if not upstream.strip():
+            out.append(branch)
+    return out
+
+
+def _check_tier_sanity(root: Path) -> DoctorCheck:
+    """Warn when a tier is bound to a model from a different band.
+
+    A swapped or typo'd binding — `lite: claude-opus-5`, or a reasoning
+    tier left on a lite model — is silent and expensive. Routing keeps
+    working, dispatches keep succeeding, and the only symptom is the
+    bill (or, in the reverse direction, a reviewer that misses bugs).
+    Nothing else in the system will ever complain.
+
+    Deliberately *not* a check that the model id exists. The vocabulary a
+    host CLI advertises in `--help` is a sample, not an enumeration —
+    `claude --help` names four tokens while every production id Nightly
+    ships as a default is absent from that list. A membership test would
+    flag correct configuration as broken, which is worse than no check.
+    Family matching only, and an unrecognized family is skipped rather
+    than guessed at.
+    """
+    from nightly_core.config import load_model_tier_config  # noqa: PLC0415
+    from nightly_core.model_probe import tier_of_model  # noqa: PLC0415
+
+    name, desc = "model_tier_sanity", "tier/model agreement"
+    cfg = load_model_tier_config(root)
+    if not cfg.enabled:
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="routing disabled")
+
+    mismatches: list[str] = []
+    for host in sorted(_configured_hosts(root)):
+        for tier in MODEL_TIERS:
+            model = cfg.binding(host, tier).model
+            if not model:
+                continue
+            actual = tier_of_model(model)
+            if actual is not None and actual != tier:
+                mismatches.append(f"{host}.{tier}={model} looks like a {actual}-tier model")
+
+    if not mismatches:
+        return DoctorCheck(name=name, description=desc, status="ok", detail="tiers look consistent")
+    return DoctorCheck(name=name, description=desc, status="warning", detail="; ".join(mismatches))
+
+
+def _check_push_readiness(root: Path) -> DoctorCheck:
+    """Can this machine's Nightly work actually reach the remote?
+
+    Advisory, never repaired — pushing is the operator's call, and a
+    locked signing agent is theirs to unlock.
+
+    This check exists because the failure is silent and expensive: an
+    overnight run can complete real work, commit it, and be unable to
+    push, and nothing in `status` or `doctor` said so. The work looks
+    done from inside the session and is invisible from outside it. An
+    operator who reads a morning briefing without noticing has lost the
+    night.
+    """
+    name, desc = "push_readiness", "unpushed Nightly work"
+
+    listing = _git_out(
+        root, "for-each-ref", "--format=%(refname:short)|%(upstream:track)", "refs/heads/nightly/"
+    )
+    if listing is None:
+        return DoctorCheck(name=name, description=desc, status="skipped", detail="git unavailable")
+
+    ahead: list[str] = []
+    for line in (ln for ln in listing.splitlines() if ln.strip()):
+        branch, _, track = line.partition("|")
+        track = track.strip()
+        # `[gone]` upstreams are merged-and-deleted branches — local
+        # cruft, not lost work. An empty track means in sync.
+        if "ahead" in track:
+            ahead.append(f"{branch} {track}")
+
+    never_pushed = _branches_without_upstream(root)
+
+    signer_broken = _signing_is_broken(root)
+    problems: list[str] = []
+    if ahead:
+        problems.append(f"unpushed: {', '.join(ahead)}")
+    if never_pushed:
+        problems.append(f"never pushed: {', '.join(never_pushed)}")
+    if signer_broken:
+        problems.append("commit signing configured but the ssh agent holds no identities")
+
+    if not problems:
+        return DoctorCheck(name=name, description=desc, status="ok", detail="all branches pushed")
+    return DoctorCheck(
+        name=name,
+        description=desc,
+        status="warning",
+        detail="; ".join(problems),
     )
 
 
@@ -583,7 +805,10 @@ def diagnose_and_repair(
     checks: list[DoctorCheck] = []
     checks.append(_check_nightly_scaffold(root, dry_run=dry_run))
     checks.append(_check_config(root, dry_run=dry_run))
+    checks.append(_check_config_blocks(root))
     checks.append(_check_model_tiers(root))
+    checks.append(_check_tier_sanity(root))
+    checks.append(_check_push_readiness(root))
     checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))
     checks.append(_check_synthesis_prompt())

@@ -9,13 +9,15 @@ author: operator
 source: interactive_seed
 estimated_effort: ~5h across 3 phases
 phase_a: implemented
+phase_b: implemented
+phase_c: implemented
 ---
 
 # RFC 012 — Fleet parallelism and context-handoff protocol
 
 ## Status
 
-`accepted` — operator seed in the 2026-07-28 interactive session,
+`implemented` — all three phases landed 2026-07-28. Operator seed in the 2026-07-28 interactive session,
 alongside the RFC 007 amendment. Two knobs that only make sense
 together: how *wide* the fleet runs, and what an individual agent does
 when its context fills up. Phase A lands the config schema and the
@@ -256,15 +258,37 @@ produces a handoff summary naming its unfinished goals.
 - [x] A6. Config template blocks
 - [x] A7. Unit tests (in `tests/test_routing.py`)
 
-**Phase B — Admission control**
-- [ ] B1. `dispatch start` admission check
-- [ ] B2. `dispatch status` shows cap utilization
-- [ ] B3. Worktree creation honors `max_worktrees`
-- [ ] B4. Six host skills: fan-out-to-cap guidance
-- [ ] B5. Admission tests
+**Phase B — Admission control** — *B1/B2/B5 landed 2026-07-28*
+- [x] B1. `dispatch start` admission check — refuses with exit code 3 and
+      names the cap that blocked it; `--force` overrides. Dispatch state
+      now persists its tier so counting doesn't re-resolve the plan.
+- [x] B2. `dispatch status` shows a `capacity:` line (live/cap per tier
+      plus the global total)
+- [x] B3. Worktree creation honors `max_worktrees` — raises the typed
+      `WorktreeCapReached` (not a bare RuntimeError, so "at capacity" is
+      distinguishable from "git failed"), checked before the branch is
+      cut so a refused request leaves nothing behind. Both callers
+      (`nightly worktree`, the headless driver) pass the configured cap;
+      CLI exits 3, matching `dispatch start`.
+- [x] B4. Fan-out-to-cap guidance — same delivery as RFC 007 C1: rule 12
+      of the shared rules block, not six skill files.
+- [x] B5. Admission tests (`tests/test_admission.py`, 14 cases) —
+      including the liveness rule: a dispatch whose PID is gone must not
+      occupy a slot, or an unpolled crash wedges the fleet
 
-**Phase C — Handoff protocol**
-- [ ] C1. Keepalive threshold comparison + prompt injection
-- [ ] C2. `handoff:` section in `digest.md`
-- [ ] C3. Briefing handoff counts
-- [ ] C4. Six host skills: two-threshold protocol text
+**Phase C — Handoff protocol** — *C1 landed 2026-07-28*
+- [x] C1. Keepalive threshold comparison + prompt injection — a three-rung
+      ladder (hard handoff > soft handoff > the v0.0.12 diet nudge). The
+      handoff block *replaces* the diet block rather than stacking; two
+      competing directives in one prompt is how an agent follows neither.
+      Session thresholds resolve against the reasoning tier's model, per
+      Resolved #8 and rule 12.
+- [x] C2. `Pending handoffs` section in `digest.md` — the digest is what
+      the `SessionStart(compact)` hook re-injects, so a handoff written
+      just before a compaction survives the very event it exists for.
+- [x] C3. Briefing handoff panel — names the task and its outstanding
+      work rather than a bare count; "which work was left" is the
+      operator's actual first question.
+- [x] C4. Two-threshold protocol text — in rule 12. (C1–C3, the
+      keepalive enforcement, remain open: the doctrine is documented but
+      the hook does not yet compare against the thresholds.)

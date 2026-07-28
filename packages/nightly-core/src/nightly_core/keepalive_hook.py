@@ -79,8 +79,10 @@ from pathlib import Path
 from typing import Any
 
 from nightly_core.cascade import CascadeChoice, next_task
-from nightly_core.config import load_context_config
+from nightly_core.config import load_context_config, load_model_tier_config
 from nightly_core.digest import write_digest
+from nightly_core.model_probe import detect_harness
+from nightly_core.routing import ContextThresholds, resolve_context_thresholds
 from nightly_core.runs import current_run
 
 __all__ = [
@@ -100,9 +102,11 @@ __all__ = [
     "disarm_session",
     "estimate_context_tokens",
     "format_decision",
+    "handoff_block",
     "log_heartbeat",
     "read_respawn_marker",
     "request_stop",
+    "session_context_thresholds",
 ]
 
 
@@ -412,6 +416,65 @@ def context_diet_block(estimate: int, budget: int) -> str:
     )
 
 
+def handoff_block(estimate: int, thresholds: ContextThresholds, breach: str) -> str:
+    """Render the RFC 012 handoff instruction for a soft or hard breach.
+
+    Supersedes the context-diet nudge rather than accompanying it: past a
+    handoff threshold, hygiene is no longer the right advice — recycling
+    is. The diet block says "use less context"; this says "stop
+    accumulating it and hand the goals to a fresh agent".
+
+    The summary is specified as goals-and-state, never a transcript.
+    Re-injecting the history into the successor would defeat the entire
+    exercise, and an agent told only "write a summary" reliably writes a
+    transcript.
+    """
+    est_k = round(estimate / 1000)
+    win_k = round(thresholds.window_tokens / 1000)
+    limit_k = round((thresholds.hard_tokens if breach == "hard" else thresholds.soft_tokens) / 1000)
+    common = (
+        "Write the summary to `.nightly/runs/<id>/tasks/<slug>/HANDOFF.md`: what the "
+        "task is, what is done, what remains, and anything you learned that is not "
+        "already on disk. Carry goals and state — NOT a transcript. Shedding the "
+        "history is the point of handing off; re-injecting it defeats the exercise. "
+        "Then end your turn so a fresh agent can resume with a clean context."
+    )
+    if breach == "hard":
+        return (
+            f"HARD CONTEXT HANDOFF: ~{est_k}K tokens against a {win_k}K window "
+            f"(hard threshold {limit_k}K). STOP the work you are on now — do not "
+            "finish it, do not start anything new. Past this point a single further "
+            "step risks truncating a write mid-way, which loses work rather than "
+            f"merely wasting tokens. {common}\n\n"
+        )
+    return (
+        f"CONTEXT HANDOFF: ~{est_k}K tokens against a {win_k}K window (soft "
+        f"threshold {limit_k}K). Finish the task you are on — do not start a new "
+        f"one — then hand off. {common}\n\n"
+    )
+
+
+def session_context_thresholds(root: Path) -> ContextThresholds:
+    """Resolve this session's handoff thresholds — RFC 012 Resolved #8.
+
+    Thresholds scale with the model's context window, and the hook cannot
+    read the host's live model selection. It assumes the session runs on
+    the **reasoning** tier's model, which is what rule 12 tells the
+    orchestrator to do: orchestration is reasoning-tier work.
+
+    A wrong guess degrades gracefully in the safe direction — an unknown
+    or unbound model falls back to `default_context_tokens` (200K), which
+    hands off earlier than a large window needs rather than later than a
+    small one can afford.
+    """
+    tier_cfg = load_model_tier_config(root)
+    host = detect_harness() or "claude"
+    return resolve_context_thresholds(
+        tier_cfg.binding(host, "reasoning").model,
+        load_context_config(root),
+    )
+
+
 @dataclass(frozen=True)
 class StopHookDecision:
     """What the Stop hook is going to do, and why.
@@ -585,7 +648,7 @@ def compute_stop_hook_decision(  # noqa: PLR0912 - one branch per off-ramp / rou
         spinning = repeats >= _LIVELOCK_REPICKS + _LIVELOCK_ESCALATE_AFTER
         if spinning:
             reason = _spin_escalation_block(choice, repeats) + reason
-        reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens)
+        reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens, root)
         message = (
             f"run {run.id} turn {turn_count}: blocking stop and injecting "
             f"{'ESCALATED ' if spinning else ''}planning-phase prompt "
@@ -604,7 +667,7 @@ def compute_stop_hook_decision(  # noqa: PLR0912 - one branch per off-ramp / rou
         run_id=run.id,
         turn=turn_count,
     )
-    reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens)
+    reason = _apply_context_diet(reason, context_estimate, ctx_cfg.budget_tokens, root)
     if stop_hook_active:
         message = (
             f"run {run.id} turn {turn_count}: blocking stop "
@@ -640,14 +703,43 @@ def _routes_to_planning_phase(
     return choice.source == "nothing"
 
 
-def _apply_context_diet(reason: str, estimate: int | None, budget: int) -> str:
-    """Prepend the context-diet block to `reason` when over the soft budget.
+def _apply_context_diet(
+    reason: str,
+    estimate: int | None,
+    budget: int,
+    root: Path | None = None,
+) -> str:
+    """Prepend context steering to `reason`, escalating with the estimate.
 
-    No-op (returns `reason` unchanged) when the estimate is None (couldn't
-    measure), the budget is 0 (steering disabled), or the estimate is within
-    budget. Otherwise the diet block is prepended so the agent reads it
-    before the continuation instructions."""
-    if estimate is None or budget <= 0 or estimate <= budget:
+    Three rungs, most severe first:
+
+    1. **Hard handoff** (RFC 012) — stop mid-task and summarize.
+    2. **Soft handoff** (RFC 012) — finish this task, then summarize.
+    3. **Context diet** (v0.0.12) — the original hygiene nudge.
+
+    A handoff block *replaces* the diet block rather than stacking with
+    it: past a handoff threshold "use less context" is no longer the
+    right instruction, and two competing directives in one prompt is how
+    an agent ends up following neither.
+
+    No-op when the estimate is None (couldn't measure). The diet rung is
+    additionally disabled by `budget <= 0`, and each handoff rung by its
+    ratio being 0 — so an operator can turn any rung off independently.
+    """
+    if estimate is None:
+        return reason
+
+    if root is not None:
+        try:
+            thresholds = session_context_thresholds(root)
+        except Exception:
+            thresholds = None  # config trouble must never break the hook
+        if thresholds is not None:
+            breach = thresholds.breach(estimate)
+            if breach is not None:
+                return handoff_block(estimate, thresholds, breach) + reason
+
+    if budget <= 0 or estimate <= budget:
         return reason
     return context_diet_block(estimate, budget) + reason
 

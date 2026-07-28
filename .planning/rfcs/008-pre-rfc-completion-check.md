@@ -1,5 +1,7 @@
 ---
 status: accepted
+phase_a: implemented (A3 deferred — see note)
+phase_b: implemented
 sized: true
 title: Pre-RFC completion check — verify deliverable doesn't already exist before dispatching
 created: 2026-06-04
@@ -382,13 +384,29 @@ both branches.
 ## Sized checklist
 
 **Phase A — Verifier paragraph + auto-tick documentation**
-- [ ] A1. `RFC_008_VERIFIER_PARAGRAPH` constant in `nightly_core.specialists` (or `skill_blocks` if extracted)
-- [ ] A2. Verifier paragraph added to all six host `skill.md` files in the SCOPE step
-- [ ] A3. `_REQUIRED_SKILL_TOKENS` extended with `pre-flight verification` per host
-- [ ] A4. `_is_item_in_flight` docstring cross-references this RFC's verifier
-- [ ] A5. Tests covering presence + doctor drift detection
+- [x] A1. `RFC_008_VERIFIER_PARAGRAPH` constant in `nightly_core.specialists`
+- [x] A2. Verifier doctrine reaches every host — as **rule 13 of the
+      shared rules block**, not six duplicated skill files. This RFC
+      itself calls the per-host duplication "a doctor-monitored drift
+      surface" (Resolved #9), which concedes the duplication is a
+      liability; `seed_rules` propagates one marker-delimited copy to
+      every host's AGENTS.md / CLAUDE.md and cannot drift between them.
+      Same delivery as RFC 007 C1/B2.
+- [ ] A3. `_REQUIRED_SKILL_TOKENS` per-host token — **not applicable as
+      written**, given A2's delivery: there is no per-host copy to drift.
+      The equivalent guard is doctor's existing `_check_rules` plus a test
+      asserting the doctrine is inside the seeded markers (A5). Left open
+      rather than silently reinterpreted — a human should confirm the
+      substitution before it is ticked.
+- [x] A4. `_is_item_in_flight` docstring cross-references the verifier
+      and the RFC 012 local-branch guard as the three composing layers
+- [x] A5. Tests covering presence, marker placement, and content
 
 **Phase B — Briefing surface + auto-tick commit format**
-- [ ] B1. Briefing template gains "Auto-ticked RFC items" optional section
-- [ ] B2. Commit message format documented in the verifier paragraph
-- [ ] B3. Tests covering rendered briefing with and without auto-ticks
+- [x] B1. Briefing gains a "ticked as already-done (verify these)"
+      panel, populated by scanning `main..HEAD` for rule 13's commit
+      format. Omitted when empty.
+- [x] B2. Commit message format documented in the verifier paragraph —
+      shipped with A1/A2 in `15fb1bc`. *(Ticked by rule 13's own process:
+      verified present before implementing, not re-implemented.)*
+- [x] B3. Tests covering parse, render-with, and render-without

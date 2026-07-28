@@ -43,7 +43,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 
@@ -62,6 +62,7 @@ from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config
 from nightly_core.contract import (
     HostId,
     InstallScope,
+    ModelTier,
     NightlyHostIntegration,
     SpecialistRole,
 )
@@ -101,6 +102,9 @@ from nightly_core.update import (
 )
 from nightly_core.verify import VerifyReport, run_verify
 
+if TYPE_CHECKING:  # import only for annotations — keeps the CLI's cold start fast
+    from nightly_core.dispatch import BackgroundDispatchResult
+
 app = typer.Typer(
     name="nightly",
     help="Nightly — continuously-running, host-native coding agent.",
@@ -110,6 +114,106 @@ app = typer.Typer(
 
 
 _DEFAULT_CONFIG_YML = DEFAULT_CONFIG_YML
+
+
+def _echo_routing_status(root: Path) -> None:
+    """Print the model-tier and fleet-cap lines of `nightly status`.
+
+    These blocks decide which model every dispatch runs on and how wide
+    the fleet goes, and until now `status` showed neither — an operator
+    had to open `.nightly/config.yml` to learn what their own run would
+    do. `status` is where config gets eyeballed; anything that changes
+    behavior this much belongs in it.
+    """
+    from nightly_core.config import (  # noqa: PLC0415 - lazy
+        load_model_tier_config,
+        load_parallelism_config,
+    )
+    from nightly_core.contract import MODEL_TIERS  # noqa: PLC0415 - lazy
+    from nightly_core.routing import resolve_context_thresholds  # noqa: PLC0415 - lazy
+
+    tier_cfg = load_model_tier_config(root)
+    if not tier_cfg.enabled:
+        typer.echo("  tiers:     disabled (every dispatch uses the host default model)")
+    else:
+        host = _primary_host(root)
+        cells = []
+        for tier in MODEL_TIERS:
+            binding = tier_cfg.binding(host, tier)
+            cells.append(f"{tier}={binding.model or '<host default>'}")
+        flag = tier_cfg.flag_for(host)
+        suffix = f" via {flag}" if flag else " (no model flag discovered)"
+        typer.echo(f"  tiers:     [{host}] {'  '.join(cells)}{suffix}")
+
+    par = load_parallelism_config(root)
+    caps = "  ".join(f"{tier}={par.limit_for(tier) or '∞'}" for tier in MODEL_TIERS)
+    typer.echo(
+        f"  fleet:     {caps}  (worktrees={par.max_worktrees or '∞'}, "
+        f"total={par.max_concurrent_specialists or '∞'})"
+    )
+
+    from nightly_core.config import load_context_config  # noqa: PLC0415 - lazy
+
+    ctx = load_context_config(root)
+    model = tier_cfg.binding(_primary_host(root), "reasoning").model if tier_cfg.enabled else None
+    th = resolve_context_thresholds(model, ctx)
+    if th.soft_tokens or th.hard_tokens:
+        typer.echo(
+            f"  handoff:   soft={round(th.soft_tokens / 1000)}K "
+            f"hard={round(th.hard_tokens / 1000)}K "
+            f"(of a {round(th.window_tokens / 1000)}K window)"
+        )
+
+
+def _primary_host(root: Path) -> HostId:
+    """The host `status` reports tier bindings for.
+
+    Prefers the harness actually running the command, so the numbers
+    shown are the ones that will apply; falls back to the first
+    configured host, then `claude`.
+    """
+    from nightly_core.model_probe import detect_harness  # noqa: PLC0415 - lazy
+
+    harness = detect_harness()
+    if harness is not None:
+        return harness
+    from nightly_core.doctor import _configured_hosts  # noqa: PLC0415 - lazy
+
+    hosts = _configured_hosts(root)
+    return hosts[0] if hosts else "claude"
+
+
+def _render_discovered_config() -> str:
+    """Render config.yml with model controls probed from the live harness.
+
+    RFC 007's tier table is only useful if the ids and the
+    model-selection flag match the harness the operator actually runs in.
+    Rather than ship a table that goes stale, `nightly init` asks each
+    installed host CLI what it accepts (`nightly_core.model_probe`) and
+    writes that down. Discovery only ever *adds* certainty: probe results
+    merge over the seeded defaults, and a pinned default outranks a
+    floating alias the help text happened to mention.
+
+    Any probe failure degrades to the seeded template — init must never
+    fail because a host CLI misbehaved.
+    """
+    from nightly_core.config import (  # noqa: PLC0415 - lazy
+        DEFAULT_TIER_MODELS,
+        render_config_yml,
+    )
+
+    try:
+        from nightly_core.model_probe import (  # noqa: PLC0415 - lazy
+            discover_tier_bindings,
+            merge_discovered_tiers,
+        )
+
+        discovered, flags = discover_tier_bindings()
+    except Exception:  # never let a probe break `init`
+        return DEFAULT_CONFIG_YML
+    if not discovered and not flags:
+        return DEFAULT_CONFIG_YML
+    return render_config_yml(merge_discovered_tiers(DEFAULT_TIER_MODELS, discovered), flags)
 
 
 _NIGHTLY_SUBDIRS: tuple[str, ...] = ("runs", "plans", "atlas", "memory", "prompts")
@@ -204,7 +308,7 @@ def _ensure_config(nightly: Path) -> bool:
     config = nightly / "config.yml"
     if config.exists():
         return False
-    config.write_text(_DEFAULT_CONFIG_YML, encoding="utf-8")
+    config.write_text(_render_discovered_config(), encoding="utf-8")
     return True
 
 
@@ -431,9 +535,14 @@ def status() -> None:
 
     compact_cfg = load_compact_config(root)
     compact_state = "enabled" if compact_cfg.enabled else "disabled"
+    # `enabled={state}` rendered as "enabled=enabled" — and, worse,
+    # "enabled=disabled". The state word already carries the meaning.
     typer.echo(
-        f"  compact:   enabled={compact_state} (threshold cap {round(compact_cfg.context_token_cap / 1000)}K)"
+        f"  compact:   {compact_state} "
+        f"(threshold cap {round(compact_cfg.context_token_cap / 1000)}K)"
     )
+
+    _echo_routing_status(root)
 
     typer.echo("  runs:")
     run = current_run(root)
@@ -698,13 +807,41 @@ def specialist(
         SpecialistRole,
         typer.Argument(help="Specialist role: implementer | tester | reviewer | researcher."),
     ],
+    tier: Annotated[
+        str | None,
+        typer.Option(
+            "--tier",
+            help=(
+                "Model tier (lite | coding | reasoning). Appends the tier's "
+                "deliberation directive to the prompt. Omit to use the "
+                "role's default tier without the directive."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Print the system prompt for a specialist role.
 
     Inside Claude Code, the Nightly skill uses this to seed a Task-tool
     sub-agent with the right role-specific instructions.
+
+    With `--tier`, the tier's reasoning-effort directive is appended (RFC
+    007 Resolved #10/#11). The role instructions themselves don't change
+    between tiers — what changes is how much the sub-agent is told to
+    deliberate before acting.
     """
-    typer.echo(specialist_prompt(role), nl=False)
+    prompt = specialist_prompt(role)
+    if tier is not None:
+        from nightly_core.contract import MODEL_TIERS  # noqa: PLC0415 - lazy
+        from nightly_core.routing import effort_directive  # noqa: PLC0415 - lazy
+
+        if tier not in MODEL_TIERS:
+            typer.echo(f"unknown tier: {tier} (expected one of {', '.join(MODEL_TIERS)})", err=True)
+            raise typer.Exit(code=2)
+        from nightly_core.config import load_model_tier_config  # noqa: PLC0415 - lazy
+
+        cfg = load_model_tier_config(repo_root())
+        prompt = f"{prompt}\n{effort_directive(cfg.effort[cast('ModelTier', tier)])}\n"
+    typer.echo(prompt, nl=False)
 
 
 @app.command()
@@ -1418,6 +1555,9 @@ def worktree_create(
         typer.echo(f"worktree_root={worktree_root_cfg or '(auto)'}")
         return
 
+    from nightly_core.config import load_parallelism_config  # noqa: PLC0415 - lazy
+    from nightly_core.worktree import WorktreeCapReached  # noqa: PLC0415 - lazy
+
     try:
         handle = asyncio.run(
             create_worktree(
@@ -1426,8 +1566,14 @@ def worktree_create(
                 base_branch=base_branch,
                 branch_prefix=branch_prefix,
                 worktree_root=worktree_root_cfg,
+                max_worktrees=load_parallelism_config(root).max_worktrees,
             )
         )
+    except WorktreeCapReached as exc:
+        # Exit 3 matches `dispatch start`'s at-capacity code: both mean
+        # "wait for a slot", not "something broke".
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(code=3) from None
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -1518,8 +1664,26 @@ def worktree_doctor_cmd(
 # ── dispatch — background specialist sub-processes ────────────────────────
 
 
+def _plan_model_tier(slug: str, root: Path) -> ModelTier | None:
+    """Read `model_tier:` from the task's plan.md frontmatter, if present.
+
+    Returns None whenever the plan can't be located or declares nothing —
+    the dispatch then falls back to the specialist role's default tier,
+    which is the intended common case (RFC 007 Resolved #6).
+    """
+    from nightly_core.plans import list_plans  # noqa: PLC0415 - lazy
+
+    try:
+        for plan in list_plans(root=root):
+            if plan.slug == slug or plan.slug.endswith(f"-{slug}"):
+                return plan.model_tier
+    except Exception:  # a malformed plan must not block the dispatch
+        return None
+    return None
+
+
 @dispatch_app.command(name="start")
-def dispatch_start_cmd(
+def dispatch_start_cmd(  # noqa: PLR0913 - one option per dispatch dimension
     slug: Annotated[
         str,
         typer.Argument(help="Task slug. Must exist under the current run."),
@@ -1558,6 +1722,13 @@ def dispatch_start_cmd(
             help="Working directory for the spawned process. Defaults to the repo root.",
         ),
     ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Spawn even when the parallelism cap for this tier is reached.",
+        ),
+    ] = False,
 ) -> None:
     """Spawn the host's headless CLI as a detached background process.
 
@@ -1571,11 +1742,40 @@ def dispatch_start_cmd(
     `nightly dispatch status` to poll, `nightly dispatch tail` to
     follow output, `nightly dispatch wait` to block.
     """
+    from nightly_core.config import load_model_tier_config  # noqa: PLC0415 - lazy
     from nightly_core.dispatch import start_background  # noqa: PLC0415 - lazy
+    from nightly_core.routing import (  # noqa: PLC0415 - lazy
+        effort_directive,
+        resolve_model_for_task,
+    )
     from nightly_core.specialists import specialist_prompt  # noqa: PLC0415 - lazy
 
     root = repo_root()
     body = prompt or _default_dispatch_prompt(role=role, slug=slug, specialist=specialist_prompt)
+
+    tier_cfg = load_model_tier_config(root)
+    resolved = resolve_model_for_task(
+        host=host,
+        role=role,
+        config=tier_cfg,
+        plan_tier=_plan_model_tier(slug, root),
+    )
+    if tier_cfg.enabled:
+        body = f"{body}\n{effort_directive(resolved.effort)}\n"
+
+    from nightly_core.config import load_parallelism_config  # noqa: PLC0415 - lazy
+    from nightly_core.dispatch import admission_blocked  # noqa: PLC0415 - lazy
+
+    blocked = admission_blocked(resolved.tier, load_parallelism_config(root), root)
+    if blocked and not force:
+        typer.echo(f"✗ dispatch not admitted: {blocked}", err=True)
+        typer.echo(
+            "  wait for a slot (`nightly dispatch status`), raise the cap in "
+            "`.nightly/config.yml` under `parallelism:`, or pass --force.",
+            err=True,
+        )
+        raise typer.Exit(code=3)
+
     try:
         result = start_background(
             slug,
@@ -1584,6 +1784,9 @@ def dispatch_start_cmd(
             prompt=body,
             root=root,
             cwd=cwd,
+            model=resolved.model,
+            model_flag=tier_cfg.flag_for(host),
+            tier=resolved.tier,
         )
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
@@ -1595,6 +1798,9 @@ def dispatch_start_cmd(
     typer.echo(f"slug={result.slug}")
     typer.echo(f"role={result.role}")
     typer.echo(f"host={result.host}")
+    typer.echo(f"tier={resolved.tier}")
+    typer.echo(f"model={resolved.model or '<host default>'}")
+    typer.echo(f"effort={resolved.effort}")
 
 
 def _default_dispatch_prompt(
@@ -1656,37 +1862,61 @@ def dispatch_status_cmd(
     if not states:
         typer.echo("· no dispatches in the current run")
         return
-    typer.echo(f"{'status':<10} {'pid':<8} {'host':<10} {'role':<13} {'slug':<32} log")
-    typer.echo("-" * 78)
+    typer.echo(f"{'status':<10} {'pid':<8} {'host':<10} {'role':<13} {'tier':<10} {'slug':<32} log")
+    typer.echo("-" * 88)
     for state in states:
         live = refresh(state, root=root)
         _print_dispatch_row(live, root=root, verbose=False)
 
+    _print_tier_utilization(root)
+
+
+def _print_tier_utilization(root: Path) -> None:
+    """Show live-vs-cap per tier so the operator can see the fleet's headroom.
+
+    Printed after the dispatch table because it answers the question the
+    table provokes: "can I start another one?"
+    """
+    from nightly_core.config import load_parallelism_config  # noqa: PLC0415 - lazy
+    from nightly_core.dispatch import tier_utilization  # noqa: PLC0415 - lazy
+
+    config = load_parallelism_config(root)
+    util = tier_utilization(config, root)
+    cells = [
+        f"{tier} {used}/{cap or '∞'}" + (" FULL" if cap and used >= cap else "")
+        for tier, (used, cap) in util.items()
+    ]
+    total = sum(used for used, _ in util.values())
+    overall = config.max_concurrent_specialists or "∞"
+    typer.echo(f"\ncapacity: {'  '.join(cells)}   (total {total}/{overall})")
+
 
 def _print_dispatch_row(
-    state: object,  # BackgroundDispatchResult — typed via duck on the read side
+    state: BackgroundDispatchResult,
     *,
     root: Path,
     verbose: bool,
 ) -> None:
     """Render one dispatch as either a compact table row or a verbose block."""
-    log = _format_path_for_display(state.log_path, root)  # type: ignore[attr-defined]
+    log = _format_path_for_display(state.log_path, root)
+    tier = state.tier or "-"
     if verbose:
-        typer.echo(f"slug:      {state.slug}")  # type: ignore[attr-defined]
-        typer.echo(f"role:      {state.role}")  # type: ignore[attr-defined]
-        typer.echo(f"host:      {state.host}")  # type: ignore[attr-defined]
-        typer.echo(f"pid:       {state.pid}")  # type: ignore[attr-defined]
-        typer.echo(f"status:    {state.status}")  # type: ignore[attr-defined]
-        if state.exit_code is not None:  # type: ignore[attr-defined]
-            typer.echo(f"exit_code: {state.exit_code}")  # type: ignore[attr-defined]
-        typer.echo(f"started:   {state.started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
-        if state.finished_at is not None:  # type: ignore[attr-defined]
-            typer.echo(f"finished:  {state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
+        typer.echo(f"slug:      {state.slug}")
+        typer.echo(f"role:      {state.role}")
+        typer.echo(f"host:      {state.host}")
+        typer.echo(f"tier:      {tier}")
+        typer.echo(f"pid:       {state.pid}")
+        typer.echo(f"status:    {state.status}")
+        if state.exit_code is not None:
+            typer.echo(f"exit_code: {state.exit_code}")
+        typer.echo(f"started:   {state.started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+        if state.finished_at is not None:
+            typer.echo(f"finished:  {state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
         typer.echo(f"log:       {log}")
         return
     typer.echo(
-        f"{state.status:<10} {state.pid:<8} {state.host:<10} "  # type: ignore[attr-defined]
-        f"{state.role:<13} {state.slug:<32} {log}"  # type: ignore[attr-defined]
+        f"{state.status:<10} {state.pid:<8} {state.host:<10} "
+        f"{state.role:<13} {tier:<10} {state.slug:<32} {log}"
     )
 
 
@@ -2014,10 +2244,13 @@ def verify_cmd(
         ),
     ] = False,
     timeout: Annotated[
-        float,
+        float | None,
         typer.Option(
             "--timeout",
-            help="Per-check timeout in seconds. Default: 300.",
+            help=(
+                "Per-check timeout in seconds. Default: `verify.timeout_seconds` "
+                "from .nightly/config.yml (300 if unset)."
+            ),
         ),
     ] = 300.0,
 ) -> None:
@@ -2032,12 +2265,14 @@ def verify_cmd(
     Exits non-zero on any failed check or missing configured tool so
     the agent can branch on `$?` from the prompt.
     """
+    from nightly_core.config import load_verify_config  # noqa: PLC0415 - lazy
+
     root = repo_root()
     report = run_verify(
         root,
         dry_run=dry_run,
         only=only,
-        timeout_s=timeout,
+        timeout_s=timeout if timeout is not None else load_verify_config(root).timeout_seconds,
     )
     _print_verify_report(report, root=root)
     if report.failed or report.not_found:

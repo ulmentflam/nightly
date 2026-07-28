@@ -202,6 +202,41 @@
     </section>
   {% endif %}
 
+  {# ── auto-ticked RFC items (RFC 008 B1) ──────────────────────────── #}
+  {% if auto_ticks %}
+    <section class="narrative">
+      <div class="label">ticked as already-done (verify these)</div>
+      <ul>
+        {% for a in auto_ticks %}
+          <li><code>{{ a.rfc }}</code> {{ a.item }} — claimed present in
+            <code>{{ a.source }}</code> ({{ a.sha }})</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {# ── pending handoffs (RFC 012 C3) ───────────────────────────────── #}
+  {% if handoffs %}
+    <section class="narrative">
+      <div class="label">handed off mid-task</div>
+      <ul>
+        {% for h in handoffs %}
+          <li><code>{{ h.slug }}</code> — {{ h.summary }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {# ── dispatch mix by model tier (RFC 007 §8) ─────────────────────── #}
+  {% if tier_breakdown %}
+    <section class="narrative">
+      <div class="label">dispatches by tier</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 0.8rem; color: var(--muted);">
+        {{ tier_breakdown }}
+      </div>
+    </section>
+  {% endif %}
+
   {# ── session narrative (agent-authored, optional) ────────────────── #}
   {% if session_narrative %}
     <section class="narrative">

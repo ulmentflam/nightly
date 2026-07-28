@@ -24,6 +24,7 @@ from pathlib import Path
 
 __all__ = [
     "GitRunner",
+    "WorktreeCapReached",
     "WorktreeHandle",
     "create_worktree",
     "default_git_runner",
@@ -33,6 +34,26 @@ __all__ = [
 ]
 
 _log = logging.getLogger(__name__)
+
+
+class WorktreeCapReached(RuntimeError):
+    """Raised when `parallelism.max_worktrees` would be exceeded — RFC 012 B3.
+
+    A distinct type rather than a bare `RuntimeError` so callers can tell
+    "the fleet is at capacity, try again when a task finishes" apart from
+    "git itself failed". The first is a scheduling condition with an
+    obvious remedy; the second is a real error.
+    """
+
+    def __init__(self, live: int, cap: int) -> None:
+        self.live = live
+        self.cap = cap
+        super().__init__(
+            f"{live} Nightly worktree(s) already exist; `parallelism.max_worktrees` "
+            f"is {cap}. Finish or remove a task's worktree, or raise the cap in "
+            "`.nightly/config.yml`."
+        )
+
 
 DEFAULT_BRANCH_PREFIX = "nightly/"
 
@@ -322,14 +343,29 @@ async def create_worktree(  # noqa: PLR0913 - all params are real config dimensi
     worktree_root: str | None = None,
     runner: GitRunner | None = None,
     now: datetime | None = None,
+    max_worktrees: int = 0,
 ) -> WorktreeHandle:
     """Create a new isolated worktree for `slug`.
 
     Spawns `git worktree add <path> -b <branch> <base>`. The base branch
     must already exist on the repo at `root`. Placement is decided by
     `_resolve_worktree_base` (config-overridable, iCloud-aware).
+
+    `max_worktrees` is the RFC 012 task-level fan-out cap; `0` (the
+    default) means unlimited, matching every other limiter in the config.
+    The count is taken from the live `git worktree list`, not from run
+    state, so a worktree left behind by an earlier crashed run still
+    occupies a slot — which is the honest reading, since it is still
+    consuming disk and still holds a branch checked out.
+
+    Raises `WorktreeCapReached` at capacity. Checked *before* the branch
+    is cut so a refused request leaves nothing behind.
     """
     run = runner or default_git_runner
+    if max_worktrees > 0:
+        live = await list_worktrees(root, branch_prefix=branch_prefix, runner=run)
+        if len(live) >= max_worktrees:
+            raise WorktreeCapReached(len(live), max_worktrees)
     branch = _branch_name(slug, prefix=branch_prefix, now=now)
     base = await _resolve_worktree_base(root, worktree_root=worktree_root, run=run)
     path = _worktree_path(base, branch)

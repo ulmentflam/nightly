@@ -180,3 +180,73 @@ def test_run_verify_handles_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     report = run_verify(tmp_path)
     assert not report.ok
     assert all("timed out" in c.output for c in report.failed)
+
+
+# ── configurable timeout (verify: block) ──────────────────────────────────
+
+
+def _write_cfg(root: Path, body: str) -> None:
+    (root / ".nightly").mkdir(parents=True, exist_ok=True)
+    (root / ".nightly" / "config.yml").write_text(body, encoding="utf-8")
+
+
+def test_verify_timeout_defaults_to_300(tmp_path: Path) -> None:
+    from nightly_core.config import load_verify_config
+
+    assert load_verify_config(tmp_path).timeout_seconds == 300
+
+
+def test_verify_timeout_is_configurable(tmp_path: Path) -> None:
+    """A repo whose test target legitimately runs long shouldn't have to
+    pass --timeout on every invocation."""
+    from nightly_core.config import load_verify_config
+
+    _write_cfg(tmp_path, "verify:\n  timeout_seconds: 1800\n")
+    assert load_verify_config(tmp_path).timeout_seconds == 1800
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "banana"])
+def test_nonsense_timeout_falls_back_to_the_default(tmp_path: Path, bad: str) -> None:
+    """`0` must not mean "let a hung check block the run forever"."""
+    from nightly_core.config import load_verify_config
+
+    _write_cfg(tmp_path, f"verify:\n  timeout_seconds: {bad}\n")
+    assert load_verify_config(tmp_path).timeout_seconds == 300
+
+
+def test_malformed_config_falls_back(tmp_path: Path) -> None:
+    from nightly_core.config import load_verify_config
+
+    _write_cfg(tmp_path, "verify: [oops\n")
+    assert load_verify_config(tmp_path).timeout_seconds == 300
+
+
+def test_timeout_message_names_the_knob(tmp_path: Path) -> None:
+    """The old message was `timed out after 300.0s` and nothing else —
+    no hint that the limit was adjustable at all."""
+    import subprocess
+
+    from nightly_core.verify import VerifyCheck, _run_one
+
+    check = VerifyCheck(
+        name="slow",
+        description="a slow but healthy check",
+        command=("sleep", "5"),
+        status="skipped",
+    )
+
+    def boom(*_args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="sleep", timeout=kwargs.get("timeout", 1))
+
+    import nightly_core.verify as verify_mod
+
+    original = verify_mod.subprocess.run
+    verify_mod.subprocess.run = boom  # type: ignore[assignment]
+    try:
+        result = _run_one(check, cwd=tmp_path, timeout=1)
+    finally:
+        verify_mod.subprocess.run = original  # type: ignore[assignment]
+
+    assert "timed out" in result.output
+    assert "verify.timeout_seconds" in result.output
+    assert "--timeout" in result.output

@@ -284,6 +284,7 @@ def pick_unblocked(root: Path | None = None) -> PlanRecord | None:
 # captures the item text. Indented checkboxes (nested lists) are intentionally
 # excluded — only top-level RFC items count as cascade candidates.
 _RFC_UNCHECKED_RE = re.compile(r"^- \[ \] (.+)$", re.MULTILINE)
+_RFC_CHECKED_RE = re.compile(r"^- \[[xX]\] (.+)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -422,8 +423,68 @@ def _open_nightly_pr_texts(
     return texts
 
 
+def _items_done_on_local_branches(rfc_path: Path, root: Path | None) -> set[str]:
+    """Item texts already ticked on an unmerged local `nightly/*` branch.
+
+    The open-PR guard (`_is_item_in_flight`) only sees work that has been
+    pushed *and* opened as a PR. Work that is committed locally — because
+    the push failed, credentials expired, or the agent simply hasn't
+    pushed yet — is invisible to it, so the cascade re-picks an item that
+    is already done and hands the agent the same task every turn. That
+    livelock was observed for seven consecutive turn boundaries before
+    this guard existed.
+
+    Reads each Nightly branch's own copy of the RFC and collects the
+    items *it* has checked, which answers "is this item done somewhere?"
+    directly rather than inferring it from the fact that a branch touched
+    the file. Returns an empty set on any git failure — a repo without
+    git, or a detached checkout, must fall back to today's behavior
+    rather than skipping everything.
+    """
+    repo = (root or repo_root()).resolve()
+    try:
+        rel = rfc_path.resolve().relative_to(repo).as_posix()
+    except ValueError:
+        return set()
+
+    def _git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return proc.stdout if proc.returncode == 0 else None
+
+    listing = _git("branch", "--list", "nightly/*", "--format=%(refname:short)")
+    if not listing:
+        return set()
+
+    done: set[str] = set()
+    for branch in (ln.strip() for ln in listing.splitlines() if ln.strip()):
+        blob = _git("show", f"{branch}:{rel}")
+        if blob:
+            done.update(m.group(1).strip() for m in _RFC_CHECKED_RE.finditer(blob))
+    return done
+
+
 def _is_item_in_flight(rfc_filename: str, item_text: str, pr_texts: list[tuple[str, str]]) -> bool:
     """Is this RFC item likely addressed by an open Nightly PR?
+
+    One of three guards against re-doing finished work, and the only one
+    that runs in the cascade walker. The other two are
+    `_items_done_on_local_branches` (committed but unmerged) and RFC
+    008's agent-side pre-flight verification
+    (`specialists.RFC_008_VERIFIER_PARAGRAPH`), which catches the case
+    neither can see: an item implemented under a different name, or one
+    whose checklist was simply never reconciled. They compose — this
+    skips what is *in flight*, the branch guard skips what is *done
+    locally*, and the verifier catches what is done and unrecorded.
 
     Two heuristics, biased toward false negatives (we'd rather re-pick
     an in-flight item than silently skip one that isn't addressed):
@@ -478,9 +539,10 @@ def _find_accepted_rfc(root: Path | None = None) -> _RFCMatch | None:
         _metadata, body = parse_frontmatter(text)
         # When there's no frontmatter, `parse_frontmatter` returns the
         # whole file as `body` already; this path covers both cases.
+        done_locally = _items_done_on_local_branches(entry, root)
         for match in _RFC_UNCHECKED_RE.finditer(body):
             item_text = match.group(1).strip()
-            if _is_item_in_flight(entry.name, item_text, pr_texts):
+            if item_text in done_locally or _is_item_in_flight(entry.name, item_text, pr_texts):
                 total_skipped += 1
                 continue
             return _RFCMatch(

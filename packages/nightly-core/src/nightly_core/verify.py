@@ -331,7 +331,11 @@ def _run_one(check: VerifyCheck, *, cwd: Path, timeout: float) -> VerifyCheck:
             description=check.description,
             command=check.command,
             status="failed",
-            output=f"timed out after {exc.timeout}s",
+            output=(
+                f"timed out after {exc.timeout}s — if this check is simply slow "
+                "rather than hung, raise `verify.timeout_seconds` in "
+                "`.nightly/config.yml` or pass `--timeout`"
+            ),
             exit_code=-1,
         )
     except OSError as exc:

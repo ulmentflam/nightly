@@ -10,6 +10,7 @@ author: nightly-seed
 source: interactive_seed
 estimated_effort: ~7h across 3 phases
 phase_a: implemented
+status_note: all three phases implemented 2026-07-28
 ---
 
 # RFC 007 — Model-tier routing for cost-aware specialist dispatch
@@ -64,9 +65,10 @@ task shape to choose a tier:
 
 - `nightly specialist implementer` — coding tier
 - `nightly specialist tester` — coding tier
-- `nightly specialist reviewer` — coding tier (could be lite for
-  trivial diffs; conservative default is coding)
-- `nightly specialist researcher` — reasoning tier
+- `nightly specialist reviewer` — reasoning tier (review *is* result
+  validation; nothing downstream re-checks it — see Resolved #4)
+- `nightly specialist researcher` — lite tier (file search and
+  summarization over code already on disk — see Resolved #4)
 - Plan body says "audit-only" / "doc-only" / "briefing-only" →
   lite tier
 - Plan frontmatter declares `model_tier: reasoning` → override
@@ -202,31 +204,29 @@ Sonnet 4.7 doesn't break the config; only the model id under
 pointing at concrete model ids:
 
 ```yaml
+# Shipped defaults — the only ids Nightly states authoritatively.
 model_tiers:
   claude:
     lite:       claude-haiku-4-5
-    coding:     claude-sonnet-4-6
-    reasoning:  claude-opus-4-7
-  codex:
-    lite:       gpt-5-mini
-    coding:     gpt-5
-    reasoning:  gpt-5-reasoning
-  cursor:
+    coding:     claude-sonnet-5
+    reasoning:  claude-opus-5
+  cursor:       # Anthropic-backed, same ids
     lite:       claude-haiku-4-5
-    coding:     claude-sonnet-4-6
-    reasoning:  claude-opus-4-7
-  gemini:
-    lite:       gemini-2.5-flash
-    coding:     gemini-2.5-pro
-    reasoning:  gemini-3.5-pro
-  antigravity:
-    lite:       gemini-2.5-flash
-    coding:     gemini-2.5-pro
-    reasoning:  gemini-3.5-pro
-  opencode:
+    coding:     claude-sonnet-5
+    reasoning:  claude-opus-5
+  opencode:     # Anthropic-backed, same ids
     lite:       claude-haiku-4-5
-    coding:     claude-sonnet-4-6
-    reasoning:  claude-opus-4-7
+    coding:     claude-sonnet-5
+    reasoning:  claude-opus-5
+
+# ILLUSTRATIVE ONLY — not shipped, and the ids below are placeholders.
+# `codex`, `gemini`, and `antigravity` resolve to no binding by default;
+# their dispatches fall through to the host CLI's own model. Wire real
+# ids yourself, or let `nightly init` discover them (Resolved #12).
+#  codex:
+#    lite:       <vendor model id>
+#    coding:     <vendor model id>
+#    reasoning:  <vendor model id>
 ```
 
 `nightly init` and `nightly doctor` write this default block.
@@ -341,6 +341,35 @@ everywhere and degrades to a no-op on a model that ignores it. A
 future phase can upgrade specific hosts to a native flag without
 changing the config schema.
 
+**12. Model controls are discovered, not declared (ADDED 2026-07-28).**
+`nightly init` probes each installed host CLI's `--help` for its
+model-selection flag and its advertised model vocabulary, then ranks that
+vocabulary into the three tiers and writes the result to
+`model_tiers.<host>.flag` and `model_tiers.<host>.<tier>`.
+
+The original plan had Nightly carry a per-host flag table. That table is
+wrong the day a vendor renames a flag, and a wrong flag is a hard spawn
+failure in the middle of an unattended run — whereas the right one is
+readable from the CLI in milliseconds. Discovery immediately found
+`--model` on opencode and gemini, neither of which had been verified by
+hand when the defaults were written.
+
+Two rules keep discovery safe:
+
+- **It can only add certainty.** Probe results merge over the seeded
+  defaults; any probe failure degrades to the seeded template, so `init`
+  can never fail because a host CLI misbehaved.
+- **Pinned beats floating.** A discovered *pinned* id (`claude-opus-5`)
+  overrides a seeded default, but a bare alias (`opus`) does not. Aliases
+  resolve to whatever shipped most recently — convenient interactively,
+  wrong for an overnight run whose model should still be identifiable in
+  the morning.
+
+Host coverage spans all seven major harnesses (Claude, Codex, Cursor,
+Gemini, OpenCode, Pi, Hermes) plus Antigravity. `pi` and `hermes` are
+recognized at the routing layer only — they ship no integration package,
+so skill install and keep-alive hooks are unavailable for them.
+
 ## Risks
 
 - **Tier mis-pick at the borderline.** Agent judgment will
@@ -353,10 +382,25 @@ changing the config schema.
 
 - **Stale config after a model deprecation.** If Anthropic
   deprecates Haiku 4.5 in favor of Haiku 5.0, configs still
-  pointing at the old id will fail at dispatch time. Mitigation:
-  `nightly doctor` gains a future check that pings each
-  configured model id; the immediate failure mode is "dispatch
-  raises" which surfaces in the briefing.
+  pointing at the old id will fail at dispatch time.
+
+  *2026-07-28: the proposed mitigation — a doctor check validating
+  each configured id — turns out to be unbuildable from local
+  signal.* The vocabulary a host CLI advertises in `--help` is a
+  sample, not an enumeration: `claude --help` names four tokens
+  (`fable`, `opus`, `sonnet`, `claude-fable-5`) and **none** of the
+  three production ids Nightly ships as defaults appear in it. A
+  membership test would flag correct configuration as broken, which
+  is worse than no check at all. Validating for real needs a network
+  call to the vendor's models endpoint — out of scope for `doctor`,
+  which must work offline.
+
+  What shipped instead is `_check_tier_sanity`: a *family*
+  consistency check that catches the misconfiguration local signal
+  can actually see — a tier bound to a model from a different band
+  (`lite: claude-opus-5`). Unrecognized families are skipped rather
+  than guessed at. The deprecation case remains covered only by
+  "dispatch raises", which surfaces in the briefing.
 
 - **Host-side rate limits / billing caps.** Switching to lite tier
   for the bulk of doc work could trip the host's rate limit if
@@ -481,14 +525,41 @@ missing config; README updated.
       reviewer-tier change makes a silently-inert routing config more
       consequential than it was when C2 was scheduled.
 
-**Phase B — Dispatch integration**
-- [ ] B1. `nightly dispatch start` reads resolved model id
-- [ ] B2. Task-tool fallback documented across six host skill.md
-- [ ] B3. Briefing tier-breakdown line
-- [ ] B4. `nightly specialist --tier <tier>` flag
-- [ ] B5. End-to-end dispatch tests across tiers + fallback
+**Phase B — Dispatch integration** — *core landed 2026-07-28; B2/B3 open*
+- [x] B1. `nightly dispatch start` reads resolved model id and passes it
+      with the **discovered** model flag (see B6)
+- [x] B2. Task-tool fallback documented — delivered as rule 12 of the
+      shared rules block alongside C1, not six skill files. *(Ticked
+      2026-07-28 by RFC 008's own doctrine: implemented in `173a7e8`,
+      checklist never reconciled.)*
+- [x] B3. Briefing tier-breakdown line — a `dispatches by tier` panel
+      rendered from each task's `dispatch.json`. Reads the run's task
+      dirs directly rather than via `list_dispatches`, which resolves the
+      *current* run; the briefing renders arbitrary (including concluded)
+      runs. Untiered pre-RFC-007 records are surfaced as `unrouted`
+      rather than dropped.
+- [x] B4. `nightly specialist --tier <tier>` flag
+- [x] B5. Dispatch resolution tests across tiers + host-miss fallback
+      (`tests/test_routing.py`); end-to-end argv assertions still open
+- [x] B6. *(unplanned, supersedes part of B1)* `nightly init` **discovers**
+      each host's model-selection flag and model vocabulary from the host
+      CLI's own `--help`, rather than Nightly carrying a vendor table.
+      See `nightly_core.model_probe` and RFC 007 Resolved #12.
 
 **Phase C — Auto-tag heuristic + doctor + docs**
-- [ ] C1. Auto-tag scoping paragraph on six host skills
-- [ ] C2. Doctor flags missing `model_tiers` block
-- [ ] C3. README "Cost-aware dispatch" section
+- [x] C1. Tier-scoping guidance — delivered as **rule 12 of the shared
+      rules block** (`nightly_core.rules`) rather than six near-duplicate
+      skill files. `seed_rules` propagates one marker-delimited block to
+      every host's AGENTS.md / CLAUDE.md, so one edit reaches all seven
+      harnesses and cannot drift between them. B2 is satisfied by the
+      same change.
+- [x] C2. Doctor flags missing `model_tiers` block — shipped early as
+      `_check_model_tiers` in `9b23ef1`. *(Ticked 2026-07-28; recorded
+      there as "A8, pulled forward from C2" but the C2 box was left
+      unchecked — exactly the drift RFC 008 exists to catch.)*
+- [x] C3. README "Cost-aware dispatch" section — plus a "Context
+      handoff" section, the `parallelism:` enforcement note, and the
+      previously-undocumented `nightly dispatch` command family in the
+      CLI reference. Backed by `tests/test_readme_claims.py`, which pins
+      the tier/effort/ratio tables against the code so prose and
+      behavior cannot drift apart.
