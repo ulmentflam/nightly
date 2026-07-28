@@ -1,6 +1,7 @@
 ---
 status: accepted
 phase_a: implemented (A3 deferred — see note)
+phase_b: implemented
 sized: true
 title: Pre-RFC completion check — verify deliverable doesn't already exist before dispatching
 created: 2026-06-04
@@ -402,6 +403,10 @@ both branches.
 - [x] A5. Tests covering presence, marker placement, and content
 
 **Phase B — Briefing surface + auto-tick commit format**
-- [ ] B1. Briefing template gains "Auto-ticked RFC items" optional section
-- [ ] B2. Commit message format documented in the verifier paragraph
-- [ ] B3. Tests covering rendered briefing with and without auto-ticks
+- [x] B1. Briefing gains a "ticked as already-done (verify these)"
+      panel, populated by scanning `main..HEAD` for rule 13's commit
+      format. Omitted when empty.
+- [x] B2. Commit message format documented in the verifier paragraph —
+      shipped with A1/A2 in `15fb1bc`. *(Ticked by rule 13's own process:
+      verified present before implementing, not re-implemented.)*
+- [x] B3. Tests covering parse, render-with, and render-without

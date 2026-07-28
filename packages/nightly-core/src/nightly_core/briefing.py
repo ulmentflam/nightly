@@ -22,6 +22,8 @@ template degrades cleanly when those slots are absent.
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +35,7 @@ from markupsafe import Markup
 
 from nightly_core.contract import MODEL_TIERS
 from nightly_core.digest import find_handoffs
+from nightly_core.paths import repo_root
 from nightly_core.runs import Run
 
 __all__ = [
@@ -101,6 +104,14 @@ class BriefingContext:
     """RFC 006 §B2 — "yes" if session compaction fired, "no" if it did not,
     None if default omitted (e.g. keepalive.log absent)."""
 
+    auto_ticks: list[dict[str, str]] = field(default_factory=list)
+    """RFC 008 B1 — checklist items an agent ticked as already-done rather
+    than implementing. Each entry has `rfc`, `item`, `sha`, `source`.
+
+    Deliberately its own panel: an auto-tick asserts that work already
+    existed, and a wrong assertion silently drops an item. That is the
+    one decision in the loop most worth a human's eye."""
+
     handoffs: list[dict[str, str]] = field(default_factory=list)
     """RFC 012 C3 — tasks that wrote a `HANDOFF.md` because an agent
     crossed a context threshold. Each entry has `slug` and `summary`.
@@ -117,6 +128,59 @@ class BriefingContext:
     they configured. A run that shows `reasoning x 12` is burning the
     expensive tier on work that should have been cheap; one that shows no
     `reasoning` at all probably reviewed nothing."""
+
+
+_AUTO_TICK_RE = re.compile(
+    r"^docs\(rfc-(\d+)\):\s*tick\s+([^\s—-]+)(?:.*?already implemented in\s+(\S+?)\.?)?$",
+    re.IGNORECASE,
+)
+"""Matches the reconciliation commit format rule 13 asks agents to use:
+`docs(rfc-NNN): tick <PHASE>.<ITEM> — already implemented in <SHA>`."""
+
+
+def find_auto_ticks(root: Path | None = None) -> list[dict[str, str]]:
+    """Checklist items reconciled rather than re-implemented — RFC 008 B1.
+
+    An auto-tick is a claim that work already existed, made by an agent
+    that chose not to redo it. That is exactly the judgment call an
+    operator should audit: a wrong one silently drops an item nobody
+    implemented. Surfacing them in the briefing turns an invisible
+    decision into a reviewable line.
+
+    Scans `main..HEAD` for rule 13's commit format. Returns [] on any git
+    failure — the briefing must render for a repo without git history.
+    """
+    repo = (root or repo_root()).resolve()
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--format=%h%x00%s", "main..HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+
+    out: list[dict[str, str]] = []
+    for line in proc.stdout.splitlines():
+        sha, _, subject = line.partition("\x00")
+        match = _AUTO_TICK_RE.match(subject.strip())
+        if not match:
+            continue
+        rfc, item, source = match.groups()
+        out.append(
+            {
+                "rfc": f"RFC {rfc}",
+                "item": item.rstrip(".,"),
+                "sha": sha,
+                "source": source or "unstated",
+            }
+        )
+    return out
 
 
 def _load_tier_breakdown(run: Run) -> str | None:
@@ -351,6 +415,7 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         current_branch=current_branch,
         compacted=compacted,
         tier_breakdown=_load_tier_breakdown(run),
+        auto_ticks=find_auto_ticks(run.path.parent.parent.parent),
         handoffs=[{"slug": slug, "summary": summary} for slug, summary in find_handoffs(run.path)],
     )
 
@@ -376,6 +441,7 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         compacted=ctx.compacted,
         tier_breakdown=ctx.tier_breakdown,
         handoffs=ctx.handoffs,
+        auto_ticks=ctx.auto_ticks,
     )
 
 

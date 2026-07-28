@@ -202,6 +202,19 @@
     </section>
   {% endif %}
 
+  {# ── auto-ticked RFC items (RFC 008 B1) ──────────────────────────── #}
+  {% if auto_ticks %}
+    <section class="narrative">
+      <div class="label">ticked as already-done (verify these)</div>
+      <ul>
+        {% for a in auto_ticks %}
+          <li><code>{{ a.rfc }}</code> {{ a.item }} — claimed present in
+            <code>{{ a.source }}</code> ({{ a.sha }})</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   {# ── pending handoffs (RFC 012 C3) ───────────────────────────────── #}
   {% if handoffs %}
     <section class="narrative">

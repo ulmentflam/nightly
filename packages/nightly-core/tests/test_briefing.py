@@ -459,3 +459,108 @@ def test_handoff_panel_names_the_task_not_just_a_count(tmp_path: Path) -> None:
 def test_no_handoff_panel_when_the_run_finished_cleanly(tmp_path: Path) -> None:
     run = start_run(tmp_path)
     assert "handed off mid-task" not in render_briefing(run)
+
+
+# ── auto-ticked RFC items (RFC 008 B1/B3) ─────────────────────────────────
+
+
+def _git_repo(root: Path) -> None:
+    import subprocess
+
+    def g(*a: str) -> None:
+        subprocess.run(["git", *a], cwd=root, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@example.com")
+    g("config", "user.name", "T")
+    g("config", "commit.gpgsign", "false")
+    (root / "f.txt").write_text("seed\n", encoding="utf-8")
+    g("add", "-A")
+    g("commit", "-qm", "seed")
+    g("checkout", "-q", "-b", "nightly/work")
+
+
+def _commit(root: Path, subject: str) -> None:
+    import subprocess
+
+    (root / "f.txt").write_text(subject, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", subject], cwd=root, check=True, capture_output=True)
+
+
+def test_no_auto_ticks_in_a_plain_branch(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "feat(x): ordinary work")
+    assert find_auto_ticks(tmp_path) == []
+
+
+def test_auto_tick_commit_is_captured(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "docs(rfc-008): tick A2 — already implemented in 173a7e8")
+    ticks = find_auto_ticks(tmp_path)
+    assert len(ticks) == 1
+    assert ticks[0]["rfc"] == "RFC 008"
+    assert ticks[0]["item"] == "A2"
+    assert ticks[0]["source"] == "173a7e8"
+
+
+def test_tick_without_a_source_sha_is_marked_unstated(tmp_path: Path) -> None:
+    """A tick claiming no evidence is the one most worth auditing."""
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "docs(rfc-012): tick C1")
+    assert find_auto_ticks(tmp_path)[0]["source"] == "unstated"
+
+
+def test_ordinary_docs_commits_are_not_mistaken_for_ticks(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    _git_repo(tmp_path)
+    _commit(tmp_path, "docs(rfc-007): reconcile Phase B checklist")
+    assert find_auto_ticks(tmp_path) == []
+
+
+def test_non_git_directory_yields_no_ticks(tmp_path: Path) -> None:
+    from nightly_core.briefing import find_auto_ticks
+
+    assert find_auto_ticks(tmp_path) == []
+
+
+def test_auto_tick_panel_tells_the_operator_to_verify(tmp_path: Path) -> None:
+    """The panel exists because a wrong auto-tick silently drops an item."""
+    run = start_run(tmp_path)
+    ctx_html = render_briefing(run)
+    assert "ticked as already-done" not in ctx_html  # none present
+
+    from nightly_core.briefing import _ENV, BriefingContext
+
+    template = _ENV.get_template("briefing.html.j2")
+    html = template.render(
+        run_id="r",
+        is_concluded=False,
+        tasks=[],
+        approvals=[],
+        planning=[],
+        issues=[],
+        issues_by_strategic_category=[],
+        ready_count=0,
+        generated_at="now",
+        session_narrative=None,
+        lessons=None,
+        stacked_geometry=[],
+        current_branch="",
+        compacted=None,
+        tier_breakdown=None,
+        handoffs=[],
+        auto_ticks=[{"rfc": "RFC 008", "item": "A2", "sha": "abc1234", "source": "173a7e8"}],
+    )
+    assert "ticked as already-done" in html
+    assert "verify these" in html
+    assert "RFC 008" in html
+    assert "173a7e8" in html
+    assert BriefingContext is not None
