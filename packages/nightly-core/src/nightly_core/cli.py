@@ -43,7 +43,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 
@@ -101,6 +101,9 @@ from nightly_core.update import (
     update_install,
 )
 from nightly_core.verify import VerifyReport, run_verify
+
+if TYPE_CHECKING:  # import only for annotations — keeps the CLI's cold start fast
+    from nightly_core.dispatch import BackgroundDispatchResult
 
 app = typer.Typer(
     name="nightly",
@@ -1859,8 +1862,8 @@ def dispatch_status_cmd(
     if not states:
         typer.echo("· no dispatches in the current run")
         return
-    typer.echo(f"{'status':<10} {'pid':<8} {'host':<10} {'role':<13} {'slug':<32} log")
-    typer.echo("-" * 78)
+    typer.echo(f"{'status':<10} {'pid':<8} {'host':<10} {'role':<13} {'tier':<10} {'slug':<32} log")
+    typer.echo("-" * 88)
     for state in states:
         live = refresh(state, root=root)
         _print_dispatch_row(live, root=root, verbose=False)
@@ -1889,29 +1892,31 @@ def _print_tier_utilization(root: Path) -> None:
 
 
 def _print_dispatch_row(
-    state: object,  # BackgroundDispatchResult — typed via duck on the read side
+    state: BackgroundDispatchResult,
     *,
     root: Path,
     verbose: bool,
 ) -> None:
     """Render one dispatch as either a compact table row or a verbose block."""
-    log = _format_path_for_display(state.log_path, root)  # type: ignore[attr-defined]
+    log = _format_path_for_display(state.log_path, root)
+    tier = state.tier or "-"
     if verbose:
-        typer.echo(f"slug:      {state.slug}")  # type: ignore[attr-defined]
-        typer.echo(f"role:      {state.role}")  # type: ignore[attr-defined]
-        typer.echo(f"host:      {state.host}")  # type: ignore[attr-defined]
-        typer.echo(f"pid:       {state.pid}")  # type: ignore[attr-defined]
-        typer.echo(f"status:    {state.status}")  # type: ignore[attr-defined]
-        if state.exit_code is not None:  # type: ignore[attr-defined]
-            typer.echo(f"exit_code: {state.exit_code}")  # type: ignore[attr-defined]
-        typer.echo(f"started:   {state.started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
-        if state.finished_at is not None:  # type: ignore[attr-defined]
-            typer.echo(f"finished:  {state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")  # type: ignore[attr-defined]
+        typer.echo(f"slug:      {state.slug}")
+        typer.echo(f"role:      {state.role}")
+        typer.echo(f"host:      {state.host}")
+        typer.echo(f"tier:      {tier}")
+        typer.echo(f"pid:       {state.pid}")
+        typer.echo(f"status:    {state.status}")
+        if state.exit_code is not None:
+            typer.echo(f"exit_code: {state.exit_code}")
+        typer.echo(f"started:   {state.started_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+        if state.finished_at is not None:
+            typer.echo(f"finished:  {state.finished_at.strftime('%Y-%m-%dT%H:%M:%SZ')}")
         typer.echo(f"log:       {log}")
         return
     typer.echo(
-        f"{state.status:<10} {state.pid:<8} {state.host:<10} "  # type: ignore[attr-defined]
-        f"{state.role:<13} {state.slug:<32} {log}"  # type: ignore[attr-defined]
+        f"{state.status:<10} {state.pid:<8} {state.host:<10} "
+        f"{state.role:<13} {tier:<10} {state.slug:<32} {log}"
     )
 
 

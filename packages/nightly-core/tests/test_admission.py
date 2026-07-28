@@ -238,3 +238,44 @@ async def test_cap_is_checked_before_the_branch_is_cut(tmp_path: Path) -> None:
         await create_worktree(tmp_path, "new-task", runner=run, max_worktrees=8)
 
     assert not any(a[:2] == ["worktree", "add"] for a in calls)
+
+
+# ── dispatch status rows (typing + tier column) ───────────────────────────
+
+
+def _capture_row(dispatch: BackgroundDispatchResult, *, verbose: bool) -> str:
+    import io
+    from contextlib import redirect_stdout
+
+    from nightly_core.cli import _print_dispatch_row
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _print_dispatch_row(dispatch, root=Path("/tmp"), verbose=verbose)
+    return buf.getvalue()
+
+
+def test_compact_row_shows_the_tier() -> None:
+    """`dispatch status` reported per-tier totals while giving no way to
+    see which tier any individual dispatch was on."""
+    assert "reasoning" in _capture_row(_dispatch("reasoning"), verbose=False)
+
+
+def test_verbose_row_shows_the_tier() -> None:
+    assert "tier:      lite" in _capture_row(_dispatch("lite"), verbose=True)
+
+
+def test_untiered_dispatch_renders_a_placeholder_not_none() -> None:
+    """Pre-RFC-007 records have no tier; `None` in a table column is noise."""
+    out = _capture_row(_dispatch(None), verbose=True)
+    # Assert on the tier field itself — the fixture's slug legitimately
+    # contains the word, so a whole-line check would test nothing.
+    tier_line = next(ln for ln in out.splitlines() if ln.startswith("tier:"))
+    assert tier_line.split(":", 1)[1].strip() == "-"
+
+
+def test_row_columns_stay_aligned_across_tiers() -> None:
+    """A ragged table is worse than no column — pin the widths."""
+    rows = [_capture_row(_dispatch(t), verbose=False) for t in ("lite", "coding", "reasoning")]
+    starts = [r.index("task-") for r in rows]
+    assert len(set(starts)) == 1
