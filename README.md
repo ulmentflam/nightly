@@ -452,7 +452,12 @@ nightly worktree prune             # remove them, and their branches
 ```
 
 A worktree is removed only when losing it cannot lose work: clean tree,
-and no commits `--base` (default `main`) does not already have.
+and no commits `--base` (default `main`) does not already have. A
+squash-merged branch is removed too — its commits are never ancestors of
+the base, so ancestry alone would keep every worktree forever in a repo
+that squash-merges. The evidence there is a deleted remote ref, which is
+weaker than ancestry and buys only the directory: the branch survives, so
+the commits stay reachable.
 Anything else is kept with the reason printed, and a check that cannot
 be *run* counts as a blocker rather than as consent. `--force` removes
 the kept ones too, but still preserves the branch of any worktree

@@ -192,6 +192,110 @@ async def test_keep_branches_removes_only_the_worktree(tmp_path: Path) -> None:
     assert not git.ran("branch -D")
 
 
+# ── squash merges ─────────────────────────────────────────────────────────
+#
+# The first cut of this command shipped with a strict ancestry check and
+# immediately refused to clean up its own worktree: the PR had been
+# squash-merged, so the branch's commit was not an ancestor of `main`. In
+# a repo that squash-merges every PR — this one — that is every worktree,
+# which is precisely the accumulation the command exists to stop.
+
+
+@pytest.mark.asyncio
+async def test_a_squash_merged_worktree_is_removed(tmp_path: Path) -> None:
+    """Ancestry says unmerged; the deleted remote ref says the PR landed."""
+    h = _handle(tmp_path)
+    git = FakeGit(
+        {
+            "worktree list": (_porcelain(h.path, h.branch), 0),
+            "rev-list": ("1", 0),
+            "for-each-ref": ("[gone]", 0),
+        }
+    )
+    report = await prune_worktrees(tmp_path, current=tmp_path, runner=git)
+    assert len(report.removed) == 1
+    assert git.ran("worktree remove")
+
+
+@pytest.mark.asyncio
+async def test_a_squash_merged_branch_is_kept(tmp_path: Path) -> None:
+    """A deleted remote ref is weaker evidence than ancestry, so it buys
+    the directory and not the history. Were the PR closed rather than
+    merged, deleting the ref would strand the only copy of the commits."""
+    h = _handle(tmp_path)
+    git = FakeGit(
+        {
+            "worktree list": (_porcelain(h.path, h.branch), 0),
+            "rev-list": ("1", 0),
+            "for-each-ref": ("[gone]", 0),
+        }
+    )
+    report = await prune_worktrees(tmp_path, current=tmp_path, runner=git)
+    assert not git.ran("branch -D")
+    assert not report.removed[0].branch_is_spent
+
+
+@pytest.mark.asyncio
+async def test_the_reason_is_reported_not_silent(tmp_path: Path) -> None:
+    """Removing on weaker evidence has to say so, or the operator cannot
+    tell this case from an ordinary merged one."""
+    h = _handle(tmp_path)
+    git = FakeGit(
+        {
+            "worktree list": (_porcelain(h.path, h.branch), 0),
+            "rev-list": ("1", 0),
+            "for-each-ref": ("[gone]", 0),
+        }
+    )
+    report = await prune_worktrees(tmp_path, current=tmp_path, runner=git)
+    joined = " ".join(report.removed[0].notes)
+    assert "remote branch" in joined
+    assert "keeping the branch" in joined
+
+
+@pytest.mark.asyncio
+async def test_a_never_pushed_branch_is_still_blocked(tmp_path: Path) -> None:
+    """Empty `%(upstream:track)` means the branch never left the machine —
+    that is the absence of evidence, not evidence of a merge."""
+    h = _handle(tmp_path)
+    git = FakeGit(
+        {
+            "worktree list": (_porcelain(h.path, h.branch), 0),
+            "rev-list": ("1", 0),
+            "for-each-ref": ("", 0),
+        }
+    )
+    report = await prune_worktrees(tmp_path, current=tmp_path, runner=git)
+    assert report.removed == ()
+    assert "1 commit(s) not in `main`" in report.kept[0].blockers
+
+
+@pytest.mark.asyncio
+async def test_a_branch_still_tracking_its_remote_is_blocked(tmp_path: Path) -> None:
+    """An open PR's branch tracks a live ref — its worktree is in use."""
+    h = _handle(tmp_path)
+    git = FakeGit(
+        {
+            "worktree list": (_porcelain(h.path, h.branch), 0),
+            "rev-list": ("1", 0),
+            "for-each-ref": ("[ahead 1]", 0),
+        }
+    )
+    report = await prune_worktrees(tmp_path, current=tmp_path, runner=git)
+    assert report.removed == ()
+
+
+@pytest.mark.asyncio
+async def test_an_ancestry_merged_branch_is_deleted(tmp_path: Path) -> None:
+    """The strong case still deletes the ref — the gone-upstream path must
+    not have quietly disabled branch cleanup for everyone."""
+    h = _handle(tmp_path)
+    git = FakeGit({"worktree list": (_porcelain(h.path, h.branch), 0), "rev-list": ("0", 0)})
+    report = await prune_worktrees(tmp_path, current=tmp_path, runner=git)
+    assert report.removed[0].branch_is_spent
+    assert git.ran(f"branch -D {h.branch}")
+
+
 @pytest.mark.asyncio
 async def test_a_blocked_worktree_survives_a_plain_prune(tmp_path: Path) -> None:
     h = _handle(tmp_path)
