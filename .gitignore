@@ -40,12 +40,19 @@ htmlcov/
 # iCloud / CloudDocs conflict copies — macOS Finder mints `<name> 2.<ext>`
 # files when the iCloud daemon sees a touched-then-resynced file. They are
 # stale snapshots, never useful in version control.
-* 2.md
-* 2.py
-* 2.yml
-* 2.yaml
-* 2.json
-* 2.toml
+#
+# The first cut of this list enumerated extensions (` 2.md`, ` 2.py`, …) and
+# stopped at 2. Both assumptions were wrong: a `git add -A` picked up
+# `AGENTS 3.md`, `Makefile 2`, and `.gitignore 2` — the counter climbs past
+# 2, and the files Finder collides on most here have no extension at all.
+#
+# Matching on the ` <digits>` suffix instead covers every shape. The
+# tradeoff is that a deliberately-named `Chapter 2.md` would also be
+# ignored; `git add -f` overrides it if that ever comes up.
+* [0-9]
+* [0-9].*
+* [0-9][0-9]
+* [0-9][0-9].*
 
 # Nightly runtime — left intentionally untracked here as a sensible default.
 # Per .planning/brainstorm.html §04, this is the user's preference, not Nightly's
