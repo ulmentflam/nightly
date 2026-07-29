@@ -1,6 +1,6 @@
 [project]
 name = "nightly-host-codex"
-version = "0.0.14"
+version = "0.0.15"
 description = "Nightly host integration for OpenAI Codex CLI (primary host)."
 readme = "README.md"
 requires-python = ">=3.12"
