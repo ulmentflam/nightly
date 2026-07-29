@@ -11,6 +11,10 @@ pip-wheel-metadata/
 
 # Virtual environments
 .venv/
+# Also match a bare `.venv` with no slash: when the repo is under
+# iCloud, `make sync` builds the venv in the local cache and leaves
+# `.venv` as a *symlink*, which a directory-only pattern misses.
+.venv
 .venv-*/
 venv/
 ENV/

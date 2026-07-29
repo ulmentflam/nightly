@@ -17,6 +17,12 @@ worktree, each with its own commit history, each tied to a morning
 **briefing.html** that tells you what landed, what's blocked, and what
 needs your eyes.
 
+<img src="docs/demo.gif" width="800" alt="Terminal session: nightly start opens a run, nightly task queues 'Add a retry budget to the auth client', a status transition moves it in-flight, and nightly next picks it with the reason 'An in-flight plan was found across runs. Finishing what's started outranks picking new work.'" />
+
+That last command is the whole idea. `nightly next` doesn't just pick
+work — it names the rule it picked by, so an unattended run leaves a
+trail you can audit in the morning.
+
 > **Scope:** Nightly opens draft PRs and writes a morning briefing. A
 > human still reviews and merges — the briefing is the review surface,
 > and the refusal policy is what keeps the surface safe. Refused
@@ -90,6 +96,13 @@ directory: creates `.nightly/`, writes `config.yml`, installs the
 project-scope skill files, merges the Stop-hook entry, and seeds the
 autonomy contract into `AGENTS.md` / `CLAUDE.md`. Idempotent — safe to
 re-run.
+
+<img src="docs/demo-install.gif" width="800" alt="Terminal session: nightly init in a fresh repo creates .nightly/runs, plans, atlas, memory and prompts, writes config.yml, installs the Claude skill, and seeds AGENTS.md and CLAUDE.md; ls -a then shows the full footprint it added to the repo." />
+
+Everything it writes is visible in that last `ls -a` — one `.nightly/`
+directory, one host skill directory, and two contract files. At project
+scope nothing lands outside the repo, so `git status` shows you the
+entire footprint before you decide what to commit.
 
 For other hosts, pass `--host`:
 
