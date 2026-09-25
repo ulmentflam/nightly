@@ -314,6 +314,22 @@ session over context size, and never refuse host compaction.**
 
    Then take the next item. Reconciling a stale checklist IS progress; it
    is what stops the next agent from burning its night on the same item.
+14. **Never install, uninstall, or start the respawn supervisor.** The
+   verbs `nightly supervisor install`, `uninstall`, `start`, and the
+   `nightly-supervisor` binary are **operator-only**, in the same class
+   as `nightly conclude` / `nightly stop` / `nightly bug` (Rule 10).
+   Installing a daemon writes a launchd plist or systemd unit outside the
+   repo, registers a process that outlives every session, and grants it
+   permission to spawn hosts with `--permission-mode acceptEdits`. That
+   is a trust decision belonging to a human, and it is not reversible
+   from inside a session that the daemon may then restart.
+
+   `nightly supervisor status` and `nightly supervisor logs` are
+   read-only and safe to run when diagnosing a session that appears to
+   have been respawned — the run's `supervisor.count` file and a
+   `SUPERVISOR_ABORTED` marker are the on-disk tells. If the supervisor
+   would help and is not installed, say so in the briefing; do not
+   install it.
 
 ### Human shutdown intervention
 

@@ -50,7 +50,13 @@ from pathlib import Path
 from typing import Literal
 
 from nightly_core.config import ParallelismConfig
-from nightly_core.contract import MODEL_TIERS, HostId, ModelTier, SpecialistRole
+from nightly_core.contract import (
+    MODEL_TIERS,
+    HostId,
+    ModelTier,
+    ReasoningEffort,
+    SpecialistRole,
+)
 from nightly_core.paths import repo_root
 
 __all__ = [
@@ -78,7 +84,7 @@ DEFAULT_LOG_FILENAME = "dispatch.log"
 
 DispatchStatus = Literal["running", "completed", "failed", "unknown"]
 
-HEADLESS_HOSTS: tuple[HostId, ...] = ("claude", "codex", "opencode", "gemini")
+HEADLESS_HOSTS: tuple[HostId, ...] = ("claude", "codex", "opencode", "gemini", "pi")
 """Hosts `build_argv` knows how to spawn headlessly.
 
 The single source of truth for "can this host be backgrounded". It used
@@ -129,16 +135,24 @@ class BackgroundDispatchResult:
 # ── per-host argv ────────────────────────────────────────────────────────
 
 
-def build_argv(  # noqa: PLR0911, PLR0912 - one branch per host backend is the whole point
+def build_argv(  # noqa: PLR0911, PLR0912, PLR0913 - one branch per host backend is the whole point
     host: HostId,
     prompt: str,
     *,
     session_id: str | None = None,
     model: str | None = None,
     model_flag: str | None = None,
+    effort: ReasoningEffort | None = None,
 ) -> list[str] | None:
     """Build the headless argv for `host`. Returns None when the host
     has no usable headless backend yet (cursor, antigravity).
+
+    `effort` is honored only by hosts with a real reasoning-effort flag.
+    pi is the first — `--thinking` — and today the only one. Everywhere
+    else tier intent still reaches the agent through the effort directive
+    appended to the prompt (`routing.effort_directive`), which is why the
+    parameter is optional and silently ignored elsewhere rather than
+    raising: a host gaining such a flag later is an additive change here.
 
     Reuses the same flags each host's `run_headless` already invokes —
     see the integration packages for canonical references.
@@ -209,10 +223,31 @@ def build_argv(  # noqa: PLR0911, PLR0912 - one branch per host backend is the w
             argv += [model_flag, model]
         return argv
 
-    # Every other host — cursor, antigravity, pi, hermes — exposes no
-    # usable headless CLI today. Callers fall back to the host's own
-    # blocking primitive, or to a host from `HEADLESS_HOSTS` whose binary
-    # is on PATH. See `unsupported_host_message` for the operator-facing
+    if host == "pi":
+        binary = shutil.which("pi")
+        if binary is None:
+            return None
+        # `-a` / `--approve` is load-bearing, not a convenience. pi never
+        # prompts for project trust in non-interactive modes; without the
+        # flag it falls back to `defaultProjectTrust` (default `ask` =
+        # ignore project resources), so the dispatched specialist would
+        # silently lose the repo's skills and settings.
+        argv = [binary, "-p", "--mode", "json", "-a"]
+        if model and model_flag:
+            argv += [model_flag, model]
+        if effort:
+            # pi's thinking levels are a superset of `ReasoningEffort`
+            # (they add `off` and `minimal`), so the value passes through
+            # with no translation table.
+            argv += ["--thinking", effort]
+        if session_id:
+            argv += ["--session-id", session_id]
+        return [*argv, prompt]
+
+    # Every other host — cursor, antigravity, hermes — exposes no usable
+    # headless CLI today. Callers fall back to the host's own blocking
+    # primitive, or to a host from `HEADLESS_HOSTS` whose binary is on
+    # PATH. See `unsupported_host_message` for the operator-facing
     # explanation.
     return None
 
@@ -271,6 +306,7 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     model: str | None = None,
     model_flag: str | None = None,
     tier: ModelTier | None = None,
+    effort: ReasoningEffort | None = None,
     popen_factory: object | None = None,
 ) -> BackgroundDispatchResult:
     """Spawn the host's headless CLI as a detached background process.
@@ -283,7 +319,14 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
     `popen_factory` is injectable for tests — defaults to
     `subprocess.Popen`. Production callers leave it unset.
     """
-    argv = build_argv(host, prompt, session_id=session_id, model=model, model_flag=model_flag)
+    argv = build_argv(
+        host,
+        prompt,
+        session_id=session_id,
+        model=model,
+        model_flag=model_flag,
+        effort=effort,
+    )
     if argv is None:
         raise RuntimeError(unsupported_host_message(host))
 
@@ -326,7 +369,49 @@ def start_background(  # noqa: PLR0913 - dispatch primitive needs every dimensio
         tier=tier,
     )
     write_dispatch_state(result, root=repo)
+    _record_dispatch_event(result, "spawned", root=repo)
     return result
+
+
+def _record_dispatch_event(
+    result: BackgroundDispatchResult,
+    event: str,
+    *,
+    root: Path,
+) -> None:
+    """Emit one dispatch telemetry event (RFC 010 §A3). Never raises.
+
+    Dispatch counts are how the briefing distinguishes a productive
+    night from a busy one: `spawned` far exceeding `finished_ok` means
+    specialists are dying, not working.
+    """
+    from nightly_core.runs import current_run  # noqa: PLC0415 - lazy, matches _task_dir
+    from nightly_core.telemetry import (  # noqa: PLC0415
+        build_summary,
+        load_telemetry_config,
+        record_dispatch,
+    )
+
+    try:
+        if not load_telemetry_config(root).enabled:
+            return
+        run = current_run(root)
+        if run is None:
+            return
+        duration: float | None = None
+        if result.finished_at is not None:
+            duration = (result.finished_at - result.started_at).total_seconds()
+        record_dispatch(
+            run.path,
+            event=event,  # type: ignore[arg-type]
+            role=result.role,
+            slug=result.slug,
+            tier=result.tier,
+            duration_seconds=duration,
+        )
+        build_summary(run.path)
+    except Exception:
+        return
 
 
 # ── state I/O ────────────────────────────────────────────────────────────
@@ -496,9 +581,15 @@ def refresh(
         status="completed",
         exit_code=None,
         finished_at=datetime.now(UTC),
+        # Carry the tier across the transition. Dropping it here made a
+        # completed dispatch look untiered on re-read, which skewed
+        # `tier_utilization` and left the telemetry unable to attribute
+        # finished work to the tier that did it.
+        tier=result.tier,
     )
     with contextlib.suppress(OSError):
         write_dispatch_state(finished, root=root)
+    _record_dispatch_event(finished, "finished_ok", root=(root or repo_root()).resolve())
     return finished
 
 
@@ -536,8 +627,13 @@ def supported_hosts() -> Sequence[HostId]:
 
     Returns the canonical list — does NOT probe PATH. Use this to
     populate help text and the SKILL.md "supported hosts" list.
+
+    Derived from `HEADLESS_HOSTS` rather than restating it. The two were
+    separate literals until pi joined, at which point `HEADLESS_HOSTS`
+    knew about it and this function did not — the exact drift
+    `HEADLESS_HOSTS`'s docstring claims to have eliminated.
     """
-    return ("claude", "codex", "opencode", "gemini")
+    return HEADLESS_HOSTS
 
 
 # ── admission control (RFC 012 Phase B) ──────────────────────────────────

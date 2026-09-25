@@ -30,6 +30,7 @@ from nightly_core import (
     AuthStatus,
     HostId,
     InstallScope,
+    KeepaliveMechanism,
     KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
@@ -62,6 +63,7 @@ class CursorHostIntegration(NightlyHostIntegration):
 
     host_id: HostId = "cursor"
     keepalive_support: KeepaliveSupport = "forced"
+    keepalive_mechanism: KeepaliveMechanism = "hook"
 
     # Cursor commands are a single markdown file per command — no folder
     # named after the command — so the path ends in `.md`, not `/SKILL.md`.

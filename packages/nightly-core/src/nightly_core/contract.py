@@ -88,6 +88,30 @@ KeepaliveSupport = Literal["forced", "soft", "none"]
   never stop. opencode and Antigravity sit here today.
 - `none`: neither hook nor rules are honored. No host is in this tier
   today; reserved for hypothetical hostile hosts.
+
+Note this answers "*can* the host be forced to continue?", not "how". See
+`KeepaliveMechanism` for the latter — pi is `forced` without installing a
+hook at all.
+"""
+
+KeepaliveMechanism = Literal["hook", "extension", "rules"]
+"""*How* a host's keep-alive is delivered — RFC 013 §14.
+
+Deliberately separate from `KeepaliveSupport`, which answers whether the
+host can be forced to continue. Overloading that field with `extension`
+would conflate capability with mechanism and break every consumer that
+branches on `== "forced"`.
+
+- `hook`: Nightly writes a command into the host's settings and the host
+  spawns it as a subprocess at each turn boundary. Five hosts do this,
+  and it is the surface Claude Code's without-progress cap overrides.
+- `extension`: Nightly installs an in-process module that continues the
+  session directly. pi only. No cap applies, because nothing is
+  overriding a hook.
+- `rules`: no programmatic surface; the model is asked in AGENTS.md /
+  CLAUDE.md never to stop. opencode.
+
+Purely descriptive — nothing branches on it except rendering.
 """
 
 
@@ -123,6 +147,10 @@ class NightlyHostIntegration(ABC):
     """Default to `soft` (rules-only). Hosts with a real Stop-hook
     surface override this to `forced` and implement the hook-install
     methods below."""
+
+    keepalive_mechanism: KeepaliveMechanism = "rules"
+    """How this host's keep-alive is delivered. Hook hosts set `hook`; pi
+    sets `extension`. Rendering only — see `KeepaliveMechanism`."""
 
     @property
     def root(self) -> Path:

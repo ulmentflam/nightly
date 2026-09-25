@@ -29,6 +29,7 @@ from nightly_core import (
     AuthStatus,
     HostId,
     InstallScope,
+    KeepaliveMechanism,
     KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
@@ -64,6 +65,7 @@ class GeminiHostIntegration(NightlyHostIntegration):
 
     host_id: HostId = "gemini"
     keepalive_support: KeepaliveSupport = "forced"
+    keepalive_mechanism: KeepaliveMechanism = "hook"
 
     # Gemini CLI custom commands are single TOML files per command, not
     # folders. Same shape as Cursor.

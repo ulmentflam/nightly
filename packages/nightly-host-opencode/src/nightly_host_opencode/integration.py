@@ -24,6 +24,7 @@ from nightly_core import (
     HeadlessResult,
     HostId,
     InstallScope,
+    KeepaliveMechanism,
     KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
@@ -53,6 +54,7 @@ class OpencodeHostIntegration(NightlyHostIntegration):
 
     host_id: HostId = "opencode"
     keepalive_support: KeepaliveSupport = "soft"
+    keepalive_mechanism: KeepaliveMechanism = "rules"
 
     PROJECT_SKILL_RELATIVE = Path(".opencode/agents/nightly/SKILL.md")
     USER_SKILL_ABSOLUTE = Path.home() / ".opencode/agents/nightly/SKILL.md"

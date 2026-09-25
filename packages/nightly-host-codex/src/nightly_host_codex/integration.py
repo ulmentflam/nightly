@@ -28,6 +28,7 @@ from nightly_core import (
     HeadlessResult,
     HostId,
     InstallScope,
+    KeepaliveMechanism,
     KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
@@ -65,6 +66,7 @@ class CodexHostIntegration(NightlyHostIntegration):
 
     host_id: HostId = "codex"
     keepalive_support: KeepaliveSupport = "forced"
+    keepalive_mechanism: KeepaliveMechanism = "hook"
 
     PROJECT_SKILL_RELATIVE = Path(".codex/skills/nightly/SKILL.md")
     USER_SKILL_ABSOLUTE = Path.home() / ".codex/skills/nightly/SKILL.md"

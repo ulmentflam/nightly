@@ -361,7 +361,7 @@ def test_hook_formats_exhaustive() -> None:
     """Lock the set of known formats so adding a new one is a deliberate change."""
     from nightly_core.keepalive_hook import HOOK_FORMATS
 
-    assert set(HOOK_FORMATS) == {"claude_code", "cursor", "gemini_cli"}
+    assert set(HOOK_FORMATS) == {"claude_code", "cursor", "gemini_cli", "pi"}
 
 
 # ── stop_hook_active — forced-continuation chain, NOT a yield ─────────────

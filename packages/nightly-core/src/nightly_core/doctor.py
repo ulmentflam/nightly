@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast, get_args
 
+from nightly_core._version import __version__
 from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config
 from nightly_core.contract import MODEL_TIERS, HostId, InstallScope, NightlyHostIntegration
 from nightly_core.paths import nightly_dir
@@ -598,6 +599,108 @@ ships inside the wheel so per-package update is the canonical
 refresh)."""
 
 
+def _check_pi_trust(root: Path) -> DoctorCheck | None:
+    """RFC 013 §B5 — pi's project-trust decision for this repo.
+
+    A distinct, named condition rather than a generic host failure,
+    because the symptom is confusing on its own: the keep-alive extension
+    is global so it loads and fires correctly, but a headless specialist
+    finds no project skills and reports that `/skill:nightly` does not
+    exist. Without this check the operator would look at a working
+    keep-alive and a failing dispatch and have no reason to connect them.
+
+    Returns None when pi is not installed in this repo — nothing to say.
+    """
+    try:
+        from nightly_host_pi import PiHostIntegration  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    integration = PiHostIntegration(root=root)
+    if not (integration.is_installed("project") or integration.is_installed("user")):
+        return None
+
+    if integration.is_project_trusted():
+        return DoctorCheck(
+            name="pi:trust",
+            description="pi project trust",
+            status="ok",
+            detail="trusted — headless dispatch will load project skills",
+        )
+    # `warning`, not `missing`: `missing` fails `healthy` and exits non-zero,
+    # which would be wrong twice over. Doctor cannot repair this — the
+    # decision lives inside pi and belongs to the operator — and nothing
+    # Nightly itself does is broken by it, since every dispatch Nightly
+    # builds passes `-a`. A gate failure for an unrepairable, non-blocking
+    # condition trains operators to ignore the gate.
+    return DoctorCheck(
+        name="pi:trust",
+        description="pi project trust",
+        status="warning",
+        detail=(
+            f"no saved decision for this repo in {integration.trust_path()}. "
+            "pi's headless modes never prompt, so `-p` / `--mode json` runs "
+            "fall back to `defaultProjectTrust` (default `ask` = ignore "
+            "project resources) and dispatched specialists will not find "
+            "`.pi/skills/`. Nightly passes `-a` on every dispatch it builds, "
+            "so this is only a problem for pi invocations you make yourself. "
+            "Run `/trust` inside pi, or re-run `nightly init --host pi`."
+        ),
+    )
+
+
+def _check_supervisor(root: Path) -> DoctorCheck:
+    """RFC 010 §C4 — nudge toward the supervisor once it would have helped.
+
+    Deliberately evidence-driven, not a blanket recommendation. Suggesting
+    a background daemon to someone who has never had a session die is
+    noise, and doctor output that is mostly noise stops being read. The
+    trigger is a `RESPAWN_REQUESTED` marker on any recent run: the hook
+    only writes it inside a forced-continuation chain, so its presence
+    means this repo has genuinely been in the situation the supervisor
+    exists for.
+
+    Always `ok` — never `missing`. The agent must not install the
+    supervisor (rules block, rule 14), so a failing check here would be
+    an instruction nobody in the loop is allowed to follow.
+    """
+    from nightly_core.supervisor.service import service_status  # noqa: PLC0415
+
+    status = service_status()
+    if status.startswith("installed"):
+        return DoctorCheck(
+            name="supervisor",
+            description="respawn supervisor (RFC 010)",
+            status="ok",
+            detail=status,
+        )
+
+    runs = nightly_dir(root) / "runs"
+    seen = 0
+    if runs.is_dir():
+        for entry in runs.iterdir():
+            if entry.is_dir() and (entry / "RESPAWN_REQUESTED").is_file():
+                seen += 1
+
+    if not seen:
+        return DoctorCheck(
+            name="supervisor",
+            description="respawn supervisor (RFC 010)",
+            status="ok",
+            detail="not installed (no involuntary stops recorded — nothing to fix)",
+        )
+    return DoctorCheck(
+        name="supervisor",
+        description="respawn supervisor (RFC 010)",
+        status="ok",
+        detail=(
+            f"not installed, but {seen} run(s) carry a RESPAWN_REQUESTED marker — "
+            "sessions here have ended mid-chain. `nightly supervisor install` "
+            "would restart them automatically (operator-only command)."
+        ),
+    )
+
+
 def _check_synthesis_prompt() -> DoctorCheck:
     """RFC 009 §C3 — verify the installed synthesis prompt template
     still contains the load-bearing constraint strings.
@@ -696,13 +799,43 @@ def _host_needs_repair(
     init = integration.init_skill_path(scope)
     if init is not None and not init.is_file():
         missing.append("init skill")
-    if (
-        scope == "project"
-        and integration.keepalive_support == "forced"
-        and not integration.is_keepalive_hook_installed(scope)
-    ):
-        missing.append("stop hook")
+    missing.extend(_missing_keepalive(integration, scope))
     return (bool(missing), missing)
+
+
+def _missing_keepalive(
+    integration: NightlyHostIntegration,
+    scope: InstallScope,
+) -> list[str]:
+    """Keep-alive pieces this host is missing at `scope`.
+
+    Mechanism-aware, because pi's keep-alive is not a hook and not
+    scope-local:
+
+    - `hook` hosts merge a command into a project settings file, so the
+      check is project-scope only — a `--scope user` install writes no
+      hook and reporting one missing would be a permanent false positive.
+    - `extension` hosts (pi) install a global TypeScript module at *both*
+      scopes, so the project-scope gate must not apply. They also carry a
+      version marker, which is the only drift signal available for a file
+      doctor cannot parse (RFC 013 §12).
+    """
+    if integration.keepalive_support != "forced":
+        return []
+
+    mechanism = getattr(integration, "keepalive_mechanism", "hook")
+
+    if mechanism == "extension":
+        if not integration.is_keepalive_hook_installed(scope):
+            return ["keep-alive extension"]
+        reader = getattr(integration, "installed_extension_version", None)
+        if callable(reader) and reader() != __version__:
+            return ["keep-alive extension (stale version)"]
+        return []
+
+    if scope == "project" and not integration.is_keepalive_hook_installed(scope):
+        return ["stop hook"]
+    return []
 
 
 def _check_host(
@@ -812,6 +945,9 @@ def diagnose_and_repair(
     checks.append(_check_worktree_location(root))
     checks.append(_check_rules(root, dry_run=dry_run))
     checks.append(_check_synthesis_prompt())
+    checks.append(_check_supervisor(root))
+    if (pi_trust := _check_pi_trust(root)) is not None:
+        checks.append(pi_trust)
 
     for host_id, loader in loaders.items():
         try:

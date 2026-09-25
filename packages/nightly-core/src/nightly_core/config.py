@@ -33,6 +33,7 @@ __all__ = [
     "GitConfig",
     "ModelTierConfig",
     "ParallelismConfig",
+    "SupervisorConfig",
     "TierBinding",
     "VaultConfig",
     "VerifyConfig",
@@ -43,6 +44,7 @@ __all__ = [
     "load_git_config",
     "load_model_tier_config",
     "load_parallelism_config",
+    "load_supervisor_config",
     "load_vault_config",
     "load_verify_config",
     "load_worktree_config",
@@ -856,6 +858,124 @@ def load_compact_config(root: Path | None = None) -> CompactConfig:
     )
 
 
+@dataclass(frozen=True)
+class SupervisorConfig:
+    """The `supervisor:` block of `.nightly/config.yml` (RFC 010 Phase B)."""
+
+    enabled: bool = True
+    """Whether the daemon should act on this repo.
+
+    Note this is not the install switch — the daemon only exists if the
+    operator ran `nightly supervisor install`. This is the per-repo veto
+    for someone who wants supervision on most repos but not this one."""
+
+    max_respawns: int = 5
+    """Per-run ceiling. Past it the daemon writes `SUPERVISOR_ABORTED`
+    and stops touching the run, so a session that dies immediately on
+    every restart cannot loop forever."""
+
+    heartbeat_stale_seconds: int = 90
+    """How long `keepalive.log` must go untouched before the session
+    counts as dead rather than merely blocking.
+
+    The hook appends a line every turn boundary, so a live session — even
+    one blocking inside a long forced chain — keeps this fresh. 90s is
+    comfortably longer than a slow turn and short enough that an
+    overnight death costs one poll interval plus this, not hours."""
+
+    backoff_seconds: tuple[int, ...] = (0, 60, 180, 540, 1620)
+    """Delay before each respawn attempt. First is immediate; the rest
+    triple. A session that is genuinely broken escalates slowly instead
+    of burning the night on restarts."""
+
+    host: str = "claude"
+    """Which host the daemon re-invokes. v1 implements `claude` only;
+    other hosts raise a clear NotImplementedError naming this RFC."""
+
+    poll_interval_seconds: int = 30
+    """How often the daemon checks each watched run."""
+
+
+def load_supervisor_config(root: Path | None = None) -> SupervisorConfig:
+    """Parse the `supervisor:` block from `<root>/.nightly/config.yml`.
+
+    Every numeric field degrades to its default on garbage rather than
+    raising: this config is read by a detached daemon with no terminal to
+    complain to, so a typo must not take the supervisor down.
+    """
+    defaults = SupervisorConfig()
+    block = _load_block("supervisor", root)
+    if block is None:
+        return defaults
+
+    def _positive_int(key: str, default: int) -> int:
+        try:
+            value = int(block.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    raw_backoff = block.get("backoff_seconds")
+    backoff = defaults.backoff_seconds
+    if isinstance(raw_backoff, list) and raw_backoff:
+        try:
+            parsed = tuple(max(0, int(v)) for v in raw_backoff)
+        except (TypeError, ValueError):
+            parsed = defaults.backoff_seconds
+        backoff = parsed or defaults.backoff_seconds
+
+    host = block.get("host", defaults.host)
+
+    return SupervisorConfig(
+        enabled=_coerce_bool(block.get("enabled"), defaults.enabled),
+        max_respawns=_positive_int("max_respawns", defaults.max_respawns),
+        heartbeat_stale_seconds=_positive_int(
+            "heartbeat_stale_seconds", defaults.heartbeat_stale_seconds
+        ),
+        backoff_seconds=backoff,
+        host=str(host) if host else defaults.host,
+        poll_interval_seconds=_positive_int(
+            "poll_interval_seconds", defaults.poll_interval_seconds
+        ),
+    )
+
+
+def _load_block(name: str, root: Path | None = None) -> dict[str, Any] | None:
+    """Read one top-level block from `<root>/.nightly/config.yml`.
+
+    Returns None when the file is missing, unreadable, malformed, or has
+    no such block — every one of which means "use defaults" to the
+    callers. Factored out for the RFC 010 loaders; the older loaders
+    predate it and still inline the same read-parse-degrade sequence.
+    """
+    path = nightly_dir(root) / "config.yml"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data: Any = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        _log.warning("ignoring malformed %s: %s", path, exc)
+        return None
+    block = data.get(name) if isinstance(data, dict) else None
+    return block if isinstance(block, dict) else None
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """YAML-ish truthiness with an explicit default for absent/garbage."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off"):
+        return False
+    return default
+
+
 # ── default config template ──────────────────────────────────────────────
 
 _CONFIG_YML_TEMPLATE = """\
@@ -1028,6 +1148,53 @@ verify:
 compact:
   enabled:           true
   context_token_cap: 256000
+
+# telemetry governs the structured JSONL event log (RFC 010 Phase A).
+# keepalive.log stays the human-readable narrative; telemetry is the
+# queryable layer under .nightly/runs/<id>/telemetry/ that answers "why did
+# this session stop" — chain depth at the stop, cascade pick distribution,
+# dispatch success rate, tool denials — rolled into summary.json for the
+# briefing and `nightly status`.
+# - `enabled: false` writes nothing. A real choice, not a debug flag: the
+#   events carry plan slugs and cascade summaries.
+# - `retention_days` prunes only the telemetry/ subfolder of older runs;
+#   plans, briefings, and keepalive.log are never touched by retention.
+telemetry:
+  enabled:        true
+  retention_days: 30
+
+# redaction governs what leaves this machine. On-disk run state is NEVER
+# redacted (it is your own audit trail); anything shared — `nightly bug`
+# bodies, `--share` output — ALWAYS is. Pattern passes tokenize $HOME paths,
+# branch/plan slugs, git remotes, hostnames, emails, IPs, and key-shaped
+# strings, preserving the category so the report stays debuggable.
+# - `llm_backstop` runs a model pass after the pattern passes to catch what
+#   has no pattern: project codenames, internal service names, personal
+#   names. Failures degrade silently to pattern-only redaction.
+# Declare project-specific terms in `.nightly/redaction.yml` (per-repo) or
+# `~/.config/nightly/redaction.yml` (per-user):
+#   project_specifics:
+#     - {pattern: "acmecorp", replacement: "<org>"}
+redaction:
+  llm_backstop: true
+
+# supervisor governs the respawn daemon (RFC 010 Phase B). Opt-in: nothing
+# runs until you execute `nightly supervisor install`. The daemon watches for
+# a RESPAWN_REQUESTED marker plus a stale heartbeat — a session that died
+# involuntarily — and re-invokes the host so an overnight run that hits the
+# host's without-progress cap at 03:00 resumes instead of stranding.
+# - `enabled: false` makes the daemon ignore this repo without uninstalling.
+# - `max_respawns` caps respawns per run; past it the daemon writes
+#   SUPERVISOR_ABORTED and stops, so a pathological session cannot loop.
+# - `backoff_seconds` is the per-attempt delay schedule (first is immediate).
+# - `heartbeat_stale_seconds` is how long keepalive.log must go untouched
+#   before the session counts as dead rather than merely blocking.
+supervisor:
+  enabled:                 true
+  max_respawns:            5
+  heartbeat_stale_seconds: 90
+  backoff_seconds:         [0, 60, 180, 540, 1620]
+  host:                    claude
 """
 
 

@@ -38,7 +38,9 @@ Full command surface:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import platform
 import subprocess
 import sys
 from collections.abc import Callable
@@ -58,7 +60,7 @@ from nightly_core.bug import write_report as write_bug_report
 from nightly_core.cascade import next_task as cascade_next
 from nightly_core.cascade import pick_pr_rescue
 from nightly_core.ci_watch import PRCIStatus, list_ci_status
-from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config
+from nightly_core.config import DEFAULT_CONFIG_YML, load_git_config, load_supervisor_config
 from nightly_core.contract import (
     HostId,
     InstallScope,
@@ -78,6 +80,7 @@ from nightly_core.keepalive_hook import (
     estimate_context_tokens,
     format_decision,
     log_heartbeat,
+    log_telemetry,
     parse_hook_input,
     request_stop,
 )
@@ -262,12 +265,18 @@ def _register_host_loaders() -> None:
 
         return GeminiHostIntegration(root=root)
 
+    def _pi(root: Path | None) -> NightlyHostIntegration:
+        from nightly_host_pi import PiHostIntegration  # noqa: PLC0415
+
+        return PiHostIntegration(root=root)
+
     _HOST_LOADERS["claude"] = _claude
     _HOST_LOADERS["codex"] = _codex
     _HOST_LOADERS["opencode"] = _opencode
     _HOST_LOADERS["cursor"] = _cursor
     _HOST_LOADERS["antigravity"] = _antigravity
     _HOST_LOADERS["gemini"] = _gemini
+    _HOST_LOADERS["pi"] = _pi
 
 
 _register_host_loaders()
@@ -289,6 +298,59 @@ def _load_host(host_id: HostId, root: Path | None = None) -> NightlyHostIntegrat
         )
         raise typer.BadParameter(msg)
     return loader(root)
+
+
+def _report_pi_specifics(integration: NightlyHostIntegration, root: Path) -> None:
+    """Explain pi's two install surprises, and offer to fix the second.
+
+    A no-op for every other host. pi is the only integration that writes
+    outside the scope the operator asked for, and the only one whose
+    headless behavior depends on a decision stored in the host's own
+    config — both are things an operator should learn at install time
+    rather than discover at 03:00.
+    """
+    if getattr(integration, "host_id", None) != "pi":
+        return
+
+    extension = integration.extension_path()  # type: ignore[attr-defined]
+    typer.echo(f"  ✓ installed pi keep-alive extension at {extension}")
+    typer.echo(
+        "    (global on purpose: pi's headless modes never prompt for project "
+        "trust, so a project-local extension would silently not load. It "
+        "no-ops in repos with no armed Nightly run.)"
+    )
+
+    if integration.is_project_trusted():  # type: ignore[attr-defined]
+        typer.echo("  · pi already trusts this project")
+        return
+
+    typer.echo("")
+    typer.echo(
+        "  pi has no saved trust decision for this repo. Without one, its "
+        "headless modes ignore `.pi/skills/`, so a specialist you dispatch "
+        "by hand will not find the Nightly skill. (Dispatches Nightly builds "
+        "pass `-a` and are unaffected.)"
+    )
+
+    # No TTY — CI, a piped install script, `nightly init` from inside a
+    # host. `typer.confirm` raises Abort on EOF, which would kill an
+    # otherwise-successful init over an optional, non-blocking setting.
+    # Say what to run instead and carry on.
+    if not sys.stdin.isatty():
+        typer.echo("  · non-interactive; leaving the decision to you")
+        typer.echo("    run `/trust` inside pi, or re-run this with a terminal attached")
+        return
+
+    try:
+        record = typer.confirm("  Record a trust decision for this repo in pi?", default=True)
+    except (typer.Abort, EOFError):
+        typer.echo("  · skipped — run `/trust` inside pi later if you change your mind")
+        return
+    if not record:
+        typer.echo("  · skipped — run `/trust` inside pi later if you change your mind")
+        return
+    written = integration.trust_project()  # type: ignore[attr-defined]
+    typer.echo(f"  ✓ trusted this repo in {written}")
 
 
 def _bootstrap_nightly_dir(root: Path) -> tuple[Path, list[str]]:
@@ -439,6 +501,7 @@ def init(
         typer.echo(
             f"  ✓ installed {host} skill ({scope}) at {_format_path_for_display(target, root)}"
         )
+        _report_pi_specifics(integration, root)
         typer.echo("")
         typer.echo(
             "→ User-scope install complete. In any repo, type `/nightly-init` "
@@ -461,6 +524,7 @@ def init(
 
     asyncio.run(integration.install(scope))
     typer.echo(f"  ✓ installed {host} skill ({scope}) at {_format_path_for_display(target, root)}")
+    _report_pi_specifics(integration, root)
 
     if rules:
         for outcome in seed_rules(root):
@@ -601,6 +665,13 @@ def start(
         raise typer.Exit(code=1)
 
     run = start_run(root, task=task)
+    # Make this repo visible to the respawn supervisor (RFC 010 §B9). A
+    # no-op unless the operator installed the daemon — the registry is
+    # just a list, and an unwatched list costs nothing.
+    with contextlib.suppress(Exception):
+        from nightly_core.supervisor.registry import register_repo  # noqa: PLC0415
+
+        register_repo(root)
     typer.echo(f"✓ started run {run.id}")
     if task:
         first_task = run.path / "tasks"
@@ -1381,11 +1452,193 @@ vault_app = typer.Typer(
     help="Build and open the .nightly/vault/ knowledge graph (RFC 003).",
     no_args_is_help=True,
 )
+supervisor_app = typer.Typer(
+    name="supervisor",
+    help=(
+        "Respawn daemon that re-invokes the host when a session dies "
+        "involuntarily (RFC 010). Operator-only — the agent never runs these."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(session_app)
 app.add_typer(hook_app)
 app.add_typer(worktree_app)
 app.add_typer(dispatch_app)
 app.add_typer(vault_app)
+app.add_typer(supervisor_app)
+
+
+# ── supervisor verbs (RFC 010 Phase B) ────────────────────────────────────
+
+
+_SUPERVISOR_EXPLAINER = """\
+The Nightly supervisor is a background daemon. Before installing it, know
+exactly what you are agreeing to:
+
+  What it does      Polls the repos you have run `nightly start` in. When a
+                    session's heartbeat goes stale while a RESPAWN_REQUESTED
+                    marker is present — meaning it died rather than merely
+                    blocked — it re-invokes the host so the night continues.
+
+  What it runs      `claude --permission-mode acceptEdits /nightly`, in a
+                    tmux window or a Terminal window, in that repo.
+
+  Where it lives    {unit}
+  What it writes    {home}
+                      registry.json  — repos being watched
+                      state.json     — liveness, poll and respawn counts
+                      events.jsonl   — every decision it made
+                      daemon.log     — stdout/stderr
+
+  Limits            {max_respawns} respawns per run, then it writes
+                    SUPERVISOR_ABORTED and stops. CONCLUDE and STOP markers
+                    are always honored — it will never restart a session you
+                    deliberately ended.
+
+  To remove         nightly supervisor uninstall
+"""
+
+
+@supervisor_app.command(name="install")
+def supervisor_install_cmd(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
+    ] = False,
+    activate: Annotated[
+        bool,
+        typer.Option(
+            "--activate/--no-activate",
+            help="Load the unit with launchctl/systemctl after writing it.",
+        ),
+    ] = True,
+) -> None:
+    """Register the respawn daemon with launchd (macOS) or systemd (Linux).
+
+    Opt-in by design. Nightly never installs a background process as a
+    side effect of anything else — you type this, and confirm.
+    """
+    from nightly_core.supervisor.registry import supervisor_home  # noqa: PLC0415
+    from nightly_core.supervisor.service import install_service, service_path  # noqa: PLC0415
+
+    unit = service_path()
+    if unit is None:
+        typer.echo(
+            f"✗ no service-manager integration for {platform.system()}.\n"
+            "  Run `nightly supervisor start` under your own process manager instead.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    cfg = load_supervisor_config(repo_root())
+    typer.echo(
+        _SUPERVISOR_EXPLAINER.format(
+            unit=unit,
+            home=supervisor_home(),
+            max_respawns=cfg.max_respawns,
+        )
+    )
+    if not yes and not typer.confirm("Install the supervisor daemon?", default=False):
+        typer.echo("· aborted; nothing was written")
+        raise typer.Exit(code=1)
+
+    result = install_service(activate=activate)
+    if not result.ok:
+        typer.echo(f"✗ {result.message}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ {result.message}")
+    typer.echo("  check it with: nightly supervisor status")
+
+
+@supervisor_app.command(name="uninstall")
+def supervisor_uninstall_cmd() -> None:
+    """Unload the daemon and remove its unit file. Idempotent."""
+    from nightly_core.supervisor.service import uninstall_service  # noqa: PLC0415
+
+    result = uninstall_service()
+    if not result.ok:
+        typer.echo(f"✗ {result.message}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"✓ {result.message}")
+
+
+@supervisor_app.command(name="start")
+def supervisor_start_cmd(
+    once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single poll pass and exit — for debugging."),
+    ] = False,
+    interval: Annotated[
+        int | None,
+        typer.Option("--interval", help="Override the poll interval, in seconds."),
+    ] = None,
+) -> None:
+    """Run the supervisor in the foreground.
+
+    For debugging, or for operators who prefer their own process manager
+    over launchd/systemd. The installed daemon runs this same loop.
+    """
+    from nightly_core.supervisor.daemon import already_running, run_forever  # noqa: PLC0415
+
+    if (pid := already_running()) is not None:
+        typer.echo(f"✗ supervisor already running (pid {pid})", err=True)
+        raise typer.Exit(code=1)
+
+    polls = run_forever(poll_interval=interval, max_polls=1 if once else None)
+    typer.echo(f"· supervisor stopped after {polls} poll(s)")
+
+
+@supervisor_app.command(name="status")
+def supervisor_status_cmd() -> None:
+    """Show daemon liveness, watched repos, and recent respawn activity."""
+    from nightly_core.supervisor.daemon import already_running, read_state  # noqa: PLC0415
+    from nightly_core.supervisor.registry import list_repos  # noqa: PLC0415
+    from nightly_core.supervisor.service import service_status  # noqa: PLC0415
+
+    pid = already_running()
+    state = read_state()
+
+    typer.echo("Supervisor")
+    typer.echo(f"  service:  {service_status()}")
+    if pid is not None:
+        typer.echo(f"  process:  running (pid {pid})")
+    else:
+        typer.echo("  process:  not running")
+        # The gap between "installed" and "running" is the failure the
+        # operator most needs to see: they believe they are covered.
+        if service_status().startswith("installed"):
+            typer.echo("            ⚠ installed but not running — check `nightly supervisor logs`")
+    typer.echo(f"  started:  {state.started_at or '—'}")
+    typer.echo(f"  polls:    {state.polls}  (last {state.last_poll or '—'})")
+    typer.echo(f"  respawns: {state.respawns}")
+
+    repos = list_repos()
+    typer.echo(f"  watching: {len(repos)} repo(s)")
+    for repo in repos:
+        typer.echo(f"            · {repo.path}  (seen {repo.last_seen:%Y-%m-%d %H:%M}Z)")
+
+
+@supervisor_app.command(name="logs")
+def supervisor_logs_cmd(
+    lines: Annotated[
+        int,
+        typer.Option("-n", "--lines", help="How many events to show."),
+    ] = 20,
+) -> None:
+    """Tail the daemon's decision log."""
+    from nightly_core.supervisor.daemon import events_path  # noqa: PLC0415
+
+    path = events_path()
+    if not path.is_file():
+        typer.echo("· no supervisor events yet")
+        return
+    try:
+        entries = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        typer.echo(f"✗ could not read {path}: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    for line in entries[-lines:]:
+        typer.echo(line)
 
 
 @vault_app.command(name="index")
@@ -1883,6 +2136,10 @@ def dispatch_start_cmd(  # noqa: PLR0913 - one option per dispatch dimension
             model=resolved.model,
             model_flag=tier_cfg.flag_for(host),
             tier=resolved.tier,
+            # Hosts with a real effort flag (pi's `--thinking`) get the
+            # tier's effort as an argument; everywhere else it already
+            # reached the agent as a prompt directive above.
+            effort=resolved.effort,
         )
     except RuntimeError as exc:
         typer.echo(f"✗ {exc}", err=True)
@@ -2478,7 +2735,7 @@ def _print_ci_status(statuses: list[PRCIStatus]) -> None:
 
 
 @app.command(name="bug")
-def bug_cmd(
+def bug_cmd(  # noqa: PLR0913 - one option per report dimension
     title: Annotated[
         str | None,
         typer.Option(
@@ -2518,6 +2775,28 @@ def bug_cmd(
             ),
         ),
     ] = True,
+    include_telemetry: Annotated[
+        bool,
+        typer.Option(
+            "--include-telemetry",
+            help=(
+                "Append the session's telemetry summary and the last 24h of raw "
+                "events. Off by default (the payload is large); turn it on when "
+                "the bug is about session behavior — stops, loops, dispatch failures."
+            ),
+        ),
+    ] = False,
+    llm_backstop: Annotated[
+        bool | None,
+        typer.Option(
+            "--llm-backstop/--no-llm-backstop",
+            help=(
+                "Run a model pass over the redacted body to catch project-specific "
+                "strings the patterns can't match (codenames, internal service and "
+                "personal names). Defaults to `redaction.llm_backstop` in config.yml."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Bundle Nightly run state into a debug report; optionally open an issue.
 
@@ -2536,11 +2815,27 @@ def bug_cmd(
     is trying to capture (see AGENTS.md rule 10).
     """
     root = repo_root()
-    report = build_bug_report(root=root, title=title, summary=describe)
+    report = build_bug_report(
+        root=root,
+        title=title,
+        summary=describe,
+        include_telemetry=include_telemetry,
+        llm_backstop=llm_backstop,
+    )
     written = write_bug_report(report)
     typer.echo(f"✓ wrote report → {_format_path_for_display(written, root)}")
+    if report.redaction is not None:
+        typer.echo(
+            f"✓ redacted {report.redaction.count} string(s) "
+            f"({', '.join(report.redaction.passes_applied)})"
+        )
+        typer.echo(
+            "  decoder map (LOCAL ONLY, never attach): "
+            f"{_format_path_for_display(written.with_suffix('.md.redaction-map.json'), root)}"
+        )
+        typer.echo("  → read the report body before submitting; redaction is good, not perfect.")
     for extra in report.extra_attachments:
-        typer.echo(f"  · attachment: {_format_path_for_display(extra, root)}")
+        typer.echo(f"  · attachment (RAW, unredacted): {_format_path_for_display(extra, root)}")
 
     if not submit:
         typer.echo("· skipping `gh issue create` (--no-submit)")
@@ -2714,6 +3009,7 @@ def hook_stop(
     # from the decision's internals.
     context_tokens = estimate_context_tokens(transcript_path)
     log_heartbeat(decision, root, hook_input=hook_input, context_tokens=context_tokens)
+    log_telemetry(decision, root, hook_input=hook_input)
     typer.echo(json.dumps(format_decision(decision, fmt=fmt)))
 
 

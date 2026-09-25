@@ -30,6 +30,7 @@ from nightly_core import (
     AuthStatus,
     HostId,
     InstallScope,
+    KeepaliveMechanism,
     KeepaliveSupport,
     NightlyHostIntegration,
     SpecialistRole,
@@ -78,6 +79,7 @@ class AntigravityHostIntegration(NightlyHostIntegration):
 
     host_id: HostId = "antigravity"
     keepalive_support: KeepaliveSupport = "forced"
+    keepalive_mechanism: KeepaliveMechanism = "hook"
 
     USER_SKILL_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly" / "SKILL.md"
     USER_CONCLUDE_ABSOLUTE = _ANTIGRAVITY_HOME / "agents" / "nightly-conclude" / "SKILL.md"

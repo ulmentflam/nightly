@@ -116,8 +116,13 @@ def test_build_argv_returns_none_for_unsupported_host(
 
 
 def test_supported_hosts_set() -> None:
-    """Locks the v1 host set so dropping support is a deliberate change."""
-    assert set(supported_hosts()) == {"claude", "codex", "opencode", "gemini"}
+    """Locks the host set so changing support is a deliberate change."""
+    assert set(supported_hosts()) == {"claude", "codex", "opencode", "gemini", "pi"}
+
+
+def test_supported_hosts_does_not_drift_from_headless_hosts() -> None:
+    """These were separate literals and drifted the moment pi landed."""
+    assert tuple(supported_hosts()) == HEADLESS_HOSTS
 
 
 # ── start_background ─────────────────────────────────────────────────────
@@ -546,9 +551,12 @@ def test_headless_hosts_matches_what_build_argv_actually_supports(monkeypatch) -
 
 
 def test_no_cli_host_message_names_the_host_asked_for() -> None:
-    """The old message enumerated every host except the one requested."""
-    msg = unsupported_host_message("pi")
-    assert "'pi'" in msg
+    """The old message enumerated every host except the one requested.
+
+    Uses `antigravity` rather than `pi` as the example: pi gained a real
+    headless CLI in RFC 013, so it is no longer a host with none."""
+    msg = unsupported_host_message("antigravity")
+    assert "'antigravity'" in msg
     assert "no headless CLI" in msg
 
 
@@ -594,4 +602,8 @@ def test_start_background_raises_the_derived_message(monkeypatch, tmp_path: Path
 
     monkeypatch.setattr(d.shutil, "which", lambda _name: None)
     with pytest.raises(RuntimeError, match="no headless CLI"):
-        d.start_background("slug", role="implementer", host="pi", prompt="p", root=tmp_path)
+        # `antigravity`, not `pi` — pi became dispatchable in RFC 013 and
+        # now raises the "binary not on PATH" message instead.
+        d.start_background(
+            "slug", role="implementer", host="antigravity", prompt="p", root=tmp_path
+        )

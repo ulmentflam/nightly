@@ -31,12 +31,21 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from nightly_core._version import __version__
 from nightly_core.paths import nightly_dir, repo_root
+from nightly_core.redaction import (
+    RedactionResult,
+    load_redaction_config,
+    redact,
+    write_redaction_map,
+)
+from nightly_core.redaction import llm_backstop as llm_backstop_pass
 from nightly_core.runs import current_run
+from nightly_core.telemetry import EVENT_CLASSES, EventKind, read_events, read_summary
 
 __all__ = [
     "DEFAULT_BUG_REPO",
@@ -60,6 +69,15 @@ the full file is attached as a fenced block under "Logs."""
 _MAX_GIT_LOG_ENTRIES = 20
 """How many recent commits to include from the host repo."""
 
+_TELEMETRY_WINDOW_HOURS = 24
+"""How far back `--include-telemetry` reaches for raw events."""
+
+_MAX_TELEMETRY_EVENTS = 50
+"""Per-class cap on embedded raw events. An overnight run can emit
+thousands; the summary carries the totals, so the raw tail is for
+spot-checking, not completeness. Truncation is stated in the header
+rather than silent."""
+
 
 @dataclass(frozen=True)
 class BugReport:
@@ -73,18 +91,30 @@ class BugReport:
     extra_attachments: tuple[Path, ...] = field(default_factory=tuple)
     """Additional files (briefing.md, keepalive.log) the operator may
     want to attach manually when filing the issue. `gh issue create`
-    doesn't take file attachments, so these are advisory."""
+    doesn't take file attachments, so these are advisory.
+
+    NB: these are the **raw** on-disk files, deliberately unredacted —
+    they are the operator's audit trail. Attaching them to a public
+    issue would defeat the body's redaction, so the CLI warns rather
+    than attaching them automatically."""
+
+    redaction: RedactionResult | None = None
+    """The redaction result for `body`, when it was scrubbed. `None`
+    means the body is raw — only ever true for tests."""
 
 
 # ── public entry points ────────────────────────────────────────────────────
 
 
-def build_report(
+def build_report(  # noqa: PLR0913 - one keyword per report dimension
     *,
     root: Path | None = None,
     title: str | None = None,
     summary: str | None = None,
     now: datetime | None = None,
+    include_telemetry: bool = False,
+    redact_body: bool = True,
+    llm_backstop: bool | None = None,
 ) -> BugReport:
     """Collect on-disk state and render a markdown bug report.
 
@@ -97,6 +127,17 @@ def build_report(
     timestamp. `summary` is the free-text "what went wrong" the
     operator can type at the prompt; it becomes the first section of
     the body so reviewers see context before the disk dump.
+
+    `include_telemetry` appends the last 24h of structured events
+    (RFC 010 §A14). Off by default because the payload is large;
+    operators turn it on when the bug is *about* session behavior.
+
+    `redact_body` defaults to **True** and should essentially never be
+    turned off: this report goes into a public GitHub issue, and the raw
+    body carries `$HOME` paths, branch slugs, git remotes, and free-text
+    plan content. It exists as a parameter only so tests can inspect the
+    pre-redaction body. The redaction map is written beside the report
+    by `write_report` and stays local.
     """
     root = (root or repo_root()).resolve()
     moment = now or datetime.now(UTC)
@@ -125,11 +166,23 @@ def build_report(
     sections.append(_render_next_section(root))
     sections.append(_render_git_section(root))
     sections.append(_render_environment_section(root))
+    if include_telemetry:
+        sections.append(_render_telemetry_section(run))
 
     body = "\n".join(s.rstrip() + "\n" for s in sections if s)
 
     bugs_dir = nightly_dir(root) / "bugs" / stamp
     report_path = bugs_dir / "report.md"
+
+    redaction: RedactionResult | None = None
+    if redact_body:
+        cfg = load_redaction_config(root)
+        redaction = redact(body, config=cfg)
+        use_llm = cfg.llm_backstop if llm_backstop is None else llm_backstop
+        if use_llm:
+            redaction = llm_backstop_pass(redaction, root=root)
+        body = redaction.text
+        body += _render_redaction_footer(redaction)
 
     extras: list[Path] = []
     if run is not None:
@@ -143,13 +196,42 @@ def build_report(
         body=body,
         path=report_path,
         extra_attachments=tuple(extras),
+        redaction=redaction,
+    )
+
+
+def _render_redaction_footer(result: RedactionResult) -> str:
+    """Tell the reader the body was scrubbed, and the operator to check it.
+
+    Both audiences need this. A maintainer seeing `~/<path:a1b2c3d4>`
+    should know it is a redaction rather than a corrupted log line, and
+    the operator needs an explicit prompt to read the body before
+    submitting — the redaction passes are good, not perfect.
+    """
+    return (
+        "\n---\n\n"
+        f"_This report was redacted before sharing: {result.count} "
+        f"substitution(s) across {len(result.passes_applied)} passes "
+        f"({', '.join(result.passes_applied)}). Placeholders like "
+        "`~/<path:…>`, `nightly/<slug:…>`, `<host>` are category-preserving "
+        "stand-ins — the same hash means the same original string._\n\n"
+        "> **Operator:** review the body above for anything you don't want "
+        "public and cancel submission if you spot a leak. The decoder map "
+        "is at `report.md.redaction-map.json` and stays on your machine — "
+        "never attach it._\n"
     )
 
 
 def write_report(report: BugReport) -> Path:
-    """Write `report.body` to `report.path`. Returns the path written."""
+    """Write `report.body` to `report.path`, plus the local redaction map.
+
+    The map is deliberately a sibling file rather than part of the
+    report: it is the one artifact that must never travel with it.
+    """
     report.path.parent.mkdir(parents=True, exist_ok=True)
     report.path.write_text(report.body, encoding="utf-8")
+    if report.redaction is not None:
+        write_redaction_map(report.redaction, report.path)
     return report.path
 
 
@@ -329,6 +411,50 @@ def _render_briefing_section(run) -> str:
     cap = 4000
     body = text if len(text) <= cap else text[:cap] + "\n…(truncated)…\n"
     return "## Last briefing\n\n```\n" + body.rstrip() + "\n```\n"
+
+
+def _render_telemetry_section(run) -> str:
+    """Render `summary.json` plus the last 24h of raw events (RFC 010 §A14).
+
+    The summary comes first and is the part a triager actually reads —
+    stop-reason counts, chain depth, cascade pick distribution. The raw
+    events follow, capped, for when the summary raises a question the
+    counters can't answer.
+    """
+    if run is None:
+        return ""
+    summary = read_summary(run.path)
+    if summary is None:
+        return (
+            "## Session telemetry\n\n"
+            "_No telemetry for this run — either `telemetry.enabled: false` "
+            "or the run predates RFC 010._\n"
+        )
+
+    lines = ["## Session telemetry", "", "### Summary", "", "```json", _pretty(summary), "```", ""]
+
+    cutoff = datetime.now(UTC) - timedelta(hours=_TELEMETRY_WINDOW_HOURS)
+    lines.extend(("### Events (last 24h)", ""))
+    for kind in EVENT_CLASSES:
+        events = read_events(run.path, cast("EventKind", kind), since=cutoff)
+        if not events:
+            continue
+        shown = events[-_MAX_TELEMETRY_EVENTS:]
+        dropped = len(events) - len(shown)
+        header = f"**`{kind}`** — {len(events)} event(s)"
+        if dropped:
+            header += f", showing the most recent {len(shown)}"
+        lines.extend((header, "", "```json"))
+        lines.extend(_pretty(event) for event in shown)
+        lines.extend(("```", ""))
+    return "\n".join(lines) + "\n"
+
+
+def _pretty(payload: object) -> str:
+    """Compact single-line JSON for embedding in a fenced block."""
+    import json  # noqa: PLC0415
+
+    return json.dumps(payload, sort_keys=True)
 
 
 def _render_status_section(root: Path) -> str:

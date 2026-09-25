@@ -237,6 +237,41 @@
     </section>
   {% endif %}
 
+  {# ── session telemetry (RFC 010 §A8) ─────────────────────────────── #}
+  {# Leads with the alert when the night was fraught, so "did this go   #}
+  {# well?" is answered before the operator reads a single counter.     #}
+  {% if telemetry %}
+    <section class="narrative" {% if telemetry_alert %}style="border-left:3px solid var(--rose); padding-left:1rem;"{% endif %}>
+      <div class="label">session telemetry</div>
+      {% if telemetry_alert %}
+        <p style="color: var(--rose); font-size:.86rem; margin-bottom:1rem;">
+          ⚠ {{ telemetry_alert }}
+        </p>
+      {% endif %}
+      <div style="font-family: ui-monospace, monospace; font-size: 0.78rem; color: var(--muted); line-height:1.9;">
+        {% set stops = telemetry.stop_reasons or {} %}
+        {% set disp  = telemetry.dispatch_events or {} %}
+        {% set resp  = telemetry.respawns or {} %}
+        cascade walks: {{ telemetry.cascade_walks or 0 }}
+        · dispatches: {{ disp.spawned or 0 }} spawned,
+          {{ disp.finished_ok or 0 }} ok,
+          {{ disp.finished_err or 0 }} err
+        · tool denials: {{ telemetry.tool_denials_total or 0 }}
+        · deepest block chain: {{ telemetry.max_consecutive_blocks or 0 }}
+        {%- if resp.count %} · respawns: {{ resp.count }}{% endif %}
+        <br>
+        stop reasons:
+        {%- for code, n in stops.items() %}{% if n %} {{ code }}×{{ n }}{% endif %}{% endfor %}
+        {%- if not stops.values()|select|list %} none recorded{% endif %}
+        {% if telemetry.cascade_pick_distribution %}
+          <br>
+          cascade picks:
+          {%- for source, n in telemetry.cascade_pick_distribution.items() %} {{ source }}×{{ n }}{% endfor %}
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
   {# ── session narrative (agent-authored, optional) ────────────────── #}
   {% if session_narrative %}
     <section class="narrative">

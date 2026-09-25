@@ -9,7 +9,7 @@
 ## Work while you sleep.
 
 Nightly is a host-native autonomous coding agent that runs *inside* the
-coding CLI you already use — Claude Code, Codex, opencode, Cursor,
+coding CLI you already use — Claude Code, Codex, opencode, pi, Cursor,
 Antigravity, or Gemini CLI — and turns it into a self-directed,
 drainable session. You stop coding at 5pm, fire `/nightly`, and wake up
 to a stack of **draft PRs in review-ready shape**: each on its own
@@ -109,6 +109,7 @@ For other hosts, pass `--host`:
 ```bash
 nightly init --host codex --scope user
 nightly init --host opencode --scope user
+nightly init --host pi --scope user
 nightly init --host cursor --scope user
 nightly init --host antigravity --scope user
 nightly init --host gemini --scope user      # vanilla Gemini CLI
@@ -173,12 +174,12 @@ keystroke from inside the CLI:
 
 ---
 
-## Six hosts, one on-disk run state
+## Seven hosts, one on-disk run state
 
 Because everything Nightly knows lives on disk under `.nightly/`, the
 host is interchangeable. Suspend a Claude Code run, resume it in Codex
 the next evening, render the briefing from opencode — same tasks, same
-plans, same vault. The three *primary* hosts support full headless
+plans, same vault. The four *primary* hosts support full headless
 dispatch; the three *secondary* hosts ship the launcher and the
 morning briefing, with their headless story deferred to a remote
 queue.
@@ -188,6 +189,7 @@ queue.
 | Claude Code    | primary   | `.claude/skills/nightly/SKILL.md`         | Task tool + MCP                    | none (in-proc)            |
 | Codex CLI      | primary   | `.codex/skills/nightly/SKILL.md`          | MCP / `codex exec`                 | Seatbelt + Landlock       |
 | opencode       | primary   | `.opencode/agents/nightly/SKILL.md`       | `POST /session/:id/fork` + SSE     | none                      |
+| pi             | primary   | `.pi/skills/nightly/SKILL.md`             | Headless `pi -p --mode json`       | none                      |
 | Cursor         | secondary | `.cursor/commands/nightly.md`             | Background Agents (cloud VM)       | cloud VM (Background)     |
 | Antigravity    | secondary | `.gemini/antigravity/agents/.../SKILL.md` | Agent Manager + `brain/<GUID>/`    | none                      |
 | Gemini CLI     | secondary | `.gemini/commands/nightly.toml`           | Headless `gemini --prompt`         | none                      |
@@ -195,7 +197,7 @@ queue.
 Install per host with `nightly init --host <name>`. Switch scopes with
 `--scope user` (global) vs the default `--scope project`. Subscription
 auth propagates from the host's cached creds (`~/.claude/`,
-`~/.codex/`, `~/.local/share/opencode/`, `~/.gemini/`, …) — Nightly
+`~/.codex/`, `~/.local/share/opencode/`, `~/.gemini/`, `~/.pi/agent/`, …) — Nightly
 never asks for an API token. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `GEMINI_API_KEY` etc. are env-var fallbacks for sandboxed CI.
 
@@ -210,24 +212,36 @@ merge is idempotent if you co-install them.
 
 Coding CLIs end their session the moment the model finishes its first
 response. The overnight loop only loops because Nightly registers a
-host-level Stop-equivalent hook that catches that boundary and
-re-injects a "continue" prompt. Five of the six hosts get a real hook;
-opencode is soft (rule-text only — the model is asked to never stop):
+host-level surface that catches that boundary and re-injects a
+"continue" prompt. Five of the seven hosts get a real Stop-style hook,
+pi gets something better, and opencode is soft (rule-text only — the
+model is asked to never stop):
 
-| Host           | Hook              |
-|----------------|-------------------|
-| Claude Code    | `Stop`            |
-| Codex CLI      | `Stop`            |
-| Cursor 1.7+    | `stop`            |
-| Antigravity    | `AfterAgent`      |
-| Gemini CLI     | `AfterAgent`      |
-| opencode       | (soft / rule-text) |
+| Host           | Mechanism   | Turn-boundary surface | Supervisor respawn     |
+|----------------|-------------|-----------------------|------------------------|
+| Claude Code    | hook        | `Stop`                | ✅ v1                  |
+| Codex CLI      | hook        | `Stop`                | planned (v2)           |
+| Cursor 1.7+    | hook        | `stop`                | planned (v2)           |
+| Antigravity    | hook        | `AfterAgent`          | planned (v2)           |
+| Gemini CLI     | hook        | `AfterAgent`          | planned (v2)           |
+| pi             | **extension** | `agent_settled`     | ✅ v1 (true resume)    |
+| opencode       | rules       | (soft / rule-text)    | experimental (v3)      |
+
+**pi is the one that isn't a hook**, and the distinction is not cosmetic.
+A hook is a subprocess the host *chooses* to honor — Claude Code overrides
+one after 8 consecutive blocks without progress, and Cursor caps
+continuations at `loop_limit`. pi instead loads an in-process extension
+that continues the session with `pi.sendMessage(..., { deliverAs:
+"followUp", triggerTurn: true })`. Nothing overrides a queued follow-up,
+because nothing is a hook. See [Seven hosts](#seven-hosts-one-on-disk-run-state)
+below and `.planning/rfcs/013-pi-first-class-host.md`.
 
 The hook checks a `SESSION_ACTIVE` marker on disk and re-injects a
-"continue on X" prompt at every turn boundary. The marker has a 4-hour
-TTL; `nightly session start` refreshes it. The human off-ramps
-(`nightly conclude`, `nightly stop`, `Ctrl-C`) take precedence and end
-the session cleanly.
+"continue on X" prompt at every turn boundary. `nightly session start`
+writes the marker. It has no TTL — the 4-hour freshness check was
+removed in v0.0.3, when the contract became "only human intervention
+terminates a session." The human off-ramps (`nightly conclude`,
+`nightly stop`, `Ctrl-C`) take precedence and end the session cleanly.
 
 **Context hygiene (v0.0.12).** Each Stop-hook firing also estimates the
 session's current context size from the Claude Code transcript and logs
@@ -242,6 +256,137 @@ manual `/compact`) and re-injects the session digest as
 `additionalContext` so key Nightly state survives the compaction. The
 digest lives at `.nightly/runs/<id>/digest.md` and is refreshed every
 keepalive turn (configurable via `context.digest_every_turns`).
+
+### pi — the host that installs outside your repo, on purpose
+
+`nightly init --host pi` writes to **two** places, and the split is
+deliberate enough to call out before you run it:
+
+| Artifact | Location |
+|---|---|
+| Skill | `.pi/skills/nightly/SKILL.md` (or `~/.pi/agent/skills/…` at user scope) |
+| Keep-alive extension | `~/.pi/agent/extensions/nightly/index.ts` — **always global** |
+
+The extension is global even at `--scope project` because pi gates
+project-local extensions behind project trust, and **its non-interactive
+modes never prompt**: `-p`, `--mode json`, and `--mode rpc` fall back to
+`defaultProjectTrust`, whose default (`ask`) means *ignore project
+resources*. A keep-alive under `.pi/extensions/` would load every time
+you tested it by hand and silently fail in every headless run — which is
+the worst possible shape for a bug, and exactly the class of failure the
+supervisor below exists to clean up after.
+
+Because it is global, the extension no-ops unless the session's directory
+resolves to a repo with an armed Nightly run. Sessions that have nothing
+to do with Nightly are untouched.
+
+Two more pi specifics worth knowing:
+
+- **Project trust affects dispatch, not the keep-alive.** Nightly passes
+  `-a` on every dispatch it builds, so specialists always see your project
+  skills. Only pi invocations you make yourself are affected. `nightly
+  init --host pi` offers to record the decision; `nightly doctor` reports
+  it as a named condition rather than a generic failure.
+- **`--thinking` is a real flag.** pi is the first host where RFC 007's
+  reasoning effort is passed as an argument instead of a prompt directive.
+  pi's levels (`off … max`) are a superset of Nightly's, so tier config
+  passes through unchanged.
+
+### Supervisor — surviving the kills the hook can't catch
+
+The Stop hook holds a session across turn boundaries, but two failure
+modes end an overnight run without firing another hook event, so nothing
+in-process can react to them:
+
+- **Claude Code's without-progress cap.** The host overrides a Stop hook
+  after 8 consecutive blocks that made no progress. Nightly raises the
+  cap via `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, but a genuinely stuck
+  session can still hit it.
+- **A crash.** OOM, network drop, laptop sleep, host process exit.
+
+Both leave the cascade's work on disk with nobody driving it. A 03:00
+death costs the rest of the night. The supervisor is an **opt-in**
+background daemon that notices and restarts the host:
+
+```bash
+nightly supervisor install     # writes a launchd plist / systemd unit, asks first
+nightly supervisor status      # liveness, watched repos, respawn count
+nightly supervisor logs -n 50  # every decision it made
+nightly supervisor uninstall   # removes it
+```
+
+It fires only when **all four** hold: the session was armed
+(`SESSION_ACTIVE`), no `CONCLUDE`/`STOP` marker is present, the hook left
+a `RESPAWN_REQUESTED` breadcrumb, **and** `keepalive.log` has gone
+stale past `heartbeat_stale_seconds` (default 90s). That last condition
+is the one doing the real work: `RESPAWN_REQUESTED` is written
+preemptively during every forced-continuation chain, so it is present
+throughout a *healthy* session — it means "a death here is resumable,"
+not "a death happened." Only the stale heartbeat says the session is
+actually gone.
+
+Respawn tries tmux, then a macOS Terminal window, then a headless
+`claude -p` turn as a last resort (labelled distinctly — it has no live
+Stop hook, so it is one turn, not a resumed night). The budget is 5
+respawns per run with a 0/60/180/540/1620s backoff; past it the daemon
+writes `SUPERVISOR_ABORTED` and stops, so a session that dies instantly
+on every restart cannot loop. `nightly conclude` and `nightly stop` are
+always honored — the supervisor will never restart a session you ended
+deliberately.
+
+Nothing installs it for you, and the agent is forbidden from running any
+of these verbs (rules block, rule 14). v1 drives Claude Code and pi;
+other hosts raise a clear error rather than silently doing nothing.
+
+**It matters less on pi, and the honest framing is worth stating.** The
+failure mode that motivated all of this — the host overriding a hook
+after 8 blocks — does not exist there, because pi's keep-alive is not a
+hook. Crashes, OOM, and disconnects still happen, so the supervisor is
+still worth installing; it is belt-and-braces rather than the thing that
+saves your night. When it does fire on pi it uses `pi -c`, which resumes
+the actual conversation rather than restarting the slash command — the
+only host where respawn is a true resume.
+
+### Session telemetry and the redaction contract
+
+`keepalive.log` says *what* the hook decided. It never said *why* the
+session stopped — the question every bug report about stalled overnight
+runs actually asked. Nightly now also writes structured JSONL under
+`.nightly/runs/<id>/telemetry/`: stop decisions (with the
+forced-continuation chain depth at each one), cascade walks and what
+they picked, specialist dispatch outcomes, and supervisor actions —
+rolled into a `summary.json` the morning briefing renders. A session
+whose cascade picks are all one source was holding, not working; a
+chain depth of 8 means it nearly hit the host cap. Turn it off with
+`telemetry.enabled: false`.
+
+The split that governs sharing:
+
+- **On-disk state is never redacted.** It is your own audit trail.
+- **Anything leaving the machine always is.** `nightly bug` bodies are
+  scrubbed unconditionally — not behind a flag — because that command
+  files a public GitHub issue.
+
+Redaction is category-preserving: `$HOME` paths become `~/<path:a1b2c3d4>`,
+branch slugs become `nightly/<slug:…>`, and the *same* original string
+always yields the same hash, so "this file appeared twice" survives while
+"which file" does not. Emails, IPs, git remotes, hostnames, usernames,
+and key-shaped strings get the same treatment. A model pass then looks
+for what patterns cannot match — project codenames, internal service
+names — and degrades silently if no host is reachable
+(`--no-llm-backstop` to skip it). Declare your own terms in
+`.nightly/redaction.yml`:
+
+```yaml
+project_specifics:
+  - {pattern: "acmecorp",       replacement: "<org>"}
+  - {pattern: "payment-router", replacement: "<service>"}
+```
+
+Every report writes a `report.md.redaction-map.json` beside itself so you
+can see exactly what was removed — and decode it later if a maintainer
+asks. **That file stays on your machine; never attach it.** Add
+`--include-telemetry` when the bug is about session behavior.
 
 ---
 
@@ -617,9 +762,8 @@ make nuke               # clean + drop the venv
 ```
 
 The dev loop is **Python 3.12+ · uv · ruff · Pyrefly · pytest**. Tests
-cover all six hosts plus the core (run lifecycle, cascade, proposers,
-autonomy bar, headless, worktree, driver, CLI). The full check suite
-runs in ~3 seconds.
+cover all seven hosts plus the core (run lifecycle, cascade, proposers,
+autonomy bar, headless, worktree, driver, CLI).
 
 ### Pre-commit hook
 
@@ -671,17 +815,15 @@ matrix, refusal policy, and prior art (Devin · OpenHands · SWE-agent ·
 Sweep · AutoCodeRover · Copilot · Factory · Replit · Amp · Cosine and
 others) with inline references throughout. RFC 009 (synthesis-driven
 ideate — codebase-wide proposals across cleaning/refactoring/
-housekeeping/convenience/capability) is accepted and awaiting
-implementation. RFC 010 (host-respawn supervisor) is drafted and
-planned — v0.0.10 ships the underlying hook fix (the
-`stop_hook_active` misread that caused sessions to surrender after
-one force-continue is resolved; the hook now rides forced-
-continuation chains indefinitely) and writes the `RESPAWN_REQUESTED`
-marker preemptively during chains so an involuntary host-cap kill or
-crash still leaves a resume breadcrumb, surfaced at the next
-`nightly session start`. RFC 011 (interactive context compaction) is
-shipped in v0.0.12 — see the "Context hygiene" note above and
-`.planning/rfcs/011-interactive-context-compaction.md`.
+housekeeping/convenience/capability) is implemented. RFC 010
+(host-cap respawn supervisor + telemetry and redaction) is
+implemented — see "Supervisor" and "Session telemetry" above;
+v0.0.10 shipped the underlying hook fix (the `stop_hook_active`
+misread that made sessions surrender after one force-continue), and
+the daemon closes the loop on the kills no hook can intercept. RFC 011
+(interactive context compaction) is shipped in v0.0.12 — see the
+"Context hygiene" note above. RFC 012 (fleet parallelism and context
+handoff) is implemented.
 
 ---
 

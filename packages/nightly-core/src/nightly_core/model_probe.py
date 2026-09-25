@@ -88,7 +88,10 @@ HELP_INVOCATIONS: dict[HostId, tuple[tuple[str, ...], ...]] = {
     "gemini": (("--help",),),
     "cursor": (("agent", "--help"), ("--help",)),
     "antigravity": (("--help",),),
-    "pi": (("run", "--help"), ("--help",)),
+    # pi has no `run` subcommand — its surface is flags (`-p`, `--mode`,
+    # `--model`, `--print`). The old `("run", "--help")` entry always
+    # failed and the fallback carried the probe (RFC 013 §A3).
+    "pi": (("--version",), ("--help",)),
     "hermes": (("run", "--help"), ("--help",)),
 }
 """Per-host argv suffixes to try when reading help text, in order."""

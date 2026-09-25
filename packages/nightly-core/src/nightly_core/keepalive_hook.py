@@ -73,7 +73,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -84,6 +84,12 @@ from nightly_core.digest import write_digest
 from nightly_core.model_probe import detect_harness
 from nightly_core.routing import ContextThresholds, resolve_context_thresholds
 from nightly_core.runs import current_run
+from nightly_core.telemetry import (
+    build_summary,
+    load_telemetry_config,
+    record_cascade_walk,
+    record_stop_decision,
+)
 
 __all__ = [
     "BLOCKS_FILENAME",
@@ -104,6 +110,7 @@ __all__ = [
     "format_decision",
     "handoff_block",
     "log_heartbeat",
+    "log_telemetry",
     "read_respawn_marker",
     "request_stop",
     "session_context_thresholds",
@@ -126,8 +133,14 @@ __all__ = [
 #   retry with the reason text fed back as the next user prompt.
 # - empty: `{}` — any host that doesn't honor `{}` as allow-stop just
 #   needs to not have a hook installed; this is the default for opencode.
+# - pi: `{"deliver_as":"followUp","message":"..."}` — pi's keep-alive is
+#   not a hook at all but an in-process extension (RFC 013). Reusing
+#   `claude_code`'s `{"decision":"block"}` would work, since the extension
+#   reads one field either way — but "block" is a lie in pi's model.
+#   Nothing is being blocked; a follow-up message is being queued, and the
+#   format should name what actually happens.
 HookFormat = str  # Literal narrowing avoided to keep typer happy
-HOOK_FORMATS: tuple[str, ...] = ("claude_code", "cursor", "gemini_cli")
+HOOK_FORMATS: tuple[str, ...] = ("claude_code", "cursor", "gemini_cli", "pi")
 
 
 SESSION_ACTIVE_FILENAME = "SESSION_ACTIVE"
@@ -495,6 +508,15 @@ class StopHookDecision:
     payload: dict[str, Any]
     reason_code: str
     message: str
+    telemetry: dict[str, Any] = field(default_factory=dict)
+    """Structured fields for `log_telemetry` (RFC 010 §A3).
+
+    Carried on the decision rather than written inline so the decision
+    function stays pure — the same reason `log_heartbeat` lives on the
+    CLI side. Holds whatever the branch knew: `turn`, `block_count`,
+    `context_tokens`, `cascade_source`, `cascade_repeats`. Off-ramp
+    branches populate only what applies.
+    """
 
     @property
     def should_block(self) -> bool:
@@ -659,6 +681,15 @@ def compute_stop_hook_decision(  # noqa: PLR0912 - one branch per off-ramp / rou
             payload={"decision": "block", "reason": reason},
             reason_code="force_continue",
             message=message,
+            telemetry={
+                "turn": turn_count,
+                "block_count": block_count,
+                "context_tokens": context_estimate,
+                "cascade_source": choice.source,
+                "cascade_summary": choice.summary,
+                "cascade_repeats": repeats,
+                "livelock": True,
+            },
         )
 
     reason = _build_continue_reason_from(
@@ -682,6 +713,15 @@ def compute_stop_hook_decision(  # noqa: PLR0912 - one branch per off-ramp / rou
         payload={"decision": "block", "reason": reason},
         reason_code="force_continue",
         message=message,
+        telemetry={
+            "turn": turn_count,
+            "block_count": block_count,
+            "context_tokens": context_estimate,
+            "cascade_source": choice.source if choice is not None else None,
+            "cascade_summary": choice.summary if choice is not None else None,
+            "cascade_repeats": repeats,
+            "livelock": False,
+        },
     )
 
 
@@ -1059,6 +1099,12 @@ def format_decision(
         return {"followup_message": reason}
     if fmt == "gemini_cli":
         return {"decision": "deny", "reason": reason}
+    if fmt == "pi":
+        # `followUp` rather than `steer`: steer delivers mid-turn, between
+        # an assistant message and its tool calls. A continuation prompt
+        # belongs after the agent has actually finished, which is what
+        # followUp means and what every other host's Stop hook implies.
+        return {"deliver_as": "followUp", "message": reason}
     # claude_code default — same payload Claude Code and Codex emit.
     return {"decision": "block", "reason": reason}
 
@@ -1222,6 +1268,69 @@ def log_heartbeat(
     except OSError:
         return None
     return log_path
+
+
+def log_telemetry(
+    decision: StopHookDecision,
+    root: Path | None = None,
+    *,
+    hook_input: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Write the structured telemetry for one Stop-hook decision (RFC 010 §A3).
+
+    The sibling of `log_heartbeat`: same call site, same best-effort
+    contract, different consumer. `keepalive.log` stays the human-
+    greppable narrative; this writes the machine-queryable events that
+    `summary.json` rolls up.
+
+    Two events per boundary, not one — the stop decision and the cascade
+    walk are separate signal classes. A session can walk the cascade and
+    still be forced to continue for reasons unrelated to what it picked,
+    and conflating them would make the pick distribution unreadable.
+
+    Silent on every failure. Nothing here is allowed to cost the model
+    its turn.
+    """
+    run = current_run(root)
+    if run is None:
+        return
+    try:
+        enabled = load_telemetry_config(root).enabled
+    except Exception:
+        enabled = True
+    if not enabled:
+        return
+
+    fields = decision.telemetry or {}
+    session_id = (hook_input or {}).get("session_id")
+
+    with contextlib.suppress(Exception):
+        record_stop_decision(
+            run.path,
+            reason_code=decision.reason_code,
+            turn=fields.get("turn"),
+            block_count=fields.get("block_count"),
+            context_tokens=fields.get("context_tokens"),
+            cascade_source=fields.get("cascade_source"),
+            cascade_repeats=fields.get("cascade_repeats"),
+            session_id=session_id,
+            now=now,
+        )
+
+    source = fields.get("cascade_source")
+    if source:
+        with contextlib.suppress(Exception):
+            record_cascade_walk(
+                run.path,
+                source=str(source),
+                summary=fields.get("cascade_summary"),
+                repeats=fields.get("cascade_repeats"),
+                now=now,
+            )
+
+    with contextlib.suppress(Exception):
+        build_summary(run.path)
 
 
 def parse_hook_input(raw: str) -> dict[str, Any]:

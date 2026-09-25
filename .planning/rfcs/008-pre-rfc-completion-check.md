@@ -1,22 +1,38 @@
 ---
-status: accepted
-phase_a: implemented (A3 deferred — see note)
+status: implemented
+phase_a: implemented
 phase_b: implemented
 sized: true
 title: Pre-RFC completion check — verify deliverable doesn't already exist before dispatching
 created: 2026-06-04
 sized_on: 2026-06-04
 accepted_on: 2026-06-04
+implemented_on: 2026-07-29
 author: nightly-seed
 source: interactive_seed
 estimated_effort: ~4h across 2 phases
+status_note: |
+  A3's per-host token check was substituted, not skipped — operator-confirmed
+  2026-07-29. See the A3 checklist entry for the reasoning.
 ---
 
 # RFC 008 — Pre-RFC completion check
 
 ## Status
 
-`accepted` — operator seed in the 2026-06-04 interactive session
+`implemented` — closed out 2026-07-29. Both phases shipped; the last open
+item (A3) was resolved as a **substitution** rather than an implementation,
+operator-confirmed. Delivery diverged from the RFC as written in one
+respect worth recording: Resolved #2 and #8 assumed the verifier paragraph
+would be duplicated into six per-host `skill.md` files with a
+`_REQUIRED_SKILL_TOKENS` drift check (Resolved #9) policing them. A2
+instead shipped it as **rule 13 of the shared rules block**, which
+`seed_rules` propagates to every host's AGENTS.md / CLAUDE.md from one
+marker-delimited source. That removes the drift surface Resolved #9 was
+written to guard, so Resolved #9 no longer applies as stated — see the A3
+checklist entry for the guard that replaced it.
+
+Originally `accepted` — operator seed in the 2026-06-04 interactive session
 (authoring RFCs 006–008 as a bundle). Approach C (skill-side
 verifier paragraph + `nightly task --status done` reuse + cascade
 re-walk on auto-tick) ships as v1. Phase A wires the skill text and
@@ -281,11 +297,15 @@ A shared constant in `nightly_core` (similar to the trigger
 paragraph in RFC 005's host skills) keeps drift to one source
 of truth.
 
-**9. `nightly doctor` content-drift check.** Mirrors RFC 005
-§B4: each host's main `skill.md` must contain the literal
-token `pre-flight verification` (case-insensitive) for the
-`_REQUIRED_SKILL_TOKENS` check to pass. Drift triggers
-`nightly doctor` repair → re-install from the package source.
+**9. `nightly doctor` content-drift check.** *(Superseded at
+implementation — see A3.)* As written: each host's main `skill.md`
+must contain the literal token `pre-flight verification`
+(case-insensitive) for the `_REQUIRED_SKILL_TOKENS` check to pass.
+Drift triggers `nightly doctor` repair → re-install from the package
+source. This presumed the per-host duplication of Resolved #2/#8.
+A2 shipped the doctrine through the shared rules block instead, so
+there is no per-host copy to drift; `doctor._check_rules` re-seeds
+the block from source and the A5 marker tests pin the content.
 
 **10. The verifier does NOT call `nightly task` to tick.** The
 agent edits the RFC file directly (it's `.planning/rfcs/<NNN>-
@@ -392,12 +412,24 @@ both branches.
       liability; `seed_rules` propagates one marker-delimited copy to
       every host's AGENTS.md / CLAUDE.md and cannot drift between them.
       Same delivery as RFC 007 C1/B2.
-- [ ] A3. `_REQUIRED_SKILL_TOKENS` per-host token — **not applicable as
-      written**, given A2's delivery: there is no per-host copy to drift.
-      The equivalent guard is doctor's existing `_check_rules` plus a test
-      asserting the doctrine is inside the seeded markers (A5). Left open
-      rather than silently reinterpreted — a human should confirm the
-      substitution before it is ticked.
+- [x] A3. `_REQUIRED_SKILL_TOKENS` per-host token — **substituted, not
+      skipped.** Operator-confirmed 2026-07-29. As written, A3 guards
+      against drift between six per-host copies of the verifier paragraph.
+      A2 shipped the doctrine as rule 13 of the shared rules block instead,
+      so those six copies do not exist and `_REQUIRED_SKILL_TOKENS` has no
+      per-host `skill.md` text to check. The equivalent guard is already in
+      place and is strictly stronger — it repairs rather than merely reports:
+      - `doctor._check_rules` re-seeds the marker-delimited block from the
+        package source on every run, so a hand-edited or stale AGENTS.md /
+        CLAUDE.md is repaired, not just flagged.
+      - `specialists.RFC_008_VERIFIER_PARAGRAPH` is the single source; the
+        A5 tests assert its first line appears in `NIGHTLY_RULES_BODY` and
+        that `Pre-flight verification` renders *between* `MARKER_START` and
+        `MARKER_END` (`test_verifier_lands_inside_the_seeded_markers`).
+        Outside the markers it propagates to no host, so that assertion is
+        the real drift check.
+      Adding the literal token to `_REQUIRED_SKILL_TOKENS` would reintroduce
+      the per-host surface A2 deliberately removed. Not done, by design.
 - [x] A4. `_is_item_in_flight` docstring cross-references the verifier
       and the RFC 012 local-branch guard as the three composing layers
 - [x] A5. Tests covering presence, marker placement, and content

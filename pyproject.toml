@@ -7,14 +7,14 @@
 
 [project]
 name = "nightly"
-version = "0.0.15"
+version = "0.0.16"
 description = "Turns your coding CLI (Claude Code, Codex, opencode, Cursor, Antigravity, Gemini) into a self-directed, drainable session that lands review-shaped PRs by morning."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Evan Owen", email = "evan@jwo3.io" }]
-keywords = ["agent", "ai", "coding", "claude", "codex", "cursor", "opencode", "antigravity", "gemini", "cli"]
+keywords = ["agent", "ai", "coding", "claude", "codex", "cursor", "opencode", "antigravity", "gemini", "pi", "cli"]
 dependencies = [
   "nightly-core",
   "nightly-host-claude",
@@ -23,6 +23,7 @@ dependencies = [
   "nightly-host-opencode",
   "nightly-host-antigravity",
   "nightly-host-gemini",
+  "nightly-host-pi",
 ]
 
 [tool.uv]
@@ -36,6 +37,7 @@ nightly-host-cursor       = { workspace = true }
 nightly-host-opencode     = { workspace = true }
 nightly-host-antigravity  = { workspace = true }
 nightly-host-gemini       = { workspace = true }
+nightly-host-pi           = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -71,6 +73,7 @@ known-first-party = [
   "nightly_host_opencode",
   "nightly_host_antigravity",
   "nightly_host_gemini",
+  "nightly_host_pi",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -95,6 +98,7 @@ search-path = [
   "packages/nightly-host-cursor/src",
   "packages/nightly-host-gemini/src",
   "packages/nightly-host-opencode/src",
+  "packages/nightly-host-pi/src",
 ]
 python-version = "3.12"
 

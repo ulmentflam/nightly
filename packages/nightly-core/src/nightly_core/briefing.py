@@ -37,6 +37,7 @@ from nightly_core.contract import MODEL_TIERS
 from nightly_core.digest import find_handoffs
 from nightly_core.paths import repo_root
 from nightly_core.runs import Run
+from nightly_core.telemetry import read_summary
 
 __all__ = [
     "BriefingContext",
@@ -128,6 +129,19 @@ class BriefingContext:
     they configured. A run that shows `reasoning x 12` is burning the
     expensive tier on work that should have been cheap; one that shows no
     `reasoning` at all probably reviewed nothing."""
+
+    telemetry: dict[str, Any] | None = None
+    """RFC 010 §A8 — the run's `summary.json`, or None when telemetry is
+    off or the run predates it."""
+
+    telemetry_alert: str | None = None
+    """A one-line warning when the night was fraught rather than smooth —
+    a supervisor respawn, an aborted respawn budget, or a deep block
+    chain. None when nothing needs the operator's attention.
+
+    The structural goal of the whole telemetry section: opening the
+    briefing in the morning should answer "did this go well?" before the
+    operator reads a single counter."""
 
 
 _AUTO_TICK_RE = re.compile(
@@ -379,6 +393,47 @@ def _load_stacked_geometry() -> tuple[str, list[dict[str, Any]]]:
     return geo.current_branch, chain
 
 
+_DEEP_CHAIN_BLOCKS = 8
+"""Chain depth at which a forced-continuation run is worth flagging.
+
+Claude Code's without-progress cap is 8 consecutive blocks. Reaching it
+means the session was one block away from being killed by the host —
+the exact condition RFC 010's supervisor exists to survive, and worth
+the operator knowing about even when the supervisor caught it."""
+
+
+def _build_telemetry_alert(summary: dict[str, Any]) -> str | None:
+    """One line naming what went wrong overnight, or None if nothing did.
+
+    Ordered by severity: an exhausted respawn budget means the session is
+    *gone* and stayed gone; a respawn means it died and recovered; a deep
+    block chain means it nearly died. Only the worst is reported — a
+    stacked list of warnings buries the one that matters.
+    """
+    respawns = summary.get("respawns") or {}
+    count = respawns.get("count") or 0
+    if respawns.get("aborted"):
+        return (
+            f"Supervisor exhausted its respawn budget after {count} attempt(s) "
+            "and gave up — the session stopped for the rest of the night. "
+            "Check `telemetry/supervisor.jsonl` for why each respawn failed."
+        )
+    if count:
+        return (
+            f"This session died and was respawned {count} time(s) by the "
+            "supervisor. Work continued, but the stop cause is worth reading — "
+            "see the stop-reason breakdown below."
+        )
+    max_chain = summary.get("max_consecutive_blocks") or 0
+    if isinstance(max_chain, int) and max_chain >= _DEEP_CHAIN_BLOCKS:
+        return (
+            f"The forced-continuation chain reached {max_chain} consecutive "
+            "blocks — at or past Claude Code's without-progress cap. The "
+            "session survived, but it was making little forward progress."
+        )
+    return None
+
+
 def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
     """Walk the run directory and build the renderer context."""
     tasks = _load_tasks(run)
@@ -399,6 +454,8 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         except OSError:
             pass
 
+    telemetry = read_summary(run.path)
+
     return BriefingContext(
         run_id=run.id,
         is_concluded=run.is_concluded,
@@ -417,6 +474,8 @@ def build_context(run: Run, *, now: datetime | None = None) -> BriefingContext:
         tier_breakdown=_load_tier_breakdown(run),
         auto_ticks=find_auto_ticks(run.path.parent.parent.parent),
         handoffs=[{"slug": slug, "summary": summary} for slug, summary in find_handoffs(run.path)],
+        telemetry=telemetry,
+        telemetry_alert=_build_telemetry_alert(telemetry) if telemetry else None,
     )
 
 
@@ -442,6 +501,8 @@ def render_briefing(run: Run, *, now: datetime | None = None) -> str:
         tier_breakdown=ctx.tier_breakdown,
         handoffs=ctx.handoffs,
         auto_ticks=ctx.auto_ticks,
+        telemetry=ctx.telemetry,
+        telemetry_alert=ctx.telemetry_alert,
     )
 
 
