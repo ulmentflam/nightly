@@ -13,6 +13,10 @@ Three hard gates apply independently of score:
 3. Issue must not require credentials Nightly doesn't have. (Phase 3
    approximates this with a `needs-secrets` tag check; the real version
    awaits Phase 4 sandboxing.)
+4. Issue must not be bot-authored unless an operator opted it in with the
+   `nightly-ready` label. Bot issues are almost always living status pages
+   (Renovate's Dependency Dashboard, stale-bot notices) with no
+   deliverable, so picking one wastes a turn and trips the livelock guard.
 
 Issues are fetched via the `gh` CLI when available, falling back to an
 empty list (and a clear log line) when `gh` is missing or the repo has no
@@ -52,6 +56,11 @@ _GH_LIMIT_DEFAULT = 50
 # Hard-gate labels — skipped regardless of score
 _HARD_DENY_LABELS = frozenset({"do-not-automate", "needs-human", "needs-secrets"})
 
+# Label that opts a bot-authored issue back into the ranking. Reuses the
+# existing "operator blessed this for automation" label rather than
+# inventing a second one.
+_BOT_OPT_IN_LABEL = "nightly-ready"
+
 # Label weights (multiplicative; first match wins, default 1.0)
 _LABEL_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("nightly-ready", 1.5),
@@ -71,6 +80,7 @@ _MAX_AGE_WEIGHT = 5.0
 # closing-keyword claim vs. a bare mention inside a Nightly-authored PR.
 _SKIP_REASON_CLOSING_REF = "open PR already addresses this issue"
 _SKIP_REASON_NIGHTLY_MENTION = "open Nightly PR references this issue (in-flight)"
+_SKIP_REASON_BOT_AUTHOR = f"bot-authored issue (add `{_BOT_OPT_IN_LABEL}` to opt in)"
 
 
 @dataclass(frozen=True)
@@ -85,6 +95,7 @@ class IssueRecord:
     updated_at: datetime
     url: str
     author: str
+    author_is_bot: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,6 +154,11 @@ def _skip_reason(
     deny = label_set & _HARD_DENY_LABELS
     if deny:
         return f"hard-deny label: {sorted(deny)[0]}"
+    if issue.author_is_bot and _BOT_OPT_IN_LABEL not in label_set:
+        # Renovate's "Dependency Dashboard" (issue #22 in this repo) topped
+        # the ranking on age alone: a long body, no deny label, and nothing
+        # to implement. Bot issues are status pages, not tasks.
+        return _SKIP_REASON_BOT_AUTHOR
     if len(issue.body.strip()) < _MIN_BODY_CHARS:
         return f"no acceptance criterion (body < {_MIN_BODY_CHARS} chars)"
     # Closing-ref check takes precedence over the weaker nightly-mention
@@ -232,7 +248,8 @@ def _parse_gh_json(payload: str) -> list[IssueRecord]:
     for entry in raw:
         try:
             labels = tuple(lab.get("name", "") for lab in entry.get("labels", []))
-            author = entry.get("author", {}).get("login", "") or ""
+            author_obj = entry.get("author") or {}
+            author = author_obj.get("login", "") or ""
             out.append(
                 IssueRecord(
                     number=int(entry["number"]),
@@ -243,11 +260,23 @@ def _parse_gh_json(payload: str) -> list[IssueRecord]:
                     updated_at=_parse_iso(entry.get("updatedAt", entry["createdAt"])),
                     url=str(entry.get("url", "")),
                     author=author,
+                    author_is_bot=_author_is_bot(author_obj),
                 )
             )
         except (KeyError, ValueError):
             continue
     return out
+
+
+def _author_is_bot(author: dict) -> bool:
+    """`gh issue list` marks GitHub Apps with `is_bot: true` and a login of
+    the form `app/<slug>` (e.g. `app/renovate`). The REST-style `[bot]`
+    suffix and `type == "Bot"` are accepted too, since other gh subcommands
+    and API paths emit those shapes instead."""
+    if author.get("is_bot") is True or author.get("type") == "Bot":
+        return True
+    login = str(author.get("login") or "")
+    return login.startswith("app/") or login.endswith("[bot]")
 
 
 def _parse_iso(value: str) -> datetime:
