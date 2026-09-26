@@ -83,8 +83,8 @@ run `nightly session start`. This writes a `SESSION_ACTIVE` marker that
 the Claude Code Stop hook checks at every turn boundary — without it,
 the hook lets your session stop naturally (so non-Nightly sessions in
 this repo are unaffected). With it, the hook re-injects a "continue on
-X" prompt whenever you'd otherwise end your turn. Idempotent: re-running
-just refreshes the 4-hour TTL.
+X" prompt whenever you'd otherwise end your turn. Idempotent: the marker
+has no TTL, so re-running just refreshes it.
 
 **Respawn-resume signal (v0.0.10+).** Watch the output of `nightly
 session start`. If it prints a `⚠ RESPAWN_REQUESTED` line, the prior

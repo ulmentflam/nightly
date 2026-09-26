@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nightly_core.cli import _HOST_LOADERS
 from nightly_core.rules import (
     MARKER_END,
     MARKER_START,
@@ -303,3 +304,20 @@ def test_verifier_lands_inside_the_seeded_markers() -> None:
     rendered = _render_block()
     assert "Pre-flight verification" in rendered
     assert rendered.startswith(MARKER_START)
+
+
+def test_rule9_host_counts_match_registered_integrations(tmp_path: Path) -> None:
+    """Rule 9 names how many hosts have a forced keep-alive. It drifted to
+    "Four of the five" while pi shipped as a sixth forced host, so pin the
+    wording to the live loader registry."""
+    words = {4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
+    supports = [load(tmp_path).keepalive_support for load in _HOST_LOADERS.values()]
+    forced = sum(1 for s in supports if s == "forced")
+    total = len(supports)
+    flat = " ".join(NIGHTLY_RULES_BODY.split())
+    assert f"{words[forced].capitalize()} of the {words[total]} Nightly hosts" in flat
+
+
+def test_rules_body_does_not_claim_session_ttl() -> None:
+    """The 4-hour SESSION_ACTIVE staleness release was removed in v0.0.3."""
+    assert "4-hour TTL" not in NIGHTLY_RULES_BODY

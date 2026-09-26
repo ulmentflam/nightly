@@ -53,7 +53,7 @@ as your first action. This writes a `SESSION_ACTIVE` marker that
 Codex CLI's `Stop` hook (registered by `nightly init`, lives in
 `.codex/hooks.json`) checks every turn boundary. With it, the hook
 re-injects a "continue on X" prompt every time you'd otherwise stop.
-Idempotent — re-running just refreshes the 4-hour TTL.
+Idempotent — the marker has no TTL, so re-running just refreshes it.
 
 Three off-ramps stop the session at any time:
 
