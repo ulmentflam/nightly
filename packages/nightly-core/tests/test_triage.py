@@ -28,6 +28,7 @@ def _issue(
     labels: tuple[str, ...] = (),
     days_old: float = 0.0,
     author: str = "alice",
+    author_is_bot: bool = False,
 ) -> IssueRecord:
     created = _NOW - timedelta(days=days_old)
     return IssueRecord(
@@ -39,6 +40,7 @@ def _issue(
         updated_at=created,
         url=f"https://github.com/x/y/issues/{number}",
         author=author,
+        author_is_bot=author_is_bot,
     )
 
 
@@ -121,6 +123,70 @@ def test_thin_body_skips(tmp_path: Path) -> None:
     )
     assert rankings[0].skip_reason is not None
     assert "acceptance criterion" in rankings[0].skip_reason
+
+
+def test_bot_authored_issue_skips(tmp_path: Path) -> None:
+    """Renovate's Dependency Dashboard has a long body and no deny label,
+    so before this gate it outranked human issues on age alone."""
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher(
+            [
+                _issue(
+                    22,
+                    title="Dependency Dashboard",
+                    author="app/renovate",
+                    author_is_bot=True,
+                    days_old=90,
+                ),
+                _issue(5, days_old=1),
+            ]
+        ),
+        now=_NOW,
+    )
+    assert [r.number for r in rankings] == [5, 22]
+    assert rankings[0].skip_reason is None
+    assert rankings[1].skip_reason is not None
+    assert "bot-authored" in rankings[1].skip_reason
+
+
+def test_bot_authored_issue_with_nightly_ready_label_is_eligible(tmp_path: Path) -> None:
+    rankings = rank_issues(
+        tmp_path,
+        fetcher=_fetcher(
+            [_issue(7, labels=("nightly-ready",), author="app/some-bot", author_is_bot=True)]
+        ),
+        now=_NOW,
+    )
+    assert rankings[0].skip_reason is None
+
+
+def test_fetch_via_gh_flags_bot_authors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`gh issue list` reports GitHub Apps as `is_bot: true` with an
+    `app/<slug>` login; the `[bot]` suffix covers REST-shaped payloads."""
+    import subprocess as subprocess_module
+
+    base = (
+        '"title": "t", "body": "b", "labels": [], "createdAt": "2026-05-01T00:00:00Z", "url": "u"'
+    )
+    payload = (
+        f'[{{"number": 1, {base}, "author": {{"login": "app/renovate", "is_bot": true}}}},'
+        f' {{"number": 2, {base}, "author": {{"login": "dependabot[bot]"}}}},'
+        f' {{"number": 3, {base}, "author": {{"login": "alice", "is_bot": false}}}},'
+        f' {{"number": 4, {base}, "author": null}}]'
+    )
+
+    def _fake_run(*_args, **_kwargs):
+        class _R:
+            stdout = payload
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/local/bin/gh")
+    monkeypatch.setattr(subprocess_module, "run", _fake_run)
+    issues = fetch_via_gh(tmp_path)
+    assert {i.number: i.author_is_bot for i in issues} == {1: True, 2: True, 3: False, 4: False}
 
 
 # ── rank_issues ordering ──────────────────────────────────────────────────
